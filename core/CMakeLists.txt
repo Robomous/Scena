@@ -20,4 +20,5 @@ set_target_properties(scena-core PROPERTIES
 )
 
 scn_set_warnings(scena-core)
+scn_set_fp_strictness(scena-core)
 scn_enable_sanitizers(scena-core)
