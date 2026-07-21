@@ -71,3 +71,64 @@ jobs:
 
       - name: Check formatting
         run: ./scripts/format.sh --check
+
+      - name: detmath guard
+        run: ./scripts/check_detmath.sh
+
+  determinism-trace:
+    name: determinism trace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSCN_WARNINGS_AS_ERRORS=ON
+          -DSCN_BUILD_PYTHON=OFF -DSCN_BUILD_CAPI=OFF
+
+      - name: Build trace runner
+        run: cmake --build build --config Release --parallel --target scena-trace-runner
+
+      - name: Generate trace
+        shell: bash
+        run: |
+          RUNNER=build/bin/scena-trace-runner
+          [ -f "$RUNNER" ] || RUNNER=build/bin/Release/scena-trace-runner.exe  # MSVC multi-config
+          "$RUNNER" trace.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-trace-${{ matrix.os }}
+          path: trace.txt
+          if-no-files-found: error
+
+  determinism-cross:
+    name: cross-platform bit-identity
+    needs: determinism-trace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: determinism-trace-*
+          path: traces
+
+      - name: Diff traces bit-exactly
+        run: |
+          ref=traces/determinism-trace-ubuntu-latest/trace.txt
+          test -f "$ref"
+          status=0
+          for os in macos-latest windows-latest; do
+            other="traces/determinism-trace-$os/trace.txt"
+            if cmp -s "$ref" "$other"; then
+              echo "ubuntu-latest vs $os: identical ($(wc -c < "$ref") bytes)"
+            else
+              echo "::error::trace mismatch: ubuntu-latest vs $os"
+              diff -u "$ref" "$other" | head -n 100 || true
+              status=1
+            fi
+          done
+          exit $status
