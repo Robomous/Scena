@@ -13,6 +13,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 using scena::Engine;
 using scena::EntityState;
@@ -28,7 +29,8 @@ scena::ir::Event make_speed_event(std::string name, double at_time, std::string 
                                   double target_speed) {
     scena::ir::Event event;
     event.name = std::move(name);
-    event.start_trigger = std::make_shared<SimulationTimeCondition>(at_time);
+    event.start_trigger =
+        scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(at_time));
     event.actions.push_back(std::make_shared<SpeedAction>(std::move(entity_id), target_speed));
     return event;
 }

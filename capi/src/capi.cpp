@@ -107,7 +107,8 @@ scn_status scn_engine_add_speed_action(scn_engine* engine, const char* entity_id
             storyboard.stories.front().acts.front().groups.front().maneuvers.front();
         scena::ir::Event event;
         event.name = "event-" + std::to_string(maneuver.events.size() + 1);
-        event.start_trigger = std::make_shared<scena::ir::SimulationTimeCondition>(at_time);
+        event.start_trigger =
+            scena::ir::make_trigger(std::make_shared<scena::ir::SimulationTimeCondition>(at_time));
         event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed));
         maneuver.events.push_back(std::move(event));
         return SCN_OK;

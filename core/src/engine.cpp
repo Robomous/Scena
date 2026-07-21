@@ -2,6 +2,7 @@
 #include "scena/engine.h"
 
 #include <cmath>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -25,12 +26,47 @@ template <typename Range, typename NameOf> bool names_valid(const Range& range, 
     return true;
 }
 
-/// Validates the storyboard tree: element naming, non-null actions, and
-/// action targets that exist in `records`. Returns Status::Ok when valid.
+/// Validates one trigger site. The scheduler evaluates triggers on the hot
+/// path and relies on these guarantees instead of re-checking them, so
+/// everything it assumes is established here. An absent trigger is always
+/// valid, and so is an engaged but empty one (§7.6.1: always false).
+Status validate_trigger(const std::optional<ir::Trigger>& trigger) {
+    if (!trigger.has_value()) {
+        return Status::Ok;
+    }
+    for (const ir::ConditionGroup& group : trigger->groups) {
+        // A condition group holds 1..* conditions (class reference,
+        // ConditionGroup). An empty one would be a vacuously true
+        // conjunction — a meaning the standard does not give it — so it is
+        // rejected rather than silently made always-true.
+        if (group.conditions.empty()) {
+            return Status::InvalidArgument;
+        }
+        for (const ir::TriggerCondition& condition : group.conditions) {
+            if (condition.expression == nullptr) {
+                return Status::InvalidArgument;
+            }
+            // per rule asam.net:xosc:1.0.0:data_type.condition_delay_not_negative
+            // ("The condition delay shall be non negative"). The negated
+            // comparison also rejects NaN.
+            if (!(condition.delay >= 0.0)) {
+                return Status::InvalidArgument;
+            }
+        }
+    }
+    return Status::Ok;
+}
+
+/// Validates the storyboard tree: element naming, triggers, non-null
+/// actions, and action targets that exist in `records`. Returns Status::Ok
+/// when valid.
 template <typename Records>
 Status validate_storyboard(const ir::Storyboard& storyboard, const Records& records) {
     if (!names_valid(storyboard.stories, [](const ir::Story& s) { return s.name; })) {
         return Status::InvalidArgument;
+    }
+    if (const Status status = validate_trigger(storyboard.stop_trigger); status != Status::Ok) {
+        return status;
     }
     for (const ir::Story& story : storyboard.stories) {
         if (!names_valid(story.acts, [](const ir::Act& a) { return a.name; })) {
@@ -39,6 +75,12 @@ Status validate_storyboard(const ir::Storyboard& storyboard, const Records& reco
         for (const ir::Act& act : story.acts) {
             if (!names_valid(act.groups, [](const ir::ManeuverGroup& g) { return g.name; })) {
                 return Status::InvalidArgument;
+            }
+            if (const Status status = validate_trigger(act.start_trigger); status != Status::Ok) {
+                return status;
+            }
+            if (const Status status = validate_trigger(act.stop_trigger); status != Status::Ok) {
+                return status;
             }
             for (const ir::ManeuverGroup& group : act.groups) {
                 if (!names_valid(group.maneuvers, [](const ir::Maneuver& m) { return m.name; })) {
@@ -54,6 +96,10 @@ Status validate_storyboard(const ir::Storyboard& storyboard, const Records& reco
                         return Status::InvalidArgument;
                     }
                     for (const ir::Event& event : maneuver.events) {
+                        if (const Status status = validate_trigger(event.start_trigger);
+                            status != Status::Ok) {
+                            return status;
+                        }
                         if (event.actions.empty()) {
                             return Status::InvalidArgument;
                         }

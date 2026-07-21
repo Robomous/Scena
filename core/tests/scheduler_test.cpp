@@ -11,6 +11,7 @@
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 using scena::ir::Act;
 using scena::ir::Event;
@@ -26,11 +27,15 @@ using scena::runtime::TransitionKind;
 
 namespace {
 
+/// Helpers keep taking a bare logical expression and wrap it in a
+/// one-group, one-condition trigger; a null expression means "no trigger".
 Event make_event(std::string name, std::shared_ptr<scena::ir::Condition> trigger,
                  std::string entity_id, double target_speed) {
     Event event;
     event.name = std::move(name);
-    event.start_trigger = std::move(trigger);
+    if (trigger != nullptr) {
+        event.start_trigger = scena::ir::make_trigger(std::move(trigger));
+    }
     event.actions.push_back(std::make_shared<SpeedAction>(std::move(entity_id), target_speed));
     return event;
 }
@@ -46,7 +51,9 @@ Storyboard make_storyboard(std::vector<Event> events,
     group.maneuvers.push_back(std::move(maneuver));
     Act act;
     act.name = "act";
-    act.start_trigger = std::move(act_trigger);
+    if (act_trigger != nullptr) {
+        act.start_trigger = scena::ir::make_trigger(std::move(act_trigger));
+    }
     act.groups.push_back(std::move(group));
     Story story;
     story.name = "story";
@@ -179,7 +186,8 @@ TEST(SchedulerTest, StopTriggerStopsEverythingExecuting) {
     Storyboard storyboard = make_storyboard(
         {make_event("early", std::make_shared<SimulationTimeCondition>(1.0), "ego", 10.0),
          make_event("late", std::make_shared<SimulationTimeCondition>(5.0), "ego", 20.0)});
-    storyboard.stop_trigger = std::make_shared<SimulationTimeCondition>(2.0);
+    storyboard.stop_trigger =
+        scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(2.0));
 
     Scheduler scheduler;
     scheduler.bind(storyboard);
