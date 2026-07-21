@@ -2,6 +2,7 @@
 #include "scena/engine.h"
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -181,6 +182,63 @@ TEST(EngineTest, InitValidatesScenario) {
         Scenario scenario = make_scenario();
         scenario.init_actions.push_back(std::make_shared<SpeedAction>("missing", 5.0));
         EXPECT_EQ(engine.init(std::move(scenario)), Status::UnknownEntity);
+    }
+}
+
+TEST(EngineTest, InitRejectsNegativeConditionDelay) {
+    // per rule asam.net:xosc:1.0.0:data_type.condition_delay_not_negative
+    for (const double delay : {-0.5, std::numeric_limits<double>::quiet_NaN()}) {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stories[0]
+            .acts[0]
+            .groups[0]
+            .maneuvers[0]
+            .events[0]
+            .start_trigger->groups[0]
+            .conditions[0]
+            .delay = delay;
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_FALSE(engine.initialized());
+    }
+}
+
+TEST(EngineTest, InitRejectsNullTriggerExpression) {
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .start_trigger->groups[0]
+        .conditions[0]
+        .expression = nullptr;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+}
+
+TEST(EngineTest, InitRejectsEmptyConditionGroup) {
+    // A condition group holds 1..* conditions; an empty one would be a
+    // vacuously true conjunction (§7.6.1 and the ConditionGroup class
+    // reference). An empty *trigger* stays legal — it is always false.
+    {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stories[0]
+            .acts[0]
+            .groups[0]
+            .maneuvers[0]
+            .events[0]
+            .start_trigger->groups[0]
+            .conditions.clear();
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+    }
+    {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stop_trigger = scena::ir::Trigger{};
+        scenario.storyboard.stories[0].acts[0].stop_trigger = scena::ir::Trigger{};
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::Ok);
     }
 }
 

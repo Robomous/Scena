@@ -42,9 +42,7 @@ class ConstantCondition final : public Condition {
 public:
     explicit ConstantCondition(bool value) : value_(value) {}
 
-    [[nodiscard]] bool evaluate(double /*simulation_time*/) const override {
-        return value_;
-    }
+    [[nodiscard]] bool evaluate(double /*simulation_time*/) const override { return value_; }
 
 private:
     bool value_;
@@ -183,8 +181,8 @@ TEST(TriggerTest, EmptyStopTriggerNeverStops) {
 
 TEST(TriggerTest, GroupIsConjunction) {
     // One group, two conditions: fires only once both hold (§7.6.1).
-    const Storyboard storyboard = make_storyboard({make_event(
-        "event", trigger_of({{cond(at_least(1.0)), cond(at_least(2.0))}}), "ego")});
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", trigger_of({{cond(at_least(1.0)), cond(at_least(2.0))}}), "ego")});
     Scheduler scheduler;
     scheduler.bind(storyboard);
     EXPECT_EQ(firing_times(scheduler, {0.0, 1.0, 1.5, 2.0}), (std::vector<double>{2.0}));
@@ -203,8 +201,8 @@ TEST(TriggerTest, RisingEdgeInGroupMustCoincideWithOtherConditions) {
     // An edge is a one-evaluation-wide pulse: the conjunction only holds if
     // the other conditions hold at that very evaluation (§7.6.1, §7.6.2).
     const Storyboard storyboard = make_storyboard({make_event(
-        "event",
-        trigger_of({{cond(at_least(1.0), ConditionEdge::Rising), cond(at_least(2.0))}}), "ego")});
+        "event", trigger_of({{cond(at_least(1.0), ConditionEdge::Rising), cond(at_least(2.0))}}),
+        "ego")});
     Scheduler scheduler;
     scheduler.bind(storyboard);
     // The rise happens at t = 1.0, when the second condition is still
@@ -300,4 +298,96 @@ TEST(TriggerTest, EdgeDetectedAfterElementEntersStandby) {
     Scheduler scheduler;
     scheduler.bind(storyboard);
     EXPECT_EQ(firing_times(scheduler, {0.0, 1.0, 2.0, 2.5, 3.0}), (std::vector<double>{2.5}));
+}
+
+// ---------------------------------------------------------------------------
+// Condition delays (§7.6.3, §7.6.4)
+// ---------------------------------------------------------------------------
+
+TEST(TriggerTest, DelayShiftsFiringByDelta) {
+    // C_D(t_d) = C(t_d - delta) (§7.6.3).
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(at_least(1.0), ConditionEdge::None, 0.5)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5, 2.0}), (std::vector<double>{1.5}));
+}
+
+TEST(TriggerTest, DelayedConditionFalseWhileTimeLessThanDelta) {
+    // §7.6.4: while t_d < delta the delayed condition is false, even though
+    // its logical expression holds from the very first evaluation.
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(constant(true), ConditionEdge::None, 1.0)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0}), (std::vector<double>{1.0}));
+}
+
+TEST(TriggerTest, DelayLookupUsesMostRecentSampleAtOrBefore) {
+    // The host chooses the step times, so t_d - delta usually falls between
+    // two evaluations. The condition is sampled and held: the most recent
+    // evaluation at or before t_d - delta is the answer.
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(at_least(0.75), ConditionEdge::None, 0.5)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    // At t = 1.2 the lookup lands on t = 0.7, held from the evaluation at
+    // t = 0.4 (false). At t = 1.6 it lands on t = 1.1, held from t = 0.8
+    // (true).
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.4, 0.8, 1.2, 1.6}), (std::vector<double>{1.6}));
+}
+
+TEST(TriggerTest, ExactBoundarySampleIsUsed) {
+    // When an evaluation exists at exactly t_d - delta it is the one used;
+    // the comparison is exact, with no tolerance.
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(at_least(0.5), ConditionEdge::None, 0.5)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5}), (std::vector<double>{1.0}));
+}
+
+TEST(TriggerTest, DelayedRisingEdgeFiresExactlyOnce) {
+    // The delay applies to the post-edge value, so the one-evaluation-wide
+    // pulse is shifted, not widened.
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(at_least(1.0), ConditionEdge::Rising, 0.5)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5, 2.0, 2.5}), (std::vector<double>{1.5}));
+}
+
+TEST(TriggerTest, DelayedEventsFiringSameStepFireInDocumentOrder) {
+    // Three different routes to the same discrete time: a delayed
+    // condition, an undelayed one, and a longer delay on an earlier
+    // condition. Document order decides, exactly as for undelayed events.
+    const Storyboard storyboard = make_storyboard({
+        make_event("first", trigger_of({{cond(at_least(1.0), ConditionEdge::None, 0.5)}}), "a"),
+        make_event("second", trigger_of({{cond(at_least(1.5))}}), "b"),
+        make_event("third", trigger_of({{cond(at_least(0.5), ConditionEdge::None, 1.0)}}), "c"),
+    });
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    for (const double t : {0.0, 0.5, 1.0}) {
+        EXPECT_TRUE(fired_entities(scheduler, t).empty()) << t;
+    }
+    EXPECT_EQ(fired_entities(scheduler, 1.5), (std::vector<std::string>{"a", "b", "c"}));
+}
+
+TEST(TriggerTest, RepeatedEvaluationAtSameTimeUsesLatestSample) {
+    // A host may step with dt = 0. Each call is a new discrete evaluation
+    // t_d, so the second one sees the first as t_{d-1}: the rising pulse
+    // produced at t = 1.0 is immediately followed by a false at the same
+    // time, and the delayed lookup — which takes the most recent sample at
+    // or before its target — reads that false.
+    const Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(at_least(1.0), ConditionEdge::Rising, 1.0)}}), "ego")});
+    Scheduler repeated;
+    repeated.bind(storyboard);
+    EXPECT_TRUE(firing_times(repeated, {0.0, 1.0, 1.0, 2.0, 3.0}).empty());
+
+    // Without the repeated evaluation the same trigger fires at t = 2.0.
+    Scheduler single;
+    single.bind(storyboard);
+    EXPECT_EQ(firing_times(single, {0.0, 1.0, 2.0, 3.0}), (std::vector<double>{2.0}));
 }
