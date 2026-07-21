@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "kinema"
+# Keep in sync with core/include/kinema/version.h and the top-level CMakeLists.txt.
+version = "0.1.0"
+description = "Scenario execution engine for autonomous-driving simulation (ASAM OpenSCENARIO)"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Robomous" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+
+[tool.scikit-build]
+# The CMake project lives at the repository root; this package builds the
+# python subtree of it. Wheel builds must run from a checkout (not an sdist).
+cmake.source-dir = ".."
+cmake.version = ">=3.24"
+wheel.packages = ["src/kinema"]
+
+[tool.scikit-build.cmake.define]
+KNM_BUILD_TESTS = "OFF"
+KNM_BUILD_CAPI = "OFF"
+KNM_BUILD_PYTHON = "ON"

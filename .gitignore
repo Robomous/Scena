@@ -1,0 +1,28 @@
+# Build trees
+build/
+build-*/
+cmake-build-*/
+out/
+
+# Local-only assistant configuration (never commit)
+.claude/
+CLAUDE.md
+
+# Local-only standard reference texts (never commit)
+docs/reference/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+wheelhouse/
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+.cache/
+compile_commands.json
