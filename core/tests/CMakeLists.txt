@@ -19,6 +19,16 @@ scn_set_warnings(scena-testsupport)
 scn_set_fp_strictness(scena-testsupport)
 scn_enable_sanitizers(scena-testsupport)
 
+# Plain executable (not a gtest, not via scn_add_test) so gtest_discover_tests
+# never sees it; the determinism-trace CI job runs it directly.
+add_executable(scena-trace-runner support/trace_runner.cpp)
+target_link_libraries(scena-trace-runner PRIVATE scena::testsupport)
+target_compile_features(scena-trace-runner PRIVATE cxx_std_20)
+set_target_properties(scena-trace-runner PROPERTIES CXX_EXTENSIONS OFF)
+scn_set_warnings(scena-trace-runner)
+scn_set_fp_strictness(scena-trace-runner)
+scn_enable_sanitizers(scena-trace-runner)
+
 function(scn_add_test name)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE scena::core GTest::gtest_main)
