@@ -10,6 +10,8 @@ from ._scena import (
     Act,
     Action,
     Condition,
+    ConditionEdge,
+    ConditionGroup,
     ControlMode,
     ElementState,
     Engine,
@@ -24,7 +26,10 @@ from ._scena import (
     Status,
     Story,
     TransitionKind,
+    Trigger,
+    TriggerCondition,
     __version__,
+    make_trigger,
     version,
 )
 
@@ -32,6 +37,8 @@ __all__ = [
     "Act",
     "Action",
     "Condition",
+    "ConditionEdge",
+    "ConditionGroup",
     "ControlMode",
     "ElementState",
     "Engine",
@@ -46,6 +53,9 @@ __all__ = [
     "Status",
     "Story",
     "TransitionKind",
+    "Trigger",
+    "TriggerCondition",
     "__version__",
+    "make_trigger",
     "version",
 ]
