@@ -100,6 +100,18 @@ Status validate_storyboard(const ir::Storyboard& storyboard, const Records& reco
                             status != Status::Ok) {
                             return status;
                         }
+                        // §8.3.3.2/§8.4.2.1: the XSD type of
+                        // maximumExecutionCount is unsignedInt, so a
+                        // negative budget has no meaning at all. Zero is
+                        // schema-valid and is accepted — §8.4.2.1 already
+                        // gives it a coherent reading (the event is
+                        // exhausted in standbyState and completes with a
+                        // skipTransition without ever executing), so there
+                        // is nothing to invent. The standard defines no
+                        // rule id for this constraint.
+                        if (event.maximum_execution_count < 0) {
+                            return Status::InvalidArgument;
+                        }
                         if (event.actions.empty()) {
                             return Status::InvalidArgument;
                         }
