@@ -21,10 +21,15 @@
 #define SCN_API __attribute__((visibility("default")))
 #endif
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Mirrors scena::Status. Values are ABI: append new enumerators at the end,
+ * never renumber or remove. SCN_ERROR_INTERNAL (6) is the C-ABI-only code for
+ * an exception caught at the boundary; it has no scena::Status counterpart. */
 typedef enum scn_status {
     SCN_OK = 0,
     SCN_ERROR_ALREADY_INITIALIZED = 1,
@@ -32,8 +37,19 @@ typedef enum scn_status {
     SCN_ERROR_UNKNOWN_ENTITY = 3,
     SCN_ERROR_INVALID_CONTROL_MODE = 4,
     SCN_ERROR_INVALID_ARGUMENT = 5,
-    SCN_ERROR_INTERNAL = 6
+    SCN_ERROR_INTERNAL = 6,
+    SCN_ERROR_PARSE = 7,               /* a frontend could not parse the source */
+    SCN_ERROR_VALIDATION = 8,          /* scenario content violates a structural rule */
+    SCN_ERROR_SEMANTIC = 9,            /* scenario content references something missing */
+    SCN_ERROR_UNSUPPORTED_FEATURE = 10 /* a construct the engine does not implement */
 } scn_status;
+
+/* Mirrors scena::Severity. */
+typedef enum scn_severity {
+    SCN_SEVERITY_INFO = 0,
+    SCN_SEVERITY_WARNING = 1,
+    SCN_SEVERITY_ERROR = 2
+} scn_severity;
 
 typedef enum scn_control_mode {
     SCN_CONTROL_ENGINE = 0, /* the engine integrates the entity's motion */
@@ -56,6 +72,27 @@ typedef struct scn_entity_state {
     double heading; /* yaw around +Z, radians; 0 points along +X */
     double speed;   /* longitudinal speed along the heading, m/s */
 } scn_entity_state;
+
+/* One structured diagnostic read back from the engine.
+ *
+ * The string members are borrowed from the engine and are never NULL — an
+ * absent field is the empty string "". They stay valid until the next
+ * scn_engine_init, scn_engine_step, scn_engine_clear_diagnostics, or
+ * scn_engine_destroy on the same engine (the only calls that mutate the
+ * backing store); copy them out before calling any of those.
+ *
+ * Transparent struct: the layout is frozen ABI. Append fields only; never
+ * reorder or remove. */
+typedef struct scn_diagnostic {
+    scn_severity severity;
+    scn_status code;     /* machine-readable category (mirrors the diagnostic's code) */
+    const char* message; /* human-readable description */
+    const char* path;    /* element path; "" addresses the whole scenario */
+    const char* file;    /* source path; "" when unknown */
+    int line;            /* 1-based line; 0 when unknown */
+    int column;          /* 1-based column; 0 when unknown */
+    const char* rule_id; /* ASAM checker rule UID; "" when the standard names none */
+} scn_diagnostic;
 
 /* Opaque engine handle. */
 typedef struct scn_engine scn_engine;
@@ -100,6 +137,20 @@ SCN_API scn_status scn_engine_add_speed_action_ex(scn_engine* engine, const char
 SCN_API scn_status scn_engine_init(scn_engine* engine);
 SCN_API scn_status scn_engine_step(scn_engine* engine, double dt);
 SCN_API scn_status scn_engine_close(scn_engine* engine);
+
+/* Diagnostics: structured findings from validation (at init) and the runtime
+ * (at step). Read by count then by index. */
+
+/* Writes the number of diagnostics into *out_count. */
+SCN_API scn_status scn_engine_diagnostic_count(scn_engine* engine, size_t* out_count);
+
+/* Writes the diagnostic at `index` into *out. An index >= the count returns
+ * SCN_ERROR_INVALID_ARGUMENT with *out left untouched. The borrowed strings in
+ * *out follow the lifetime documented on scn_diagnostic. */
+SCN_API scn_status scn_engine_diagnostic_at(scn_engine* engine, size_t index, scn_diagnostic* out);
+
+/* Drops every collected diagnostic. */
+SCN_API scn_status scn_engine_clear_diagnostics(scn_engine* engine);
 
 /* Entity state exchange. */
 SCN_API scn_status scn_engine_get_state(scn_engine* engine, const char* entity_id,

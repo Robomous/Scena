@@ -2,8 +2,10 @@
 #include "scena/engine.h"
 
 #include <cmath>
+#include <cstddef>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "scena/gateway/simulator_gateway.h"
@@ -12,120 +14,190 @@ namespace scena {
 
 namespace {
 
-/// True when every name in the range is non-empty and unique among its
-/// siblings — element names address the storyboard state query, so they are
-/// part of the runtime contract.
-template <typename Range, typename NameOf> bool names_valid(const Range& range, NameOf name_of) {
-    std::set<std::string> seen;
-    for (const auto& element : range) {
-        const std::string& name = name_of(element);
-        if (name.empty() || !seen.insert(name).second) {
-            return false;
-        }
-    }
-    return true;
+// Checker rule UIDs quoted from ASAM OpenSCENARIO XML 1.4.0 Annex C. Only
+// constraints the standard actually names carry a rule id; the rest emit an
+// empty rule_id.
+constexpr const char* kRuleUniqueNames =
+    "asam.net:xosc:1.0.0:naming.unique_element_names_on_same_level";
+constexpr const char* kRuleConditionDelay =
+    "asam.net:xosc:1.0.0:data_type.condition_delay_not_negative";
+
+/// Appends one Error diagnostic to `sink`.
+void error(DiagnosticSink& sink, Status code, std::string message, std::string path,
+           std::string rule_id = {}) {
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Error;
+    diagnostic.code = code;
+    diagnostic.message = std::move(message);
+    diagnostic.path = std::move(path);
+    diagnostic.rule_id = std::move(rule_id);
+    sink.report(std::move(diagnostic));
 }
 
-/// Validates one trigger site. The scheduler evaluates triggers on the hot
-/// path and relies on these guarantees instead of re-checking them, so
-/// everything it assumes is established here. An absent trigger is always
-/// valid, and so is an engaged but empty one (§7.6.1: always false).
-Status validate_trigger(const std::optional<ir::Trigger>& trigger) {
-    if (!trigger.has_value()) {
-        return Status::Ok;
+std::string join_path(const std::string& prefix, const std::string& child) {
+    return prefix.empty() ? child : prefix + "/" + child;
+}
+
+/// Reports empty and sibling-duplicate names in `range`. Element names
+/// address the storyboard state query, so they are part of the runtime
+/// contract: they must be non-empty and unique among siblings
+/// (asam.net:xosc:1.0.0:naming.unique_element_names_on_same_level). `label`
+/// names the element kind for the message; `parent_path` is the path of the
+/// enclosing element (empty at the storyboard root).
+template <typename Range, typename NameOf>
+void check_sibling_names(const Range& range, NameOf name_of, const char* label,
+                         const std::string& parent_path, DiagnosticSink& sink) {
+    std::set<std::string> seen;
+    std::size_t index = 0;
+    for (const auto& element : range) {
+        const std::string& name = name_of(element);
+        if (name.empty()) {
+            error(sink, Status::ValidationError, std::string(label) + " name is empty",
+                  join_path(parent_path, "[" + std::to_string(index) + "]"));
+        } else if (!seen.insert(name).second) {
+            error(sink, Status::ValidationError,
+                  "duplicate " + std::string(label) + " name '" + name + "'",
+                  join_path(parent_path, name), kRuleUniqueNames);
+        }
+        ++index;
     }
+}
+
+/// Validates one trigger site, appending a diagnostic for every defect. The
+/// scheduler evaluates triggers on the hot path and relies on these
+/// guarantees instead of re-checking them, so everything it assumes is
+/// established here. An absent trigger is always valid, and so is an engaged
+/// but empty one (§7.6.1: always false). `owner_path` is the element that
+/// hosts the trigger (empty for the storyboard); `trigger_kind` is
+/// "startTrigger" or "stopTrigger".
+void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::string& owner_path,
+                      const char* trigger_kind, DiagnosticSink& sink) {
+    if (!trigger.has_value()) {
+        return;
+    }
+    const std::string base = join_path(owner_path, trigger_kind);
+    std::size_t group_index = 0;
     for (const ir::ConditionGroup& group : trigger->groups) {
+        const std::string group_path = base + "/group[" + std::to_string(group_index) + "]";
+        ++group_index;
         // A condition group holds 1..* conditions (class reference,
         // ConditionGroup). An empty one would be a vacuously true
         // conjunction — a meaning the standard does not give it — so it is
         // rejected rather than silently made always-true.
         if (group.conditions.empty()) {
-            return Status::InvalidArgument;
+            error(sink, Status::ValidationError, "condition group is empty", group_path);
+            continue;
         }
+        std::size_t condition_index = 0;
         for (const ir::TriggerCondition& condition : group.conditions) {
+            const std::string condition_path =
+                group_path + "/" +
+                (condition.name.empty() ? "condition[" + std::to_string(condition_index) + "]"
+                                        : condition.name);
+            ++condition_index;
             if (condition.expression == nullptr) {
-                return Status::InvalidArgument;
+                error(sink, Status::ValidationError, "condition expression is null",
+                      condition_path);
             }
             // per rule asam.net:xosc:1.0.0:data_type.condition_delay_not_negative
             // ("The condition delay shall be non negative"). The negated
             // comparison also rejects NaN.
             if (!(condition.delay >= 0.0)) {
-                return Status::InvalidArgument;
+                error(sink, Status::ValidationError, "condition delay is negative", condition_path,
+                      kRuleConditionDelay);
             }
         }
     }
-    return Status::Ok;
 }
 
-/// Validates the storyboard tree: element naming, triggers, non-null
-/// actions, and action targets that exist in `records`. Returns Status::Ok
-/// when valid.
+/// Validates the storyboard tree in document order: element naming,
+/// triggers, non-null actions, and action targets that exist in `records`.
+/// Every defect is appended to `sink`; the walk never stops early.
 template <typename Records>
-Status validate_storyboard(const ir::Storyboard& storyboard, const Records& records) {
-    if (!names_valid(storyboard.stories, [](const ir::Story& s) { return s.name; })) {
-        return Status::InvalidArgument;
-    }
-    if (const Status status = validate_trigger(storyboard.stop_trigger); status != Status::Ok) {
-        return status;
-    }
+void validate_storyboard(const ir::Storyboard& storyboard, const Records& records,
+                         DiagnosticSink& sink) {
+    check_sibling_names(
+        storyboard.stories, [](const ir::Story& s) { return s.name; }, "story", "", sink);
+    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", sink);
     for (const ir::Story& story : storyboard.stories) {
-        if (!names_valid(story.acts, [](const ir::Act& a) { return a.name; })) {
-            return Status::InvalidArgument;
-        }
+        const std::string story_path = story.name;
+        check_sibling_names(
+            story.acts, [](const ir::Act& a) { return a.name; }, "act", story_path, sink);
         for (const ir::Act& act : story.acts) {
-            if (!names_valid(act.groups, [](const ir::ManeuverGroup& g) { return g.name; })) {
-                return Status::InvalidArgument;
-            }
-            if (const Status status = validate_trigger(act.start_trigger); status != Status::Ok) {
-                return status;
-            }
-            if (const Status status = validate_trigger(act.stop_trigger); status != Status::Ok) {
-                return status;
-            }
+            const std::string act_path = join_path(story_path, act.name);
+            check_sibling_names(
+                act.groups, [](const ir::ManeuverGroup& g) { return g.name; }, "maneuver group",
+                act_path, sink);
+            validate_trigger(act.start_trigger, act_path, "startTrigger", sink);
+            validate_trigger(act.stop_trigger, act_path, "stopTrigger", sink);
             for (const ir::ManeuverGroup& group : act.groups) {
-                if (!names_valid(group.maneuvers, [](const ir::Maneuver& m) { return m.name; })) {
-                    return Status::InvalidArgument;
-                }
+                const std::string group_path = join_path(act_path, group.name);
+                check_sibling_names(
+                    group.maneuvers, [](const ir::Maneuver& m) { return m.name; }, "maneuver",
+                    group_path, sink);
                 for (const std::string& actor : group.actors) {
+                    // The standard defines no checker rule for entity-reference
+                    // resolvability (Annex C.7.20 covers only
+                    // storyboardElementRef; C.7.21 references_to_scenario_object
+                    // is a type constraint, deferred to p2-s1), so no rule id.
                     if (records.find(actor) == records.end()) {
-                        return Status::UnknownEntity;
+                        error(sink, Status::SemanticError,
+                              "actor references unknown entity '" + actor + "'", group_path);
                     }
                 }
                 for (const ir::Maneuver& maneuver : group.maneuvers) {
-                    if (!names_valid(maneuver.events, [](const ir::Event& e) { return e.name; })) {
-                        return Status::InvalidArgument;
-                    }
+                    const std::string maneuver_path = join_path(group_path, maneuver.name);
+                    check_sibling_names(
+                        maneuver.events, [](const ir::Event& e) { return e.name; }, "event",
+                        maneuver_path, sink);
                     for (const ir::Event& event : maneuver.events) {
-                        if (const Status status = validate_trigger(event.start_trigger);
-                            status != Status::Ok) {
-                            return status;
-                        }
+                        const std::string event_path = join_path(maneuver_path, event.name);
+                        validate_trigger(event.start_trigger, event_path, "startTrigger", sink);
                         // §8.3.3.2/§8.4.2.1: the XSD type of
-                        // maximumExecutionCount is unsignedInt, so a
-                        // negative budget has no meaning at all. Zero is
-                        // schema-valid and is accepted — §8.4.2.1 already
-                        // gives it a coherent reading (the event is
-                        // exhausted in standbyState and completes with a
-                        // skipTransition without ever executing), so there
-                        // is nothing to invent. The standard defines no
+                        // maximumExecutionCount is unsignedInt, so a negative
+                        // budget has no meaning at all. Zero is schema-valid
+                        // and is accepted — §8.4.2.1 already gives it a
+                        // coherent reading (the event is exhausted in
+                        // standbyState and completes with a skipTransition
+                        // without ever executing). The standard defines no
                         // rule id for this constraint.
                         if (event.maximum_execution_count < 0) {
-                            return Status::InvalidArgument;
+                            error(sink, Status::ValidationError,
+                                  "event maximumExecutionCount is negative", event_path);
                         }
                         if (event.actions.empty()) {
-                            return Status::InvalidArgument;
+                            error(sink, Status::ValidationError, "event has no actions",
+                                  event_path);
                         }
+                        std::size_t action_index = 0;
                         for (const std::shared_ptr<ir::Action>& action : event.actions) {
+                            const std::string action_path =
+                                event_path + "/action[" + std::to_string(action_index) + "]";
+                            ++action_index;
                             if (action == nullptr) {
-                                return Status::InvalidArgument;
+                                error(sink, Status::ValidationError, "event action is null",
+                                      action_path);
+                                continue;
                             }
                             if (records.find(action->entity_id()) == records.end()) {
-                                return Status::UnknownEntity;
+                                error(sink, Status::SemanticError,
+                                      "action targets unknown entity '" + action->entity_id() + "'",
+                                      action_path);
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Code of the first Error diagnostic in report order, which is document
+/// order — that becomes init()'s return code.
+Status first_error_code(const DiagnosticSink& sink) {
+    for (const Diagnostic& diagnostic : sink.diagnostics()) {
+        if (diagnostic.severity == Severity::Error) {
+            return diagnostic.code;
         }
     }
     return Status::Ok;
@@ -140,30 +212,48 @@ Status Engine::init(ir::Scenario scenario) {
         return Status::AlreadyInitialized;
     }
 
+    // A rejected re-init preserves the previous record; a fresh init starts
+    // from an empty sink so diagnostics() reflects only this scenario.
+    diagnostics_.clear();
+
     // Validate into a temporary record map so a failed init leaves the engine
-    // untouched.
+    // untouched. Validation walks the whole scenario in document order and
+    // accumulates every defect rather than stopping at the first.
     std::map<std::string, EntityRecord> records;
+    std::size_t entity_index = 0;
     for (const ir::Entity& entity : scenario.entities) {
         if (entity.id.empty()) {
-            return Status::InvalidArgument;
+            error(diagnostics_, Status::ValidationError, "entity id is empty",
+                  "entities[" + std::to_string(entity_index) + "]");
+            ++entity_index;
+            continue;
         }
+        ++entity_index;
         auto [it, inserted] = records.try_emplace(entity.id);
         if (!inserted) {
-            return Status::InvalidArgument; // duplicate entity id
+            error(diagnostics_, Status::ValidationError, "duplicate entity id '" + entity.id + "'",
+                  "entities/" + entity.id, kRuleUniqueNames);
+            continue;
         }
         it->second.mode = entity.control_mode;
     }
+    std::size_t init_action_index = 0;
     for (const std::shared_ptr<ir::Action>& action : scenario.init_actions) {
+        const std::string action_path = "init/action[" + std::to_string(init_action_index) + "]";
+        ++init_action_index;
         if (action == nullptr) {
-            return Status::InvalidArgument;
+            error(diagnostics_, Status::ValidationError, "init action is null", action_path);
+            continue;
         }
         if (records.find(action->entity_id()) == records.end()) {
-            return Status::UnknownEntity;
+            error(diagnostics_, Status::SemanticError,
+                  "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
     }
-    if (const Status status = validate_storyboard(scenario.storyboard, records);
-        status != Status::Ok) {
-        return status;
+    validate_storyboard(scenario.storyboard, records, diagnostics_);
+
+    if (diagnostics_.has_errors()) {
+        return first_error_code(diagnostics_);
     }
 
     scenario_ = std::move(scenario);
@@ -270,6 +360,14 @@ Engine::storyboard_element_transition(const std::string& path) const {
     return scheduler_.element_transition(path);
 }
 
+const std::vector<Diagnostic>& Engine::diagnostics() const noexcept {
+    return diagnostics_.diagnostics();
+}
+
+void Engine::clear_diagnostics() noexcept {
+    diagnostics_.clear();
+}
+
 double Engine::time() const noexcept {
     return clock_.now();
 }
@@ -295,9 +393,32 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         const auto it = entities_.find(speed_action->entity_id());
         if (it != entities_.end()) {
             it->second.state.speed = speed_action->target_speed();
+        } else {
+            // init() validates every action target, so this is defensive: a
+            // Warning, not a failure. The run continues; the action is
+            // skipped. apply() sees only the ir::Action, so the entity path
+            // is the anchor.
+            Diagnostic diagnostic;
+            diagnostic.severity = Severity::Warning;
+            diagnostic.code = Status::UnknownEntity;
+            diagnostic.message =
+                "action targets unknown entity '" + speed_action->entity_id() + "'; action skipped";
+            diagnostic.path = "entities/" + speed_action->entity_id();
+            diagnostics_.report(std::move(diagnostic));
         }
+    } else {
+        // An action kind the engine does not implement yet. A parser must
+        // never silently drop input, and neither does the runtime: emit a
+        // Warning and keep going. Scheduling is unchanged — the event still
+        // completes in one evaluation (see below).
+        Diagnostic diagnostic;
+        diagnostic.severity = Severity::Warning;
+        diagnostic.code = Status::UnsupportedFeature;
+        diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
+                             "' targeting entity '" + action.entity_id() + "'; action ignored";
+        diagnostic.path = "entities/" + action.entity_id();
+        diagnostics_.report(std::move(diagnostic));
     }
-    // Unknown action kinds are ignored in this phase.
 
     // Every action the engine can apply sets a state instantaneously, so it
     // reaches its goal in the evaluation it was applied in (§7.4.1.2). The

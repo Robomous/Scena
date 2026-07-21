@@ -8,6 +8,9 @@ The user guide grows sprint by sprint along the
   element states.
 - [Triggers](triggers.md) — condition groups, edges, delays, stop-trigger
   inheritance, and the stop-before-start evaluation order.
+- [Error handling](error-handling.md) — status codes, structured
+  diagnostics, the severity/status invariant, the path grammar, and the
+  C-ABI borrowed-string lifetime.
 
 Also see:
 

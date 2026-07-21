@@ -12,6 +12,10 @@ const std::string& SpeedAction::entity_id() const {
     return entity_id_;
 }
 
+std::string_view SpeedAction::kind() const noexcept {
+    return "SpeedAction";
+}
+
 double SpeedAction::target_speed() const {
     return target_speed_;
 }

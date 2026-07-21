@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace scena::ir {
 
@@ -16,6 +17,13 @@ public:
 
     /// Identifier of the entity this action applies to.
     [[nodiscard]] virtual const std::string& entity_id() const = 0;
+
+    /// Stable, human-readable name of the action kind, matching the ASAM
+    /// element name (e.g. "SpeedAction"). Used in runtime diagnostics when an
+    /// action kind is not yet implemented. Deliberately not typeid().name(),
+    /// whose output is mangled and platform-dependent — the determinism
+    /// contract requires a stable string.
+    [[nodiscard]] virtual std::string_view kind() const noexcept = 0;
 };
 
 /// Instantaneously sets the longitudinal speed of an entity. Placeholder for
@@ -25,6 +33,8 @@ public:
     SpeedAction(std::string entity_id, double target_speed);
 
     [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
 
     /// Target speed in meters per second.
     [[nodiscard]] double target_speed() const;

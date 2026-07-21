@@ -103,7 +103,7 @@ def test_zero_maximum_execution_count_completes_with_skip_transition() -> None:
 
 def test_negative_maximum_execution_count_is_rejected() -> None:
     engine = scn.Engine()
-    assert engine.init(build_scenario(maximum_execution_count=-1)) == scn.Status.InvalidArgument
+    assert engine.init(build_scenario(maximum_execution_count=-1)) == scn.Status.ValidationError
     assert not engine.initialized
 
 

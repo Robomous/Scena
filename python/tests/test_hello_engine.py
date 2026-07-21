@@ -191,7 +191,7 @@ def test_negative_delay_is_rejected() -> None:
     # per rule asam.net:xosc:1.0.0:data_type.condition_delay_not_negative
     trigger = scn.make_trigger(scn.SimulationTimeCondition(at_time=1.0), delay=-0.5)
     engine = scn.Engine()
-    assert engine.init(_single_event_scenario(trigger)) == scn.Status.InvalidArgument
+    assert engine.init(_single_event_scenario(trigger)) == scn.Status.ValidationError
     assert not engine.initialized
 
 

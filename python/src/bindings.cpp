@@ -3,17 +3,21 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/string_view.h>
+#include <nanobind/stl/vector.h>
 
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
+#include "scena/status.h"
 #include "scena/version.h"
 
 namespace nb = nanobind;
@@ -33,7 +37,39 @@ NB_MODULE(_scena, m) {
         .value("NotInitialized", scena::Status::NotInitialized)
         .value("UnknownEntity", scena::Status::UnknownEntity)
         .value("InvalidControlMode", scena::Status::InvalidControlMode)
-        .value("InvalidArgument", scena::Status::InvalidArgument);
+        .value("InvalidArgument", scena::Status::InvalidArgument)
+        .value("ParseError", scena::Status::ParseError)
+        .value("ValidationError", scena::Status::ValidationError)
+        .value("SemanticError", scena::Status::SemanticError)
+        .value("UnsupportedFeature", scena::Status::UnsupportedFeature);
+
+    nb::enum_<scena::Severity>(m, "Severity")
+        .value("Info", scena::Severity::Info)
+        .value("Warning", scena::Severity::Warning)
+        .value("Error", scena::Severity::Error);
+
+    nb::class_<scena::SourceLocation>(m, "SourceLocation")
+        .def_ro("file", &scena::SourceLocation::file)
+        .def_ro("line", &scena::SourceLocation::line)
+        .def_ro("column", &scena::SourceLocation::column)
+        .def("__repr__", [](const scena::SourceLocation& location) {
+            return "SourceLocation(file='" + location.file +
+                   "', line=" + std::to_string(location.line) +
+                   ", column=" + std::to_string(location.column) + ")";
+        });
+
+    nb::class_<scena::Diagnostic>(m, "Diagnostic")
+        .def_ro("severity", &scena::Diagnostic::severity)
+        .def_ro("code", &scena::Diagnostic::code)
+        .def_ro("message", &scena::Diagnostic::message)
+        .def_ro("path", &scena::Diagnostic::path)
+        .def_ro("location", &scena::Diagnostic::location)
+        .def_ro("rule_id", &scena::Diagnostic::rule_id)
+        .def("__repr__", [](const scena::Diagnostic& diagnostic) {
+            return nb::str("Diagnostic(severity={}, code={}, path='{}', message='{}')")
+                .format(nb::cast(diagnostic.severity), nb::cast(diagnostic.code), diagnostic.path,
+                        diagnostic.message);
+        });
 
     nb::enum_<ir::ControlMode>(m, "ControlMode")
         .value("EngineControlled", ir::ControlMode::EngineControlled)
@@ -117,7 +153,9 @@ NB_MODULE(_scena, m) {
           "delay"_a = 0.0,
           "Wraps one logical expression into a single-group, single-condition trigger.");
 
-    nb::class_<ir::Action>(m, "Action");
+    nb::class_<ir::Action>(m, "Action")
+        .def_prop_ro("kind", &ir::Action::kind,
+                     "Stable ASAM element name of the action kind (e.g. 'SpeedAction').");
     nb::class_<ir::SpeedAction, ir::Action>(m, "SpeedAction")
         .def(nb::init<std::string, double>(), "entity_id"_a, "target_speed"_a)
         .def_prop_ro("entity_id", &ir::SpeedAction::entity_id)
@@ -298,6 +336,16 @@ NB_MODULE(_scena, m) {
              "path"_a, "Last monitorable transition of the element at the given path.")
         .def("close", &scena::Engine::close,
              "Releases the scenario; the engine can be re-initialized afterwards.")
+        .def(
+            "diagnostics",
+            [](const scena::Engine& engine) {
+                // Returns a list of copies: safe across close / re-init and
+                // independent of the engine's borrowed backing store.
+                return engine.diagnostics();
+            },
+            "Structured findings from the current scenario, in report order (a copy).")
+        .def("clear_diagnostics", &scena::Engine::clear_diagnostics,
+             "Drops every collected diagnostic.")
         .def_prop_ro("time", &scena::Engine::time, "Simulation time in seconds since init().")
         .def_prop_ro("initialized", &scena::Engine::initialized);
 }
