@@ -6,6 +6,7 @@ add_library(scena-core STATIC
     src/ir/condition.cpp
     src/ir/trigger.cpp
     src/runtime/clock.cpp
+    src/runtime/detmath.cpp
     src/runtime/scheduler.cpp
 )
 add_library(scena::core ALIAS scena-core)
@@ -20,4 +21,5 @@ set_target_properties(scena-core PROPERTIES
 )
 
 scn_set_warnings(scena-core)
+scn_set_fp_strictness(scena-core)
 scn_enable_sanitizers(scena-core)

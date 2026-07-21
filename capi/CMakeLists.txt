@@ -17,4 +17,5 @@ set_target_properties(scena-capi PROPERTIES
 )
 
 scn_set_warnings(scena-capi)
+scn_set_fp_strictness(scena-capi)
 scn_enable_sanitizers(scena-capi)

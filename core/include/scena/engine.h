@@ -40,9 +40,12 @@ struct EntityState {
 /// reports their state via report_state() or the gateway.
 ///
 /// Determinism: identical scenario plus identical step sequence produces
-/// bit-identical entity states. The engine reads no wall clock and uses no
-/// randomness; entity updates and the storyboard walk iterate in
-/// deterministic (sorted / document) order.
+/// bit-identical entity states, on every platform and ISA. The engine reads no
+/// wall clock and uses no randomness; entity updates and the storyboard walk
+/// iterate in deterministic (sorted / document) order; floating-point
+/// contraction is pinned off; and the kinematics integrator routes trig
+/// through scena::runtime::det_sincos rather than platform libm. See
+/// docs/user-guide/determinism.md for the full contract.
 class Engine {
 public:
     Engine() = default;

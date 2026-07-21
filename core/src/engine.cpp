@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "scena/engine.h"
 
-#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <set>
@@ -9,6 +8,7 @@
 #include <utility>
 
 #include "scena/gateway/simulator_gateway.h"
+#include "scena/runtime/detmath.h"
 
 namespace scena {
 
@@ -305,8 +305,12 @@ Status Engine::step(double dt) {
         (void)id;
         if (record.mode == ir::ControlMode::EngineControlled) {
             // Straight-line kinematics: placeholder physics for this phase.
-            record.state.x += record.state.speed * std::cos(record.state.heading) * dt;
-            record.state.y += record.state.speed * std::sin(record.state.heading) * dt;
+            // det_sincos, not libm, so the integration is bit-identical across
+            // platforms (see scena/runtime/detmath.h and the determinism
+            // contract in docs/user-guide/determinism.md).
+            const runtime::SinCos hs = runtime::det_sincos(record.state.heading);
+            record.state.x += record.state.speed * hs.cos * dt;
+            record.state.y += record.state.speed * hs.sin * dt;
         }
     }
 
