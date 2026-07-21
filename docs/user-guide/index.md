@@ -1,7 +1,12 @@
 # Scena user guide
 
-Placeholder. The user guide grows with the XML frontend phase (F1); until
-then, see:
+The user guide grows sprint by sprint along the
+[roadmap](../roadmap/roadmap.md). Current chapters:
+
+- [The storyboard model](storyboard.md) — hierarchy, element lifecycle,
+  init phase, and how to observe element states.
+
+Also see:
 
 - [README](../../README.md) — mission, architecture, quickstart.
 - [`python/examples/hello_engine.py`](../../python/examples/hello_engine.py) —

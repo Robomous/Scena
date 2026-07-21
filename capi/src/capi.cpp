@@ -85,9 +85,31 @@ scn_status scn_engine_add_speed_action(scn_engine* engine, const char* entity_id
         return SCN_ERROR_INVALID_ARGUMENT;
     }
     try {
-        engine->scenario.storyboard.entries.push_back(
-            {std::make_shared<scena::ir::SimulationTimeCondition>(at_time),
-             std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed)});
+        // The C builder surface stays flat: each call appends one event
+        // (SimulationTimeCondition start trigger + SpeedAction) to a lazily
+        // created default Story -> Act -> ManeuverGroup -> Maneuver chain.
+        scena::ir::Storyboard& storyboard = engine->scenario.storyboard;
+        if (storyboard.stories.empty()) {
+            scena::ir::Story story;
+            story.name = "story";
+            scena::ir::Act act;
+            act.name = "act";
+            scena::ir::ManeuverGroup group;
+            group.name = "group";
+            scena::ir::Maneuver maneuver;
+            maneuver.name = "maneuver";
+            group.maneuvers.push_back(std::move(maneuver));
+            act.groups.push_back(std::move(group));
+            story.acts.push_back(std::move(act));
+            storyboard.stories.push_back(std::move(story));
+        }
+        scena::ir::Maneuver& maneuver =
+            storyboard.stories.front().acts.front().groups.front().maneuvers.front();
+        scena::ir::Event event;
+        event.name = "event-" + std::to_string(maneuver.events.size() + 1);
+        event.start_trigger = std::make_shared<scena::ir::SimulationTimeCondition>(at_time);
+        event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed));
+        maneuver.events.push_back(std::move(event));
         return SCN_OK;
     } catch (...) {
         return SCN_ERROR_INTERNAL;

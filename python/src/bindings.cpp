@@ -12,6 +12,7 @@
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
+#include "scena/ir/storyboard.h"
 #include "scena/version.h"
 
 namespace nb = nanobind;
@@ -36,6 +37,17 @@ NB_MODULE(_scena, m) {
     nb::enum_<ir::ControlMode>(m, "ControlMode")
         .value("EngineControlled", ir::ControlMode::EngineControlled)
         .value("HostControlled", ir::ControlMode::HostControlled);
+
+    nb::enum_<scena::runtime::ElementState>(m, "ElementState")
+        .value("Standby", scena::runtime::ElementState::Standby)
+        .value("Running", scena::runtime::ElementState::Running)
+        .value("Complete", scena::runtime::ElementState::Complete);
+
+    nb::enum_<scena::runtime::TransitionKind>(m, "TransitionKind")
+        .value("NoTransition", scena::runtime::TransitionKind::None)
+        .value("Start", scena::runtime::TransitionKind::Start)
+        .value("End", scena::runtime::TransitionKind::End)
+        .value("Stop", scena::runtime::TransitionKind::Stop);
 
     nb::class_<ir::Entity>(m, "Entity")
         .def(
@@ -62,11 +74,90 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("entity_id", &ir::SpeedAction::entity_id)
         .def_prop_ro("target_speed", &ir::SpeedAction::target_speed);
 
+    // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
+    nb::class_<ir::Event>(m, "Event")
+        .def(
+            "__init__",
+            [](ir::Event* self, std::string name, std::shared_ptr<ir::Condition> start_trigger) {
+                new (self) ir::Event{std::move(name), std::move(start_trigger), {}};
+            },
+            "name"_a, "start_trigger"_a = nb::none(),
+            "An event; without a start trigger it starts with its parent.")
+        .def_rw("name", &ir::Event::name)
+        .def_rw("start_trigger", &ir::Event::start_trigger)
+        .def(
+            "add_action",
+            [](ir::Event& event, std::shared_ptr<ir::Action> action) {
+                event.actions.push_back(std::move(action));
+            },
+            "action"_a);
+
+    nb::class_<ir::Maneuver>(m, "Maneuver")
+        .def(
+            "__init__",
+            [](ir::Maneuver* self, std::string name) {
+                new (self) ir::Maneuver{std::move(name), {}};
+            },
+            "name"_a)
+        .def_rw("name", &ir::Maneuver::name)
+        .def(
+            "add_event",
+            [](ir::Maneuver& maneuver, const ir::Event& event) {
+                maneuver.events.push_back(event);
+            },
+            "event"_a);
+
+    nb::class_<ir::ManeuverGroup>(m, "ManeuverGroup")
+        .def(
+            "__init__",
+            [](ir::ManeuverGroup* self, std::string name) {
+                new (self) ir::ManeuverGroup{std::move(name), {}, {}};
+            },
+            "name"_a)
+        .def_rw("name", &ir::ManeuverGroup::name)
+        .def(
+            "add_actor",
+            [](ir::ManeuverGroup& group, std::string entity_id) {
+                group.actors.push_back(std::move(entity_id));
+            },
+            "entity_id"_a)
+        .def(
+            "add_maneuver",
+            [](ir::ManeuverGroup& group, const ir::Maneuver& maneuver) {
+                group.maneuvers.push_back(maneuver);
+            },
+            "maneuver"_a);
+
+    nb::class_<ir::Act>(m, "Act")
+        .def(
+            "__init__",
+            [](ir::Act* self, std::string name, std::shared_ptr<ir::Condition> start_trigger) {
+                new (self) ir::Act{std::move(name), std::move(start_trigger), {}};
+            },
+            "name"_a, "start_trigger"_a = nb::none(),
+            "An act; without a start trigger it starts with the storyboard.")
+        .def_rw("name", &ir::Act::name)
+        .def_rw("start_trigger", &ir::Act::start_trigger)
+        .def(
+            "add_group",
+            [](ir::Act& act, const ir::ManeuverGroup& group) { act.groups.push_back(group); },
+            "group"_a);
+
+    nb::class_<ir::Story>(m, "Story")
+        .def(
+            "__init__",
+            [](ir::Story* self, std::string name) { new (self) ir::Story{std::move(name), {}}; },
+            "name"_a)
+        .def_rw("name", &ir::Story::name)
+        .def(
+            "add_act", [](ir::Story& story, const ir::Act& act) { story.acts.push_back(act); },
+            "act"_a);
+
     nb::class_<ir::Scenario>(m, "Scenario")
         .def(
             "__init__",
             [](ir::Scenario* self, std::string name) {
-                new (self) ir::Scenario{std::move(name), {}, {}};
+                new (self) ir::Scenario{std::move(name), {}, {}, {}};
             },
             "name"_a = std::string())
         .def_rw("name", &ir::Scenario::name)
@@ -77,12 +168,24 @@ NB_MODULE(_scena, m) {
             },
             "entity"_a)
         .def(
-            "add_entry",
-            [](ir::Scenario& scenario, std::shared_ptr<ir::Condition> condition,
-               std::shared_ptr<ir::Action> action) {
-                scenario.storyboard.entries.push_back({std::move(condition), std::move(action)});
+            "add_init_action",
+            [](ir::Scenario& scenario, std::shared_ptr<ir::Action> action) {
+                scenario.init_actions.push_back(std::move(action));
             },
-            "condition"_a, "action"_a, "Appends a (condition, action) pair to the storyboard.");
+            "action"_a, "Appends an init-phase action, applied before simulation time starts.")
+        .def(
+            "add_story",
+            [](ir::Scenario& scenario, const ir::Story& story) {
+                scenario.storyboard.stories.push_back(story);
+            },
+            "story"_a)
+        .def(
+            "set_stop_trigger",
+            [](ir::Scenario& scenario, std::shared_ptr<ir::Condition> condition) {
+                scenario.storyboard.stop_trigger = std::move(condition);
+            },
+            "condition"_a,
+            "Sets the storyboard stop trigger; without one the storyboard never completes.");
 
     nb::class_<scena::EntityState>(m, "EntityState")
         .def(
@@ -104,12 +207,17 @@ NB_MODULE(_scena, m) {
     nb::class_<scena::Engine>(m, "Engine")
         .def(nb::init<>())
         .def("init", &scena::Engine::init, "scenario"_a,
-             "Loads a scenario and resets simulation time to zero.")
+             "Loads a scenario, applies init actions, and starts the storyboard at t = 0.")
         .def("step", &scena::Engine::step, "dt"_a, "Advances simulation time by dt seconds.")
         .def("state", &scena::Engine::state, "entity_id"_a,
              "Current state of an entity, or None when unknown.")
         .def("report_state", &scena::Engine::report_state, "entity_id"_a, "state"_a,
              "Reports the authoritative state of a host-controlled entity.")
+        .def("storyboard_element_state", &scena::Engine::storyboard_element_state, "path"_a,
+             "Lifecycle state of the element at 'story/act/group/maneuver/event'; '' is the "
+             "storyboard itself; None for unknown paths.")
+        .def("storyboard_element_transition", &scena::Engine::storyboard_element_transition,
+             "path"_a, "Last monitorable transition of the element at the given path.")
         .def("close", &scena::Engine::close,
              "Releases the scenario; the engine can be re-initialized afterwards.")
         .def_prop_ro("time", &scena::Engine::time, "Simulation time in seconds since init().")
