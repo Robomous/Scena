@@ -73,8 +73,7 @@ public:
     /// delays and empty condition groups, and the scheduler relies on that
     /// precondition instead of re-checking it every step.
     ///
-    /// The
-    /// storyboard enters runningState on the first step() call — simulation
+    /// The storyboard enters runningState on the first step() call — simulation
     /// time starts with the execution of the storyboard (§8.4.7), and the
     /// engine issues that first evaluation at t = 0 during init. The
     /// storyboard must outlive the binding.

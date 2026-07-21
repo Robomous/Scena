@@ -17,6 +17,7 @@ scn_add_test(scheduler_test)
 scn_add_test(storyboard_test)
 scn_add_test(engine_test)
 scn_add_test(determinism_test)
+scn_add_test(trigger_test)
 
 if(SCN_BUILD_CAPI)
     scn_add_test(capi_test)
