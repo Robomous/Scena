@@ -79,3 +79,54 @@ TEST(CApiTest, NullArgumentsAreRejected) {
 
     scn_engine_destroy(nullptr); // must be a safe no-op
 }
+
+TEST(CApiTest, AddSpeedActionExDefaultsMatchPlainVariant) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    EXPECT_EQ(scn_engine_add_speed_action_ex(engine, "ego", 12.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 12.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedActionExRepeatsUpToMaximumExecutionCount) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    // Trigger holds from t = 1 on; the event spends two executions on two
+    // consecutive evaluations, then completes (§8.3.3.2).
+    ASSERT_EQ(scn_engine_add_speed_action_ex(engine, "ego", 4.0, 1.0, SCN_PRIORITY_PARALLEL, 2),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 4.0);
+
+    // A second execution reapplies the same speed; a third never happens.
+    ASSERT_EQ(scn_engine_report_state(engine, "ego", &state), SCN_ERROR_INVALID_CONTROL_MODE);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedActionExRejectsInvalidArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    EXPECT_EQ(scn_engine_add_speed_action_ex(engine, "ego", 1.0, 0.0, SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_action_ex(engine, "ego", 1.0, 0.0,
+                                             static_cast<scn_event_priority>(99), 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_action_ex(nullptr, "ego", 1.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_action_ex(engine, nullptr, 1.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}

@@ -81,7 +81,31 @@ scn_status scn_engine_add_entity(scn_engine* engine, const char* id, const char*
 
 scn_status scn_engine_add_speed_action(scn_engine* engine, const char* entity_id,
                                        double target_speed, double at_time) {
-    if (engine == nullptr || entity_id == nullptr) {
+    return scn_engine_add_speed_action_ex(engine, entity_id, target_speed, at_time,
+                                          SCN_PRIORITY_PARALLEL, 1);
+}
+
+scn_status scn_engine_add_speed_action_ex(scn_engine* engine, const char* entity_id,
+                                          double target_speed, double at_time,
+                                          scn_event_priority priority,
+                                          int maximum_execution_count) {
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    // The enumeration cannot be trusted across the ABI, so it is range
+    // checked here rather than static_cast blindly into the IR enum.
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    switch (priority) {
+    case SCN_PRIORITY_OVERRIDE:
+        ir_priority = scena::ir::EventPriority::Override;
+        break;
+    case SCN_PRIORITY_PARALLEL:
+        ir_priority = scena::ir::EventPriority::Parallel;
+        break;
+    case SCN_PRIORITY_SKIP:
+        ir_priority = scena::ir::EventPriority::Skip;
+        break;
+    default:
         return SCN_ERROR_INVALID_ARGUMENT;
     }
     try {
@@ -109,6 +133,8 @@ scn_status scn_engine_add_speed_action(scn_engine* engine, const char* entity_id
         event.name = "event-" + std::to_string(maneuver.events.size() + 1);
         event.start_trigger =
             scena::ir::make_trigger(std::make_shared<scena::ir::SimulationTimeCondition>(at_time));
+        event.priority = ir_priority;
+        event.maximum_execution_count = maximum_execution_count;
         event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed));
         maneuver.events.push_back(std::move(event));
         return SCN_OK;
