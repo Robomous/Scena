@@ -14,6 +14,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 using scena::Engine;
 using scena::Status;
@@ -35,7 +36,9 @@ Event make_speed_event(std::string name, std::shared_ptr<scena::ir::Condition> t
                        std::string entity_id, double target_speed) {
     Event event;
     event.name = std::move(name);
-    event.start_trigger = std::move(trigger);
+    if (trigger != nullptr) {
+        event.start_trigger = scena::ir::make_trigger(std::move(trigger));
+    }
     event.actions.push_back(std::make_shared<SpeedAction>(std::move(entity_id), target_speed));
     return event;
 }
@@ -50,7 +53,9 @@ Story make_story(std::string name, std::string act_name,
     group.maneuvers.push_back(std::move(maneuver));
     Act act;
     act.name = std::move(act_name);
-    act.start_trigger = std::move(act_trigger);
+    if (act_trigger != nullptr) {
+        act.start_trigger = scena::ir::make_trigger(std::move(act_trigger));
+    }
     act.groups.push_back(std::move(group));
     Story story;
     story.name = std::move(name);
@@ -124,7 +129,8 @@ TEST(StoryboardTest, StopTriggerPreventsPendingEvents) {
     scenario.storyboard.stories.push_back(make_story(
         "story", "act", nullptr,
         {make_speed_event("late", std::make_shared<SimulationTimeCondition>(5.0), "ego", 20.0)}));
-    scenario.storyboard.stop_trigger = std::make_shared<SimulationTimeCondition>(2.0);
+    scenario.storyboard.stop_trigger =
+        scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(2.0));
 
     Engine engine;
     ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);

@@ -13,6 +13,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 #include "scena/version.h"
 
 namespace nb = nanobind;
@@ -68,6 +69,53 @@ NB_MODULE(_scena, m) {
         .def(nb::init<double>(), "at_time"_a)
         .def_prop_ro("at_time", &ir::SimulationTimeCondition::at_time);
 
+    // Trigger model (§7.6.1): a Trigger is an OR over ConditionGroups,
+    // each an AND over TriggerConditions.
+    nb::enum_<ir::ConditionEdge>(m, "ConditionEdge")
+        .value("NoEdge", ir::ConditionEdge::None)
+        .value("Rising", ir::ConditionEdge::Rising)
+        .value("Falling", ir::ConditionEdge::Falling)
+        .value("RisingOrFalling", ir::ConditionEdge::RisingOrFalling);
+
+    nb::class_<ir::TriggerCondition>(m, "TriggerCondition")
+        .def(
+            "__init__",
+            [](ir::TriggerCondition* self, std::shared_ptr<ir::Condition> expression,
+               ir::ConditionEdge edge, double delay, std::string name) {
+                new (self)
+                    ir::TriggerCondition{std::move(name), delay, edge, std::move(expression)};
+            },
+            "expression"_a, "edge"_a = ir::ConditionEdge::None, "delay"_a = 0.0,
+            "name"_a = std::string(),
+            "A condition: a logical expression plus its edge and delay modifiers.")
+        .def_rw("name", &ir::TriggerCondition::name)
+        .def_rw("delay", &ir::TriggerCondition::delay)
+        .def_rw("edge", &ir::TriggerCondition::edge)
+        .def_rw("expression", &ir::TriggerCondition::expression);
+
+    nb::class_<ir::ConditionGroup>(m, "ConditionGroup")
+        .def(nb::init<>(), "A condition group: the AND of its conditions.")
+        .def(
+            "add_condition",
+            [](ir::ConditionGroup& group, const ir::TriggerCondition& condition) {
+                group.conditions.push_back(condition);
+            },
+            "condition"_a);
+
+    nb::class_<ir::Trigger>(m, "Trigger")
+        .def(nb::init<>(),
+             "A trigger: the OR of its condition groups. Without groups it is always false.")
+        .def(
+            "add_group",
+            [](ir::Trigger& trigger, const ir::ConditionGroup& group) {
+                trigger.groups.push_back(group);
+            },
+            "group"_a);
+
+    m.def("make_trigger", &ir::make_trigger, "expression"_a, "edge"_a = ir::ConditionEdge::None,
+          "delay"_a = 0.0,
+          "Wraps one logical expression into a single-group, single-condition trigger.");
+
     nb::class_<ir::Action>(m, "Action");
     nb::class_<ir::SpeedAction, ir::Action>(m, "SpeedAction")
         .def(nb::init<std::string, double>(), "entity_id"_a, "target_speed"_a)
@@ -78,7 +126,7 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::Event>(m, "Event")
         .def(
             "__init__",
-            [](ir::Event* self, std::string name, std::shared_ptr<ir::Condition> start_trigger) {
+            [](ir::Event* self, std::string name, std::optional<ir::Trigger> start_trigger) {
                 new (self) ir::Event{std::move(name), std::move(start_trigger), {}};
             },
             "name"_a, "start_trigger"_a = nb::none(),
@@ -131,13 +179,21 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::Act>(m, "Act")
         .def(
             "__init__",
-            [](ir::Act* self, std::string name, std::shared_ptr<ir::Condition> start_trigger) {
-                new (self) ir::Act{std::move(name), std::move(start_trigger), {}};
+            [](ir::Act* self, std::string name, std::optional<ir::Trigger> start_trigger,
+               std::optional<ir::Trigger> stop_trigger) {
+                new (self)
+                    ir::Act{std::move(name), std::move(start_trigger), std::move(stop_trigger), {}};
             },
-            "name"_a, "start_trigger"_a = nb::none(),
+            "name"_a, "start_trigger"_a = nb::none(), "stop_trigger"_a = nb::none(),
             "An act; without a start trigger it starts with the storyboard.")
         .def_rw("name", &ir::Act::name)
         .def_rw("start_trigger", &ir::Act::start_trigger)
+        .def_rw("stop_trigger", &ir::Act::stop_trigger)
+        .def(
+            "set_stop_trigger",
+            [](ir::Act& act, ir::Trigger trigger) { act.stop_trigger = std::move(trigger); },
+            "trigger"_a,
+            "Sets the act stop trigger; when it fires the act and its whole subtree complete.")
         .def(
             "add_group",
             [](ir::Act& act, const ir::ManeuverGroup& group) { act.groups.push_back(group); },
@@ -181,10 +237,10 @@ NB_MODULE(_scena, m) {
             "story"_a)
         .def(
             "set_stop_trigger",
-            [](ir::Scenario& scenario, std::shared_ptr<ir::Condition> condition) {
-                scenario.storyboard.stop_trigger = std::move(condition);
+            [](ir::Scenario& scenario, ir::Trigger trigger) {
+                scenario.storyboard.stop_trigger = std::move(trigger);
             },
-            "condition"_a,
+            "trigger"_a,
             "Sets the storyboard stop trigger; without one the storyboard never completes.");
 
     nb::class_<scena::EntityState>(m, "EntityState")

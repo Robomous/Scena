@@ -2,6 +2,7 @@
 #include "scena/engine.h"
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -13,6 +14,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 using scena::Engine;
 using scena::EntityState;
@@ -28,7 +30,8 @@ scena::ir::Event make_speed_event(std::string name, double at_time, std::string 
                                   double target_speed) {
     scena::ir::Event event;
     event.name = std::move(name);
-    event.start_trigger = std::make_shared<SimulationTimeCondition>(at_time);
+    event.start_trigger =
+        scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(at_time));
     event.actions.push_back(std::make_shared<SpeedAction>(std::move(entity_id), target_speed));
     return event;
 }
@@ -179,6 +182,63 @@ TEST(EngineTest, InitValidatesScenario) {
         Scenario scenario = make_scenario();
         scenario.init_actions.push_back(std::make_shared<SpeedAction>("missing", 5.0));
         EXPECT_EQ(engine.init(std::move(scenario)), Status::UnknownEntity);
+    }
+}
+
+TEST(EngineTest, InitRejectsNegativeConditionDelay) {
+    // per rule asam.net:xosc:1.0.0:data_type.condition_delay_not_negative
+    for (const double delay : {-0.5, std::numeric_limits<double>::quiet_NaN()}) {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stories[0]
+            .acts[0]
+            .groups[0]
+            .maneuvers[0]
+            .events[0]
+            .start_trigger->groups[0]
+            .conditions[0]
+            .delay = delay;
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_FALSE(engine.initialized());
+    }
+}
+
+TEST(EngineTest, InitRejectsNullTriggerExpression) {
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .start_trigger->groups[0]
+        .conditions[0]
+        .expression = nullptr;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+}
+
+TEST(EngineTest, InitRejectsEmptyConditionGroup) {
+    // A condition group holds 1..* conditions; an empty one would be a
+    // vacuously true conjunction (§7.6.1 and the ConditionGroup class
+    // reference). An empty *trigger* stays legal — it is always false.
+    {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stories[0]
+            .acts[0]
+            .groups[0]
+            .maneuvers[0]
+            .events[0]
+            .start_trigger->groups[0]
+            .conditions.clear();
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+    }
+    {
+        Engine engine;
+        Scenario scenario = make_scenario();
+        scenario.storyboard.stop_trigger = scena::ir::Trigger{};
+        scenario.storyboard.stories[0].acts[0].stop_trigger = scena::ir::Trigger{};
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::Ok);
     }
 }
 

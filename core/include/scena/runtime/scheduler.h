@@ -47,15 +47,33 @@ enum class TransitionKind {
 ///   (§8.4.5), a Story when all Acts (§8.4.6).
 /// - The Storyboard never completes on its own; only its stop trigger
 ///   moves it (and every still-executing descendant) to completeState via
-///   stopTransition (§8.4.7).
+///   stopTransition (§8.4.7). Acts host stop triggers too, and stopping an
+///   act stops its whole subtree (§7.6.1.2).
+/// - Triggers are OR-of-AND condition groups with edge and delay modifiers
+///   (§7.6.1–§7.6.4); each condition carries its own evaluation history,
+///   built when the storyboard is bound and reset on rebind.
+/// - Stop wins over start within one evaluation, at every level: the
+///   storyboard's stop trigger is checked before the walk, and an act
+///   checks its own stop trigger before its start trigger. A stop trigger
+///   that holds at the same discrete time as a start trigger therefore
+///   prevents the start rather than racing it.
 /// - Determinism: the walk visits elements in document order; actions of
-///   simultaneously started events fire in document order.
+///   simultaneously started events fire in document order; every condition
+///   of every trigger reachable this evaluation is evaluated exactly once,
+///   without short-circuiting, so that edge and delay histories advance in
+///   lockstep regardless of the trigger's Boolean outcome.
 class Scheduler {
 public:
     using FireCallback = std::function<void(const ir::Action&)>;
 
-    /// Binds the executor to a storyboard and builds its element tree. The
-    /// storyboard enters runningState on the first step() call — simulation
+    /// Binds the executor to a storyboard and builds its element tree,
+    /// including a fresh evaluation history per trigger condition (any
+    /// previous history is discarded). The storyboard must be valid —
+    /// Engine::init rejects null logical expressions, negative or NaN
+    /// delays and empty condition groups, and the scheduler relies on that
+    /// precondition instead of re-checking it every step.
+    ///
+    /// The storyboard enters runningState on the first step() call — simulation
     /// time starts with the execution of the storyboard (§8.4.7), and the
     /// engine issues that first evaluation at t = 0 during init. The
     /// storyboard must outlive the binding.
@@ -84,18 +102,60 @@ public:
     void reset() noexcept;
 
 private:
+    /// Per-condition evaluation history. The IR stays immutable, so
+    /// everything an edge or a delay needs to remember lives here.
+    struct ConditionState {
+        const ir::TriggerCondition* condition = nullptr;
+
+        /// False until the condition has been evaluated once. §7.6.4: the
+        /// first check of a condition defined with an edge always yields
+        /// false, which is also what makes a constantly true expression
+        /// never produce a rising edge.
+        bool has_previous = false;
+
+        /// LogicalExpression(t_{d-1}) — the raw expression value at the
+        /// previous evaluation, not the post-edge one.
+        bool previous_raw = false;
+
+        /// One post-edge value C(t_d) at the discrete time it was produced.
+        struct Sample {
+            double time = 0.0;
+            bool value = false;
+        };
+
+        /// Delay history, populated only when `delay > 0`. Times are
+        /// nondecreasing (simulation time never runs backwards within a
+        /// binding) and samples older than the one currently selected are
+        /// pruned, which bounds the history deterministically.
+        std::vector<Sample> history;
+    };
+
+    /// Evaluation state of one trigger site. `trigger == nullptr` means the
+    /// element hosts no trigger at all, which is different from hosting an
+    /// empty one (always false, §7.6.1).
+    struct TriggerState {
+        const ir::Trigger* trigger = nullptr;
+        std::vector<ConditionState> conditions; ///< Document order, flattened.
+
+        [[nodiscard]] bool present() const noexcept { return trigger != nullptr; }
+    };
+
     struct Node {
         enum class Kind { Storyboard, Story, Act, Group, Maneuver, Event };
 
         Kind kind = Kind::Storyboard;
         std::string name;
-        const ir::Condition* start_trigger = nullptr; ///< Acts and Events only.
-        const ir::Event* event = nullptr;             ///< Events only.
+        TriggerState start_trigger;       ///< Acts and Events only (§7.6.1.1).
+        TriggerState stop_trigger;        ///< Storyboard and Acts only (§7.6.1.2).
+        const ir::Event* event = nullptr; ///< Events only.
         ElementState state = ElementState::Standby;
         TransitionKind transition = TransitionKind::None;
         std::vector<Node> children;
     };
 
+    static TriggerState make_trigger_state(const std::optional<ir::Trigger>& trigger);
+    static bool evaluate_condition(ConditionState& state, double simulation_time);
+    static bool evaluate_trigger(TriggerState& state, double simulation_time);
     static Node build(const ir::Storyboard& storyboard);
     static void enter_running(Node& node, double simulation_time, const FireCallback& fire);
     static void update(Node& node, double simulation_time, const FireCallback& fire);
@@ -103,7 +163,6 @@ private:
     static bool all_children_complete(const Node& node);
     [[nodiscard]] const Node* find(const std::string& path) const;
 
-    const ir::Storyboard* storyboard_ = nullptr;
     bool bound_ = false;
     Node root_;
 };

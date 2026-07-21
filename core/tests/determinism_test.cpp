@@ -11,6 +11,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 using scena::Engine;
 using scena::Status;
@@ -30,7 +31,8 @@ Event make_speed_event(std::string name, double at_time, std::string entity_id,
                        double target_speed) {
     Event event;
     event.name = std::move(name);
-    event.start_trigger = std::make_shared<SimulationTimeCondition>(at_time);
+    event.start_trigger =
+        scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(at_time));
     event.actions.push_back(std::make_shared<SpeedAction>(std::move(entity_id), target_speed));
     return event;
 }
@@ -50,6 +52,15 @@ Scenario make_scenario() {
         maneuver.name = "maneuver";
         maneuver.events.push_back(make_speed_event("cruise", 0.5, "ego", 13.89));
         maneuver.events.push_back(make_speed_event("settle", 3.0, "ego", 5.0));
+        // A delayed rising edge: exercises the edge history and the
+        // sample-and-hold delay lookup, both of which have to reproduce
+        // exactly across runs (§7.6.2, §7.6.3).
+        Event delayed;
+        delayed.name = "resume";
+        delayed.start_trigger = scena::ir::make_trigger(
+            std::make_shared<SimulationTimeCondition>(0.7), scena::ir::ConditionEdge::Rising, 0.35);
+        delayed.actions.push_back(std::make_shared<SpeedAction>("ego", 9.5));
+        maneuver.events.push_back(std::move(delayed));
         ManeuverGroup group;
         group.name = "group";
         group.actors.push_back("ego");
@@ -66,13 +77,19 @@ Scenario make_scenario() {
         Maneuver maneuver;
         maneuver.name = "maneuver";
         maneuver.events.push_back(make_speed_event("brake", 1.25, "lead", 8.33));
+        // Never fires: the act's stop trigger takes the whole subtree to
+        // completeState first (§7.6.1.2).
+        maneuver.events.push_back(make_speed_event("recover", 3.0, "lead", 11.0));
         ManeuverGroup group;
         group.name = "group";
         group.actors.push_back("lead");
         group.maneuvers.push_back(std::move(maneuver));
         Act act;
         act.name = "act";
-        act.start_trigger = std::make_shared<SimulationTimeCondition>(1.0);
+        act.start_trigger = scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(1.0));
+        // Act stop trigger: the stop cascade must run at the same step in
+        // both runs (§7.6.1.2).
+        act.stop_trigger = scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(2.5));
         act.groups.push_back(std::move(group));
         Story story;
         story.name = "lead-story";
@@ -129,7 +146,10 @@ TEST(DeterminismTest, StoryboardStatesEvolveIdentically) {
         "ego-story",
         "ego-story/act/group/maneuver/cruise",
         "ego-story/act/group/maneuver/settle",
+        "ego-story/act/group/maneuver/resume",
         "lead-story/act",
+        "lead-story/act/group/maneuver/brake",
+        "lead-story/act/group/maneuver/recover",
     };
     for (int i = 0; i < 500; ++i) {
         ASSERT_EQ(engine_a.step(0.01), Status::Ok);
@@ -138,6 +158,31 @@ TEST(DeterminismTest, StoryboardStatesEvolveIdentically) {
             ASSERT_EQ(engine_a.storyboard_element_state(path),
                       engine_b.storyboard_element_state(path))
                 << path << " at step " << i;
+            ASSERT_EQ(engine_a.storyboard_element_transition(path),
+                      engine_b.storyboard_element_transition(path))
+                << path << " at step " << i;
         }
     }
+}
+
+TEST(DeterminismTest, FixtureExercisesEdgeDelayAndStopPaths) {
+    // Guards the two tests above: they only prove reproducibility of the
+    // trigger machinery if the fixture actually reaches it.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario()), Status::Ok);
+    for (int i = 0; i < 500; ++i) {
+        ASSERT_EQ(engine.step(0.01), Status::Ok);
+    }
+    // The delayed rising edge fired (speed 9.5 came from "resume").
+    EXPECT_EQ(engine.storyboard_element_transition("ego-story/act/group/maneuver/resume"),
+              scena::runtime::TransitionKind::End);
+    // The act stop trigger stopped its subtree before "recover" could fire.
+    EXPECT_EQ(engine.storyboard_element_transition("lead-story/act/group/maneuver/recover"),
+              scena::runtime::TransitionKind::Stop);
+    EXPECT_EQ(engine.storyboard_element_transition("lead-story/act"),
+              scena::runtime::TransitionKind::Stop);
+    // ...while the ego story ran to a regular end and the storyboard lives on.
+    EXPECT_EQ(engine.storyboard_element_transition("ego-story"),
+              scena::runtime::TransitionKind::End);
+    EXPECT_EQ(engine.storyboard_element_state(""), scena::runtime::ElementState::Running);
 }
