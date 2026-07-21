@@ -7,6 +7,11 @@ F3 ≈ P8), but the executable plan is the pillar → sprint → PR → gate
 structure below. The roadmap decision itself is recorded in
 `docs/architecture/ADR-0004-road-to-v001.md`.
 
+Execution is tracked on GitHub — one milestone and one epic issue per
+pillar, one issue per sprint (as sub-issues of their epic), and a project
+board. The full markdown ↔ GitHub map lives in
+`docs/roadmap/tracking.md`.
+
 ## Vision recap
 
 Scena is a library-first, embeddable scenario execution engine: a C++20
