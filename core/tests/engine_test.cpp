@@ -125,20 +125,20 @@ TEST(EngineTest, InitValidatesScenario) {
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.entities.push_back({"ego", "duplicate id", ControlMode::EngineControlled});
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
         EXPECT_FALSE(engine.initialized());
     }
     {
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.entities.push_back({"", "empty id", ControlMode::EngineControlled});
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         // Action targeting an unknown entity anywhere in the tree.
         Engine engine;
         Scenario scenario = make_scenario({make_speed_event("event-1", 1.0, "missing", 5.0)});
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::UnknownEntity);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
     }
     {
         // Null action.
@@ -146,42 +146,42 @@ TEST(EngineTest, InitValidatesScenario) {
         Scenario scenario = make_scenario();
         scenario.storyboard.stories[0].acts[0].groups[0].maneuvers[0].events[0].actions.push_back(
             nullptr);
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         // An event must carry at least one action (§8.3.2 cardinality).
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.storyboard.stories[0].acts[0].groups[0].maneuvers[0].events[0].actions.clear();
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         // Sibling element names must be unique: they address the state query.
         Engine engine;
         Scenario scenario = make_scenario({make_speed_event("event-1", 1.0, "ego", 5.0),
                                            make_speed_event("event-1", 2.0, "ego", 7.0)});
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         // Element names must be non-empty.
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.storyboard.stories[0].name.clear();
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         // Maneuver-group actors must reference known entities.
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.storyboard.stories[0].acts[0].groups[0].actors.push_back("missing");
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::UnknownEntity);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
     }
     {
         // Init actions are validated like storyboard actions.
         Engine engine;
         Scenario scenario = make_scenario();
         scenario.init_actions.push_back(std::make_shared<SpeedAction>("missing", 5.0));
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::UnknownEntity);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
     }
 }
 
@@ -198,7 +198,7 @@ TEST(EngineTest, InitRejectsNegativeConditionDelay) {
             .start_trigger->groups[0]
             .conditions[0]
             .delay = delay;
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
         EXPECT_FALSE(engine.initialized());
     }
 }
@@ -214,7 +214,7 @@ TEST(EngineTest, InitRejectsNegativeMaximumExecutionCount) {
         .maneuvers[0]
         .events[0]
         .maximum_execution_count = -1;
-    EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     EXPECT_FALSE(engine.initialized());
 }
 
@@ -241,7 +241,7 @@ TEST(EngineTest, InitRejectsNullTriggerExpression) {
         .start_trigger->groups[0]
         .conditions[0]
         .expression = nullptr;
-    EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
 }
 
 TEST(EngineTest, InitRejectsEmptyConditionGroup) {
@@ -258,7 +258,7 @@ TEST(EngineTest, InitRejectsEmptyConditionGroup) {
             .events[0]
             .start_trigger->groups[0]
             .conditions.clear();
-        EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+        EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {
         Engine engine;

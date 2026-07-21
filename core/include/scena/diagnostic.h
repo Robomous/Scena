@@ -29,9 +29,9 @@ enum class Severity {
 /// its unknown value; the XML and DSL frontends fill it in when they lower a
 /// document into the Scenario IR (F1 onward).
 struct SourceLocation {
-    std::string file;  ///< Source path; empty when unknown.
-    int line = 0;      ///< 1-based line; 0 when unknown.
-    int column = 0;    ///< 1-based column; 0 when unknown.
+    std::string file; ///< Source path; empty when unknown.
+    int line = 0;     ///< 1-based line; 0 when unknown.
+    int column = 0;   ///< 1-based column; 0 when unknown.
 };
 
 /// One structured finding about a scenario, emitted by validation, by the
