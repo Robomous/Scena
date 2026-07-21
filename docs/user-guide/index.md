@@ -4,7 +4,8 @@ The user guide grows sprint by sprint along the
 [roadmap](../roadmap/roadmap.md). Current chapters:
 
 - [The storyboard model](storyboard.md) — hierarchy, element lifecycle,
-  init phase, and how to observe element states.
+  init phase, event priority and execution counts, and how to observe
+  element states.
 - [Triggers](triggers.md) — condition groups, edges, delays, stop-trigger
   inheritance, and the stop-before-start evaluation order.
 

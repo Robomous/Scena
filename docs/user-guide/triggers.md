@@ -145,3 +145,24 @@ act.set_stop_trigger(scn.make_trigger(scn.SimulationTimeCondition(at_time=4.5)))
 `scn.ConditionEdge.NoEdge` is the `none` edge (`None` is a Python
 keyword). A complete runnable example lives in
 [`python/examples/hello_engine.py`](../../python/examples/hello_engine.py).
+
+## Triggers and the event lifecycle
+
+A start trigger is evaluated exactly once per evaluation, and only while its
+element is in standbyState. A running or complete element has no reachable
+start trigger — §7.3.2: "start triggers only make sense for events in
+standbyState" — so its condition histories are frozen while it runs, and an
+event never has two simultaneous instantiations.
+
+Two consequences for events that execute more than once
+(see [Execution counts](storyboard.md#execution-counts)):
+
+- **Re-arming does not reset condition history.** Only binding the
+  storyboard rebuilds it. An event with a rising-edge trigger therefore
+  re-executes on the next *rise*, not on the next evaluation at which the
+  expression is still true; an event with an edgeless condition re-executes
+  on the very next evaluation.
+- **Resolving event priority never replaces a trigger evaluation.** A `skip`
+  event stands by, its trigger is evaluated normally and its edge and delay
+  histories advance in lockstep with every other element's. Only the
+  transition that follows the evaluation differs.
