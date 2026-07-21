@@ -203,6 +203,33 @@ TEST(EngineTest, InitRejectsNegativeConditionDelay) {
     }
 }
 
+TEST(EngineTest, InitRejectsNegativeMaximumExecutionCount) {
+    // §8.3.3.2: the attribute is an unsignedInt, so a negative budget has no
+    // meaning. Zero is schema-valid and stays accepted (§8.4.2.1).
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .maximum_execution_count = -1;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
+    EXPECT_FALSE(engine.initialized());
+}
+
+TEST(EngineTest, InitAcceptsZeroMaximumExecutionCount) {
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .maximum_execution_count = 0;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::Ok);
+}
+
 TEST(EngineTest, InitRejectsNullTriggerExpression) {
     Engine engine;
     Scenario scenario = make_scenario();

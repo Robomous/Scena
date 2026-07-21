@@ -40,6 +40,15 @@ typedef enum scn_control_mode {
     SCN_CONTROL_HOST = 1    /* the host simulator reports the entity's state */
 } scn_control_mode;
 
+/* Event priority per ASAM OpenSCENARIO XML 1.3 §7.3.2 / §8.4.2.2, resolved
+ * in the scope of the enclosing Maneuver. The deprecated pre-1.3 spelling
+ * "overwrite" is a lexical synonym of override and has no separate value. */
+typedef enum scn_event_priority {
+    SCN_PRIORITY_OVERRIDE = 0, /* stops the running events of the Maneuver */
+    SCN_PRIORITY_PARALLEL = 1, /* starts regardless of the other events */
+    SCN_PRIORITY_SKIP = 2      /* does not start while another event runs */
+} scn_event_priority;
+
 typedef struct scn_entity_state {
     double x;       /* world position, meters */
     double y;       /* world position, meters */
@@ -67,9 +76,25 @@ SCN_API scn_status scn_engine_add_entity(scn_engine* engine, const char* id, con
                                          scn_control_mode control_mode);
 
 /* Adds a storyboard entry: a SpeedAction on `entity_id` triggered by a
- * SimulationTimeCondition at `at_time` seconds. */
+ * SimulationTimeCondition at `at_time` seconds. Equivalent to
+ * scn_engine_add_speed_action_ex with SCN_PRIORITY_PARALLEL and a single
+ * execution. */
 SCN_API scn_status scn_engine_add_speed_action(scn_engine* engine, const char* entity_id,
                                                double target_speed, double at_time);
+
+/* As scn_engine_add_speed_action, with the event's priority (§7.3.2) and its
+ * maximumExecutionCount (§8.3.3.2) — the number of times the event may
+ * execute, counted as its startTransitions plus its skipTransitions. Zero
+ * means the event never executes; a negative count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT, as is a priority outside the enumeration.
+ *
+ * Every event added through this surface lands in the same Maneuver, which
+ * is the scope priority is resolved over, so events added by consecutive
+ * calls do interact. */
+SCN_API scn_status scn_engine_add_speed_action_ex(scn_engine* engine, const char* entity_id,
+                                                  double target_speed, double at_time,
+                                                  scn_event_priority priority,
+                                                  int maximum_execution_count);
 
 /* Lifecycle. */
 SCN_API scn_status scn_engine_init(scn_engine* engine);

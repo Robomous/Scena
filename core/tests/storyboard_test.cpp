@@ -197,3 +197,73 @@ TEST(StoryboardTest, MultipleEventsInManeuverRunToCompletion) {
     EXPECT_EQ(engine.state("ego")->speed, 9.0);
     EXPECT_EQ(*engine.storyboard_element_state(maneuver_path), ElementState::Complete);
 }
+
+TEST(StoryboardTest, EventReExecutesUpToMaximumExecutionCount) {
+    // §8.3.3.2: executions are performed sequentially — the event ends,
+    // re-arms to standbyState and starts again while its trigger holds.
+    Scenario scenario = make_base_scenario();
+    Event repeated =
+        make_speed_event("repeat", std::make_shared<SimulationTimeCondition>(1.0), "ego", 7.0);
+    repeated.maximum_execution_count = 3;
+    scenario.storyboard.stories.push_back(
+        make_story("story", "act", nullptr, {std::move(repeated)}));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+
+    const char* const kPath = "story/act/group/maneuver/repeat";
+    ASSERT_EQ(engine.storyboard_element_state(kPath), ElementState::Standby);
+
+    // Three evaluations at or beyond the trigger time spend the budget; the
+    // event stands by between them.
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(engine.storyboard_element_state(kPath), ElementState::Standby);
+    EXPECT_EQ(engine.storyboard_element_transition(kPath), TransitionKind::End);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(engine.storyboard_element_state(kPath), ElementState::Standby);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(engine.storyboard_element_state(kPath), ElementState::Complete);
+    EXPECT_EQ(engine.storyboard_element_transition(kPath), TransitionKind::End);
+}
+
+TEST(StoryboardTest, ZeroExecutionCountEventNeverFires) {
+    // §8.4.2.1 read with a budget of zero: the event is exhausted in
+    // standbyState and completes with a skipTransition without executing.
+    Scenario scenario = make_base_scenario();
+    Event never =
+        make_speed_event("never", std::make_shared<SimulationTimeCondition>(0.0), "ego", 42.0);
+    never.maximum_execution_count = 0;
+    scenario.storyboard.stories.push_back(make_story("story", "act", nullptr, {std::move(never)}));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+
+    const char* const kPath = "story/act/group/maneuver/never";
+    EXPECT_EQ(engine.storyboard_element_state(kPath), ElementState::Complete);
+    EXPECT_EQ(engine.storyboard_element_transition(kPath), TransitionKind::Skip);
+    const auto state = engine.state("ego");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->speed, 0.0);
+}
+
+TEST(StoryboardTest, PriorityDefaultsPreserveSingleExecutionBehaviour) {
+    // Every action the engine can apply is instantaneous (§7.4.1.2), so no
+    // event is ever in runningState when a sibling starts and the default
+    // parallel priority leaves the p1-s1/p1-s2 behaviour untouched.
+    Scenario scenario = make_base_scenario();
+    scenario.storyboard.stories.push_back(make_story(
+        "story", "act", nullptr,
+        {make_speed_event("first", std::make_shared<SimulationTimeCondition>(0.0), "ego", 11.0),
+         make_speed_event("second", std::make_shared<SimulationTimeCondition>(0.0), "lead", 9.0)}));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+
+    for (const char* path : {"story/act/group/maneuver/first", "story/act/group/maneuver/second"}) {
+        EXPECT_EQ(engine.storyboard_element_state(path), ElementState::Complete) << path;
+        EXPECT_EQ(engine.storyboard_element_transition(path), TransitionKind::End) << path;
+    }
+    EXPECT_EQ(engine.storyboard_element_state("story"), ElementState::Complete);
+}

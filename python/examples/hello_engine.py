@@ -6,7 +6,9 @@ One engine-controlled entity starts at rest. The storyboard is the full ASAM
 OpenSCENARIO hierarchy (Story > Act > ManeuverGroup > Maneuver > Event): an
 event triggered by a SimulationTimeCondition at t = 2.0 s sets the entity's
 speed to 10 m/s. A second event demonstrates the full trigger model: an OR of
-two condition groups, one carrying a rising edge with a 0.5 s delay. The act
+two condition groups, one carrying a rising edge with a 0.5 s delay. A third
+event carries a maximumExecutionCount of 3 and so executes on three
+consecutive evaluations before completing. The act
 stops itself at t = 4.5 s. The host loop steps 5 simulated seconds at 100 Hz,
 watches the elements' lifecycle states, and asserts the speed changes happened.
 """
@@ -43,8 +45,24 @@ def build_scenario() -> "scn.Scenario":
     trigger.add_group(edge_group)
     trigger.add_group(late_group)
 
-    slow_down = scn.Event("slow-down", start_trigger=trigger)
+    # Priority is resolved in the scope of the Maneuver (§8.4.2.2). No action
+    # the engine can apply is ongoing yet, so no event is ever in runningState
+    # when a sibling starts and this override resolves to a plain start; the
+    # literal still round-trips through the IR and the scheduler.
+    slow_down = scn.Event(
+        "slow-down", start_trigger=trigger, priority=scn.EventPriority.Override
+    )
     slow_down.add_action(scn.SpeedAction("ego", target_speed=4.0))
+
+    # Sequential re-execution (§8.3.3.2): the event ends, re-arms to standby
+    # and starts again on each of the next two evaluations, then completes —
+    # executions are its startTransitions plus its skipTransitions (§8.4.2.1).
+    nudge = scn.Event(
+        "nudge",
+        start_trigger=scn.make_trigger(scn.SimulationTimeCondition(at_time=1.6)),
+        maximum_execution_count=3,
+    )
+    nudge.add_action(scn.SpeedAction("ego", target_speed=2.0))
 
     # Never fires: the act's stop trigger completes the whole subtree first.
     stopped = scn.Event(
@@ -53,6 +71,7 @@ def build_scenario() -> "scn.Scenario":
     stopped.add_action(scn.SpeedAction("ego", target_speed=25.0))
 
     maneuver = scn.Maneuver("maneuver")
+    maneuver.add_event(nudge)
     maneuver.add_event(event)
     maneuver.add_event(slow_down)
     maneuver.add_event(stopped)
@@ -98,6 +117,10 @@ def main() -> None:
     assert final.speed == 4.0, f"delayed rising edge did not fire: {final.speed}"
     assert final.x > 0.0, "entity did not move after the speed action"
     assert engine.storyboard_element_state(event_path) == scn.ElementState.Complete
+    # "nudge" spent all three of its executions and ended regularly.
+    nudge_path = "story/act/group/maneuver/nudge"
+    assert engine.storyboard_element_state(nudge_path) == scn.ElementState.Complete
+    assert engine.storyboard_element_transition(nudge_path) == scn.TransitionKind.End
     # The act was stopped at t = 4.5 s, so "stop-me" never fired...
     assert engine.storyboard_element_transition(
         "story/act/group/maneuver/stop-me"
@@ -107,7 +130,10 @@ def main() -> None:
     assert engine.storyboard_element_state("") == scn.ElementState.Running
 
     engine.close()
-    print("speed action fired at t=2.0s, delayed rising edge at t=3.5s: OK")
+    print(
+        "nudge ran 3x from t=1.6s, speed action at t=2.0s, "
+        "delayed rising edge at t=3.5s: OK"
+    )
 
 
 if __name__ == "__main__":

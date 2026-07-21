@@ -153,6 +153,8 @@ Scheduler::Node Scheduler::build(const ir::Storyboard& storyboard) {
                         event_node.name = event.name;
                         event_node.start_trigger = make_trigger_state(event.start_trigger);
                         event_node.event = &event;
+                        event_node.priority = event.priority;
+                        event_node.max_executions = event.maximum_execution_count;
                         maneuver_node.children.push_back(std::move(event_node));
                     }
                     group_node.children.push_back(std::move(maneuver_node));
@@ -199,24 +201,47 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
     node.transition = TransitionKind::Start;
 
     if (node.kind == Node::Kind::Event) {
-        // Actions enter runningState with their parent event (§8.4.1). All
-        // actions are instantaneous in this phase, so the event ends
-        // regularly within the same evaluation (§8.4.2).
+        // This startTransition is one of the event's executions (§8.4.2.1).
+        ++node.executions;
+
+        // Actions enter runningState with their parent event (§8.4.1). The
+        // event "ends regularly when every nested Action is completed"
+        // (§8.4.2), so it stays in runningState as soon as one action is
+        // still ongoing. Every action is fired regardless — the outcome of
+        // an earlier one must not decide whether a later one is applied.
+        bool ongoing = false;
         for (const std::shared_ptr<ir::Action>& action : node.event->actions) {
             if (fire && action != nullptr) {
-                fire(*action);
+                ongoing = (fire(*action) == ActionOutcome::Ongoing) || ongoing;
             }
         }
-        node.state = ElementState::Complete;
-        node.transition = TransitionKind::End;
+        if (!ongoing) {
+            end_execution(node);
+        }
         return;
     }
 
     // Child start rule (§8.3): children with a start trigger wait in
     // standbyState; all others enter runningState immediately.
-    for (Node& child : node.children) {
-        if (!child.start_trigger.present()) {
-            enter_running(child, simulation_time, fire);
+    if (node.kind == Node::Kind::Maneuver) {
+        // Events go through the priority resolution of §8.4.2.2 even when
+        // they start with their parent: such an event inherits the Act's
+        // start trigger (§8.4.2), so it is a triggered event like any other
+        // and can equally override or be skipped.
+        for (std::size_t i = 0; i < node.children.size(); ++i) {
+            if (!node.children[i].start_trigger.present()) {
+                start_event(node, i, simulation_time, fire);
+            } else {
+                // An event that is about to wait for its own trigger with no
+                // executions left never gets to run (§8.4.2.1).
+                apply_standby_exhaustion(node.children[i]);
+            }
+        }
+    } else {
+        for (Node& child : node.children) {
+            if (!child.start_trigger.present()) {
+                enter_running(child, simulation_time, fire);
+            }
         }
     }
 
@@ -230,8 +255,112 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
     }
 }
 
+bool Scheduler::has_running_sibling(const Node& maneuver, std::size_t index) {
+    for (std::size_t i = 0; i < maneuver.children.size(); ++i) {
+        if (i != index && maneuver.children[i].state == ElementState::Running) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Scheduler::end_execution(Node& event) {
+    // §8.4.2.1: when the event is about to transfer out of runningState with
+    // an endTransition it completes if its executions reached the maximum,
+    // and returns to standbyState while executions remain.
+    event.transition = TransitionKind::End;
+    event.state =
+        event.executions >= event.max_executions ? ElementState::Complete : ElementState::Standby;
+}
+
+void Scheduler::apply_standby_exhaustion(Node& event) {
+    // §8.4.2.1: "If in standbyState and the number of executions is equal to
+    // the number stated by maximumExecutionCount, the Event transfers to
+    // completeState with skipTransition." This is also what makes a
+    // maximumExecutionCount of zero mean "never executes": such an event is
+    // exhausted before it ever starts.
+    if (event.state == ElementState::Standby && event.executions >= event.max_executions) {
+        event.state = ElementState::Complete;
+        event.transition = TransitionKind::Skip;
+    }
+}
+
+void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation_time,
+                            const FireCallback& fire) {
+    Node& event = maneuver.children[index];
+    apply_standby_exhaustion(event);
+    if (event.state != ElementState::Standby) {
+        return;
+    }
+
+    switch (event.priority) {
+    case ir::EventPriority::Override:
+        // §8.4.2.2: "A triggered Event with priority override terminates any
+        // running Event in the same scope (Maneuver), when it moves to
+        // runningState. A terminated Event moves to completeState with
+        // stopTransition, regardless of the number of executions left."
+        // Standby siblings are deliberately left alone — both §8.4.2.2 and
+        // the Priority class reference say "running". stop_cascade is the
+        // same code path a stop trigger takes, so an overridden event and a
+        // stopped one are indistinguishable, as §8.4.2 requires.
+        for (std::size_t i = 0; i < maneuver.children.size(); ++i) {
+            if (i != index && maneuver.children[i].state == ElementState::Running) {
+                stop_cascade(maneuver.children[i]);
+            }
+        }
+        break;
+    case ir::EventPriority::Skip:
+        // Priority class reference: "If a starting event has priority Skip,
+        // then it will not be ran if there is any other event in the same
+        // scope (maneuver) in the running state." The skipped start is a
+        // skipTransition and counts as an execution (§8.4.2.1), which may
+        // exhaust the event outright.
+        if (has_running_sibling(maneuver, index)) {
+            event.transition = TransitionKind::Skip;
+            ++event.executions;
+            apply_standby_exhaustion(event);
+            return;
+        }
+        break;
+    case ir::EventPriority::Parallel:
+        // "moves to the runningState regardless of the states of other Event
+        // instances in the same scope" (§8.4.2.2).
+        break;
+    }
+
+    enter_running(event, simulation_time, fire);
+}
+
+void Scheduler::update_maneuver(Node& maneuver, double simulation_time, const FireCallback& fire) {
+    // Single pass in document order. Each decision is a pure function of the
+    // time and of the decisions already taken by strictly earlier siblings,
+    // which is what pins the outcome when several events trigger together —
+    // the standard gives no ordering rule for that case.
+    for (std::size_t i = 0; i < maneuver.children.size(); ++i) {
+        Node& event = maneuver.children[i];
+        // Running and complete events have no reachable start trigger
+        // (§7.3.2), so their condition histories stay frozen; an event never
+        // has two simultaneous instantiations.
+        if (event.state != ElementState::Standby) {
+            continue;
+        }
+        if (!evaluate_trigger(event.start_trigger, simulation_time)) {
+            continue;
+        }
+        start_event(maneuver, i, simulation_time, fire);
+    }
+}
+
 void Scheduler::update(Node& node, double simulation_time, const FireCallback& fire) {
     if (node.state == ElementState::Complete) {
+        return;
+    }
+
+    // Events are advanced only by their Maneuver, which is the scope event
+    // priority is defined over (§7.3.3). Recursing into an event here would
+    // also complete it immediately, since it has no children and the regular
+    // end below would find them all vacuously complete.
+    if (node.kind == Node::Kind::Event) {
         return;
     }
 
@@ -256,11 +385,14 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
         }
     }
 
-    // Running, non-event element (running events never persist across
-    // evaluations in this phase): advance children in document order, then
-    // check for a regular end (§8.4.3–8.4.6).
-    for (Node& child : node.children) {
-        update(child, simulation_time, fire);
+    // Advance children in document order, then check for a regular end
+    // (§8.4.3–8.4.6).
+    if (node.kind == Node::Kind::Maneuver) {
+        update_maneuver(node, simulation_time, fire);
+    } else {
+        for (Node& child : node.children) {
+            update(child, simulation_time, fire);
+        }
     }
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
         node.state = ElementState::Complete;
@@ -270,10 +402,15 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
 
 void Scheduler::stop_cascade(Node& node) {
     // §7.6.1.2: every descendant inherits the stop trigger, even one that
-    // hosts its own — hence the unconditional recursion. The same rule
-    // requires clearing the remaining number of executions of the stopped
-    // elements; execution counts arrive with the event lifecycle sprint and
-    // this is the place that has to zero them.
+    // hosts its own — hence the unconditional recursion.
+    //
+    // A stopped event completes "regardless of the number of executions
+    // left" (§8.4.2.2), so the remaining budget is cleared outside the guard
+    // below: an event that already completed regularly this evaluation must
+    // not be left with executions it could still spend.
+    if (node.kind == Node::Kind::Event) {
+        node.executions = node.max_executions;
+    }
     if (node.state != ElementState::Complete) {
         // stopTransition leaves runningState or standbyState (§8.2).
         node.state = ElementState::Complete;

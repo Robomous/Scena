@@ -100,6 +100,18 @@ Status validate_storyboard(const ir::Storyboard& storyboard, const Records& reco
                             status != Status::Ok) {
                             return status;
                         }
+                        // §8.3.3.2/§8.4.2.1: the XSD type of
+                        // maximumExecutionCount is unsignedInt, so a
+                        // negative budget has no meaning at all. Zero is
+                        // schema-valid and is accepted — §8.4.2.1 already
+                        // gives it a coherent reading (the event is
+                        // exhausted in standbyState and completes with a
+                        // skipTransition without ever executing), so there
+                        // is nothing to invent. The standard defines no
+                        // rule id for this constraint.
+                        if (event.maximum_execution_count < 0) {
+                            return Status::InvalidArgument;
+                        }
                         if (event.actions.empty()) {
                             return Status::InvalidArgument;
                         }
@@ -171,7 +183,7 @@ Status Engine::init(ir::Scenario scenario) {
     // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
     // conditions that already hold fire before the first host step.
     scheduler_.bind(scenario_.storyboard);
-    scheduler_.step(0.0, [this](const ir::Action& action) { apply(action); });
+    scheduler_.step(0.0, [this](const ir::Action& action) { return apply(action); });
 
     return Status::Ok;
 }
@@ -197,7 +209,7 @@ Status Engine::step(double dt) {
         }
     }
 
-    scheduler_.step(clock_.now(), [this](const ir::Action& action) { apply(action); });
+    scheduler_.step(clock_.now(), [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
         (void)id;
@@ -278,7 +290,7 @@ Status Engine::close() {
     return Status::Ok;
 }
 
-void Engine::apply(const ir::Action& action) {
+runtime::ActionOutcome Engine::apply(const ir::Action& action) {
     if (const auto* speed_action = dynamic_cast<const ir::SpeedAction*>(&action)) {
         const auto it = entities_.find(speed_action->entity_id());
         if (it != entities_.end()) {
@@ -286,6 +298,13 @@ void Engine::apply(const ir::Action& action) {
         }
     }
     // Unknown action kinds are ignored in this phase.
+
+    // Every action the engine can apply sets a state instantaneously, so it
+    // reaches its goal in the evaluation it was applied in (§7.4.1.2). The
+    // engine will report other outcomes once it gains actions whose end is
+    // governed by transition dynamics (p2-s2); until then an event driven
+    // through Engine always completes in one evaluation, exactly as before.
+    return runtime::ActionOutcome::Complete;
 }
 
 } // namespace scena

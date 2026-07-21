@@ -21,6 +21,7 @@ using scena::ir::SimulationTimeCondition;
 using scena::ir::SpeedAction;
 using scena::ir::Story;
 using scena::ir::Storyboard;
+using scena::runtime::ActionOutcome;
 using scena::runtime::ElementState;
 using scena::runtime::Scheduler;
 using scena::runtime::TransitionKind;
@@ -65,8 +66,10 @@ Storyboard make_storyboard(std::vector<Event> events,
 
 std::vector<std::string> fired_entities(Scheduler& scheduler, double t) {
     std::vector<std::string> fired;
-    scheduler.step(t,
-                   [&](const scena::ir::Action& action) { fired.push_back(action.entity_id()); });
+    scheduler.step(t, [&](const scena::ir::Action& action) {
+        fired.push_back(action.entity_id());
+        return ActionOutcome::Complete;
+    });
     return fired;
 }
 
@@ -75,7 +78,10 @@ std::vector<std::string> fired_entities(Scheduler& scheduler, double t) {
 TEST(SchedulerTest, StepWithoutBindIsNoOp) {
     Scheduler scheduler;
     int fired = 0;
-    scheduler.step(100.0, [&](const scena::ir::Action&) { ++fired; });
+    scheduler.step(100.0, [&](const scena::ir::Action&) {
+        ++fired;
+        return ActionOutcome::Complete;
+    });
     EXPECT_EQ(fired, 0);
     EXPECT_FALSE(scheduler.element_state("").has_value());
     EXPECT_FALSE(scheduler.storyboard_complete());
@@ -113,7 +119,10 @@ TEST(SchedulerTest, FiresExactlyOnce) {
 
     int fired = 0;
     for (const double t : {0.5, 1.0, 1.5, 2.0, 100.0}) {
-        scheduler.step(t, [&](const scena::ir::Action&) { ++fired; });
+        scheduler.step(t, [&](const scena::ir::Action&) {
+            ++fired;
+            return ActionOutcome::Complete;
+        });
     }
     EXPECT_EQ(fired, 1);
     EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Complete);
@@ -236,4 +245,36 @@ TEST(SchedulerTest, ResetUnbinds) {
     scheduler.reset();
     EXPECT_TRUE(fired_entities(scheduler, 0.0).empty());
     EXPECT_FALSE(scheduler.element_state("").has_value());
+}
+
+TEST(SchedulerTest, EventStaysRunningWhileAnActionIsOngoing) {
+    // §8.4.2: the event "ends regularly when every nested Action is
+    // completed", so an action that cannot end by itself (§7.5.3) keeps its
+    // event in runningState across evaluations.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", std::make_shared<SimulationTimeCondition>(1.0), "ego", 12.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    const auto ongoing = [](const scena::ir::Action&) { return ActionOutcome::Ongoing; };
+    scheduler.step(1.0, ongoing);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    scheduler.step(2.0, ongoing);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_transition("story/act/group/maneuver/event"),
+              TransitionKind::Start);
+}
+
+TEST(SchedulerTest, CompletionRollUpWaitsForOngoingEvents) {
+    // An event has no children, so the child->parent roll-up of §8.4.3–8.4.6
+    // must not treat a running event as vacuously complete.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", std::make_shared<SimulationTimeCondition>(1.0), "ego", 12.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    scheduler.step(1.0, [](const scena::ir::Action&) { return ActionOutcome::Ongoing; });
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_state("story"), ElementState::Running);
 }

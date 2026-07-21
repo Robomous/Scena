@@ -60,7 +60,28 @@ Scenario make_scenario() {
         delayed.start_trigger = scena::ir::make_trigger(
             std::make_shared<SimulationTimeCondition>(0.7), scena::ir::ConditionEdge::Rising, 0.35);
         delayed.actions.push_back(std::make_shared<SpeedAction>("ego", 9.5));
+        // The three priority branches of §8.4.2.2 are all walked, even
+        // though no action driven through Engine is ever ongoing, so no
+        // sibling is ever in runningState when another starts: both of
+        // these resolve to a plain start and must do so identically in
+        // every run.
+        delayed.priority = scena::ir::EventPriority::Skip;
         maneuver.events.push_back(std::move(delayed));
+        maneuver.events[1].priority = scena::ir::EventPriority::Override; // "settle"
+
+        // Sequential re-execution (§8.3.3.2): ends, re-arms to standby and
+        // starts again on the next evaluation whose trigger holds, three
+        // times over.
+        Event repeated = make_speed_event("repeat", 1.6, "ego", 7.25);
+        repeated.maximum_execution_count = 3;
+        maneuver.events.push_back(std::move(repeated));
+
+        // Exhausted before it ever starts, so it completes with a
+        // skipTransition and never fires (§8.4.2.1).
+        Event never = make_speed_event("never", 2.0, "ego", 99.0);
+        never.maximum_execution_count = 0;
+        maneuver.events.push_back(std::move(never));
+
         ManeuverGroup group;
         group.name = "group";
         group.actors.push_back("ego");
@@ -147,6 +168,8 @@ TEST(DeterminismTest, StoryboardStatesEvolveIdentically) {
         "ego-story/act/group/maneuver/cruise",
         "ego-story/act/group/maneuver/settle",
         "ego-story/act/group/maneuver/resume",
+        "ego-story/act/group/maneuver/repeat",
+        "ego-story/act/group/maneuver/never",
         "lead-story/act",
         "lead-story/act/group/maneuver/brake",
         "lead-story/act/group/maneuver/recover",
@@ -185,4 +208,37 @@ TEST(DeterminismTest, FixtureExercisesEdgeDelayAndStopPaths) {
     EXPECT_EQ(engine.storyboard_element_transition("ego-story"),
               scena::runtime::TransitionKind::End);
     EXPECT_EQ(engine.storyboard_element_state(""), scena::runtime::ElementState::Running);
+}
+
+TEST(DeterminismTest, FixtureExercisesExecutionCountAndSkipPaths) {
+    // Same guard for the event-lifecycle paths: the two reproducibility
+    // tests above only cover §8.3.3.2/§8.4.2.1 if the fixture reaches them.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario()), Status::Ok);
+
+    // Exhausted before it could start: completed with a skipTransition at
+    // the very first evaluation, without ever firing.
+    EXPECT_EQ(engine.storyboard_element_state("ego-story/act/group/maneuver/never"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_EQ(engine.storyboard_element_transition("ego-story/act/group/maneuver/never"),
+              scena::runtime::TransitionKind::Skip);
+
+    int repeat_standby_steps = 0;
+    for (int i = 0; i < 500; ++i) {
+        ASSERT_EQ(engine.step(0.01), Status::Ok);
+        if (engine.storyboard_element_state("ego-story/act/group/maneuver/repeat") ==
+            scena::runtime::ElementState::Standby) {
+            ++repeat_standby_steps;
+        }
+    }
+    // Re-armed at least once between executions, then spent its budget.
+    EXPECT_GT(repeat_standby_steps, 0);
+    EXPECT_EQ(engine.storyboard_element_state("ego-story/act/group/maneuver/repeat"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_EQ(engine.storyboard_element_transition("ego-story/act/group/maneuver/repeat"),
+              scena::runtime::TransitionKind::End);
+    // The repeated event drove the ego speed, so it really did fire.
+    const auto ego = engine.state("ego");
+    ASSERT_TRUE(ego.has_value());
+    EXPECT_NE(ego->speed, 99.0); // "never" never applied its speed
 }
