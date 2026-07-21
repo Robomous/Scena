@@ -16,8 +16,9 @@ T(t_d) = OR over groups ( AND over the group's conditions ( C(t_d) ) )
 
 A group holds at least one condition (`ConditionGroup` class reference:
 1..\*). An empty group would be a vacuously true conjunction, so
-`Engine::init()` rejects it with `InvalidArgument` rather than inventing a
-meaning for it.
+`Engine::init()` rejects it with `ValidationError` (and a structured
+diagnostic — see [Error handling](error-handling.md)) rather than inventing
+a meaning for it.
 
 A trigger with **no groups at all** is legal and **always false** (§7.6.1
 keeps empty triggers only for backward compatibility). That is not the
@@ -89,9 +90,10 @@ A delay `Δt` (seconds, `Δt >= 0`) shifts the condition into the past:
   with no tolerance — an epsilon would make results depend on the
   magnitude of the times and break bit-identical reproducibility.
 
-`Δt` must be non-negative: `Engine::init()` returns `InvalidArgument` for
+`Δt` must be non-negative: `Engine::init()` returns `ValidationError` for
 a negative or NaN delay, per rule
-`asam.net:xosc:1.0.0:data_type.condition_delay_not_negative`.
+`asam.net:xosc:1.0.0:data_type.condition_delay_not_negative`. The matching
+diagnostic carries that rule id (see [Error handling](error-handling.md)).
 
 If the host steps twice at the same simulation time (`dt = 0`), each call
 is a new discrete evaluation `t_d`, so the second sees the first as
