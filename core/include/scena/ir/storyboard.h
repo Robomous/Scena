@@ -34,6 +34,30 @@ namespace scena::ir {
 // single child. Keep additions to this hierarchy expressible in both
 // standards.
 
+/// How a starting event interacts with the other events of its Maneuver,
+/// per §7.3.2 and §8.4.2.2. The scope is the Maneuver, not the maneuver
+/// group: "A maneuver groups events creating a scope where the events can
+/// interact with each other using the event priority rules" (§7.3.3).
+///
+/// The pre-1.3 literal `overwrite` is deprecated and its normative
+/// description is word-for-word identical to `override`, so it is a purely
+/// lexical synonym and carries no separate enumerator here; the XML
+/// frontend maps it onto Override at load time (p4-s2). See ADR-0005.
+enum class EventPriority {
+    /// Terminates every *running* event of the same Maneuver when this one
+    /// moves to runningState (§8.4.2.2). Standby siblings are untouched.
+    Override,
+    /// Starts regardless of the states of the other events of the Maneuver
+    /// (§8.4.2.2). Scena's default, because it is the only literal that
+    /// leaves sibling events alone.
+    Parallel,
+    /// Does not start while another event of the same Maneuver is in
+    /// runningState; with no running sibling it starts normally (Priority
+    /// class reference). A skipped start is a skipTransition and counts as
+    /// an execution (§8.4.2.1).
+    Skip,
+};
+
 /// Smallest triggerable unit: fires its actions when started.
 /// Cardinality: actions 1..* (§8.3.2). An event without its own start
 /// trigger enters runningState with its parent (§8.3); the §8.4.2 rule
@@ -42,6 +66,16 @@ namespace scena::ir {
 struct Event {
     std::string name;
     std::optional<Trigger> start_trigger; ///< Absent: starts with parent.
+    EventPriority priority = EventPriority::Parallel;
+    /// How many times the event may execute (§8.3.3.2); executions are the
+    /// sum of its startTransitions and skipTransitions (§8.4.2.1) and are
+    /// performed sequentially. Zero means the event never executes: it
+    /// completes with a skipTransition the moment it would enter standby
+    /// (§8.4.2.1). Negative values are rejected at Engine::init. The XSD
+    /// type is unsignedInt; a signed field is what turns a negative count
+    /// arriving through the C ABI or Python into a reported error rather
+    /// than a wraparound.
+    int maximum_execution_count = 1;
     std::vector<std::shared_ptr<Action>> actions;
 };
 
@@ -53,7 +87,9 @@ struct Maneuver {
 
 /// Cardinality: maneuvers 0..* (§8.3.2); an empty group completes
 /// instantly (§8.4.4). `actors` lists entity ids; bulk application of
-/// private actions to all actors arrives with the conflict rules sprint.
+/// private actions to all actors (§7.5.4, §8.3.3.3) arrives with p5-s4.
+/// The group's own maximumExecutionCount (§8.4.4) arrives with p4-s2 —
+/// see ADR-0005 for why neither is part of p1-s3.
 struct ManeuverGroup {
     std::string name;
     std::vector<std::string> actors;
