@@ -246,3 +246,35 @@ TEST(SchedulerTest, ResetUnbinds) {
     EXPECT_TRUE(fired_entities(scheduler, 0.0).empty());
     EXPECT_FALSE(scheduler.element_state("").has_value());
 }
+
+TEST(SchedulerTest, EventStaysRunningWhileAnActionIsOngoing) {
+    // §8.4.2: the event "ends regularly when every nested Action is
+    // completed", so an action that cannot end by itself (§7.5.3) keeps its
+    // event in runningState across evaluations.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", std::make_shared<SimulationTimeCondition>(1.0), "ego", 12.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    const auto ongoing = [](const scena::ir::Action&) { return ActionOutcome::Ongoing; };
+    scheduler.step(1.0, ongoing);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    scheduler.step(2.0, ongoing);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_transition("story/act/group/maneuver/event"),
+              TransitionKind::Start);
+}
+
+TEST(SchedulerTest, CompletionRollUpWaitsForOngoingEvents) {
+    // An event has no children, so the child->parent roll-up of §8.4.3–8.4.6
+    // must not treat a running event as vacuously complete.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", std::make_shared<SimulationTimeCondition>(1.0), "ego", 12.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    scheduler.step(1.0, [](const scena::ir::Action&) { return ActionOutcome::Ongoing; });
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Running);
+    EXPECT_EQ(*scheduler.element_state("story"), ElementState::Running);
+}

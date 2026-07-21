@@ -208,8 +208,12 @@ TEST(EngineTest, InitRejectsNegativeMaximumExecutionCount) {
     // meaning. Zero is schema-valid and stays accepted (§8.4.2.1).
     Engine engine;
     Scenario scenario = make_scenario();
-    scenario.storyboard.stories[0].acts[0].groups[0].maneuvers[0].events[0].maximum_execution_count =
-        -1;
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .maximum_execution_count = -1;
     EXPECT_EQ(engine.init(std::move(scenario)), Status::InvalidArgument);
     EXPECT_FALSE(engine.initialized());
 }
@@ -217,8 +221,12 @@ TEST(EngineTest, InitRejectsNegativeMaximumExecutionCount) {
 TEST(EngineTest, InitAcceptsZeroMaximumExecutionCount) {
     Engine engine;
     Scenario scenario = make_scenario();
-    scenario.storyboard.stories[0].acts[0].groups[0].maneuvers[0].events[0].maximum_execution_count =
-        0;
+    scenario.storyboard.stories[0]
+        .acts[0]
+        .groups[0]
+        .maneuvers[0]
+        .events[0]
+        .maximum_execution_count = 0;
     EXPECT_EQ(engine.init(std::move(scenario)), Status::Ok);
 }
 
