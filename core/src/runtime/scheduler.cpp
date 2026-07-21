@@ -43,10 +43,13 @@ Scheduler::TriggerState Scheduler::make_trigger_state(const std::optional<ir::Tr
     return state;
 }
 
-bool Scheduler::evaluate_condition(ConditionState& state, double simulation_time) {
+bool Scheduler::evaluate_condition(ConditionState& state, const ir::EvaluationContext& context) {
     // Engine::init guarantees a non-null expression and a delay >= 0.
     const ir::TriggerCondition& condition = *state.condition;
-    const bool raw = condition.expression->evaluate(simulation_time);
+    const bool raw = condition.expression->evaluate(context);
+    // The edge and delay machinery is keyed on the discrete evaluation time,
+    // which the scheduler reads straight from the context.
+    const double simulation_time = context.simulation_time();
 
     // Edge detection over the raw logical expression (§7.6.2). Every edge
     // needs LE(t_{d-1}), which does not exist on the first check — §7.6.4
@@ -103,7 +106,7 @@ bool Scheduler::evaluate_condition(ConditionState& state, double simulation_time
     return delayed;
 }
 
-bool Scheduler::evaluate_trigger(TriggerState& state, double simulation_time) {
+bool Scheduler::evaluate_trigger(TriggerState& state, const ir::EvaluationContext& context) {
     if (!state.present()) {
         return false;
     }
@@ -117,7 +120,7 @@ bool Scheduler::evaluate_trigger(TriggerState& state, double simulation_time) {
     for (const ir::ConditionGroup& group : state.trigger->groups) {
         bool group_value = true;
         for (std::size_t i = 0; i < group.conditions.size(); ++i, ++index) {
-            group_value = evaluate_condition(state.conditions[index], simulation_time) &&
+            group_value = evaluate_condition(state.conditions[index], context) &&
                           group_value; // condition first: it must always run
         }
         trigger_value = group_value || trigger_value;
@@ -174,6 +177,11 @@ void Scheduler::bind(const ir::Storyboard& storyboard) {
 }
 
 void Scheduler::step(double simulation_time, const FireCallback& fire) {
+    const ir::TimeOnlyEvaluationContext context{simulation_time};
+    step(context, fire);
+}
+
+void Scheduler::step(const ir::EvaluationContext& context, const FireCallback& fire) {
     if (!bound_ || root_.state == ElementState::Complete) {
         return;
     }
@@ -181,22 +189,23 @@ void Scheduler::step(double simulation_time, const FireCallback& fire) {
     // The storyboard enters runningState when the simulation starts; the
     // engine issues this first evaluation at t = 0 during init (§8.4.7).
     if (root_.state == ElementState::Standby) {
-        enter_running(root_, simulation_time, fire);
+        enter_running(root_, context, fire);
     }
 
     // Stop trigger wins over any same-step starts: it moves the storyboard
     // and every still-executing descendant to completeState (§8.4.7). The
     // same stop-before-start ordering applies to act stop triggers in
     // update().
-    if (evaluate_trigger(root_.stop_trigger, simulation_time)) {
+    if (evaluate_trigger(root_.stop_trigger, context)) {
         stop_cascade(root_);
         return;
     }
 
-    update(root_, simulation_time, fire);
+    update(root_, context, fire);
 }
 
-void Scheduler::enter_running(Node& node, double simulation_time, const FireCallback& fire) {
+void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
+                              const FireCallback& fire) {
     node.state = ElementState::Running;
     node.transition = TransitionKind::Start;
 
@@ -230,7 +239,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
         // and can equally override or be skipped.
         for (std::size_t i = 0; i < node.children.size(); ++i) {
             if (!node.children[i].start_trigger.present()) {
-                start_event(node, i, simulation_time, fire);
+                start_event(node, i, context, fire);
             } else {
                 // An event that is about to wait for its own trigger with no
                 // executions left never gets to run (§8.4.2.1).
@@ -240,7 +249,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
     } else {
         for (Node& child : node.children) {
             if (!child.start_trigger.present()) {
-                enter_running(child, simulation_time, fire);
+                enter_running(child, context, fire);
             }
         }
     }
@@ -285,7 +294,7 @@ void Scheduler::apply_standby_exhaustion(Node& event) {
     }
 }
 
-void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation_time,
+void Scheduler::start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
                             const FireCallback& fire) {
     Node& event = maneuver.children[index];
     apply_standby_exhaustion(event);
@@ -328,10 +337,11 @@ void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation
         break;
     }
 
-    enter_running(event, simulation_time, fire);
+    enter_running(event, context, fire);
 }
 
-void Scheduler::update_maneuver(Node& maneuver, double simulation_time, const FireCallback& fire) {
+void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
+                                const FireCallback& fire) {
     // Single pass in document order. Each decision is a pure function of the
     // time and of the decisions already taken by strictly earlier siblings,
     // which is what pins the outcome when several events trigger together —
@@ -344,14 +354,14 @@ void Scheduler::update_maneuver(Node& maneuver, double simulation_time, const Fi
         if (event.state != ElementState::Standby) {
             continue;
         }
-        if (!evaluate_trigger(event.start_trigger, simulation_time)) {
+        if (!evaluate_trigger(event.start_trigger, context)) {
             continue;
         }
-        start_event(maneuver, i, simulation_time, fire);
+        start_event(maneuver, i, context, fire);
     }
 }
 
-void Scheduler::update(Node& node, double simulation_time, const FireCallback& fire) {
+void Scheduler::update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire) {
     if (node.state == ElementState::Complete) {
         return;
     }
@@ -370,16 +380,16 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
     // ordering in step() would otherwise not hold one level down. An act
     // whose stop and start triggers both hold at the same discrete time is
     // therefore stopped, not started.
-    if (evaluate_trigger(node.stop_trigger, simulation_time)) {
+    if (evaluate_trigger(node.stop_trigger, context)) {
         stop_cascade(node);
         return;
     }
 
     if (node.state == ElementState::Standby) {
-        if (!evaluate_trigger(node.start_trigger, simulation_time)) {
+        if (!evaluate_trigger(node.start_trigger, context)) {
             return;
         }
-        enter_running(node, simulation_time, fire);
+        enter_running(node, context, fire);
         if (node.state == ElementState::Complete) {
             return;
         }
@@ -388,10 +398,10 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
     // Advance children in document order, then check for a regular end
     // (§8.4.3–8.4.6).
     if (node.kind == Node::Kind::Maneuver) {
-        update_maneuver(node, simulation_time, fire);
+        update_maneuver(node, context, fire);
     } else {
         for (Node& child : node.children) {
-            update(child, simulation_time, fire);
+            update(child, context, fire);
         }
     }
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {

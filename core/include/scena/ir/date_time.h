@@ -14,12 +14,12 @@ namespace scena::ir {
 /// the Unix epoch, 1970-01-01T00:00:00.000 UTC.
 struct DateTime {
     int year = 1970;
-    int month = 1;             ///< 1..12.
-    int day = 1;               ///< 1..days-in-month (leap years honored).
-    int hour = 0;              ///< 0..23.
-    int minute = 0;            ///< 0..59.
-    int second = 0;            ///< 0..59.
-    int millisecond = 0;       ///< 0..999.
+    int month = 1;              ///< 1..12.
+    int day = 1;                ///< 1..days-in-month (leap years honored).
+    int hour = 0;               ///< 0..23.
+    int minute = 0;             ///< 0..59.
+    int second = 0;             ///< 0..59.
+    int millisecond = 0;        ///< 0..999.
     int utc_offset_minutes = 0; ///< RFC-822 zone as minutes east of UTC; ±14:00.
 
     /// True when every field is in range and the day exists in its month

@@ -14,6 +14,7 @@
 
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/evaluation_context.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
 
@@ -43,7 +44,9 @@ class ConstantCondition final : public Condition {
 public:
     explicit ConstantCondition(bool value) : value_(value) {}
 
-    [[nodiscard]] bool evaluate(double /*simulation_time*/) const override { return value_; }
+    [[nodiscard]] bool evaluate(const scena::ir::EvaluationContext& /*context*/) const override {
+        return value_;
+    }
 
 private:
     bool value_;
@@ -55,7 +58,8 @@ class TimeWindowCondition final : public Condition {
 public:
     TimeWindowCondition(double from, double until) : from_(from), until_(until) {}
 
-    [[nodiscard]] bool evaluate(double simulation_time) const override {
+    [[nodiscard]] bool evaluate(const scena::ir::EvaluationContext& context) const override {
+        const double simulation_time = context.simulation_time();
         return from_ <= simulation_time && simulation_time < until_;
     }
 

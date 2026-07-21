@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "scena/ir/evaluation_context.h"
 #include "scena/ir/storyboard.h"
 
 namespace scena::runtime {
@@ -140,10 +141,21 @@ public:
     /// storyboard must outlive the binding.
     void bind(const ir::Storyboard& storyboard);
 
-    /// Evaluates the storyboard at `simulation_time`: checks the stop
-    /// trigger, starts standby elements whose trigger holds, fires the
-    /// actions of started events via `fire`, and propagates completion.
-    /// No-op before bind() or after the storyboard completed.
+    /// Evaluates the storyboard against `context`: checks the stop trigger,
+    /// starts standby elements whose trigger holds, fires the actions of
+    /// started events via `fire`, and propagates completion. No-op before
+    /// bind() or after the storyboard completed.
+    ///
+    /// The scheduler answers storyboard-element-state queries from its own
+    /// bound tree: it wraps `context` so that a StoryboardElementStateCondition
+    /// sees this storyboard's live states and transitions, while every other
+    /// facet (simulation time, named values, time of day) is forwarded to the
+    /// host context unchanged.
+    void step(const ir::EvaluationContext& context, const FireCallback& fire);
+
+    /// Convenience overload for time-only evaluation: wraps `simulation_time`
+    /// in a TimeOnlyEvaluationContext. A condition that reads any other facet
+    /// (a named value, time of day) evaluates to false under this overload.
     void step(double simulation_time, const FireCallback& fire);
 
     /// State of the element addressed by `path`: element names joined with
@@ -223,19 +235,21 @@ private:
     };
 
     static TriggerState make_trigger_state(const std::optional<ir::Trigger>& trigger);
-    static bool evaluate_condition(ConditionState& state, double simulation_time);
-    static bool evaluate_trigger(TriggerState& state, double simulation_time);
+    static bool evaluate_condition(ConditionState& state, const ir::EvaluationContext& context);
+    static bool evaluate_trigger(TriggerState& state, const ir::EvaluationContext& context);
     static Node build(const ir::Storyboard& storyboard);
-    static void enter_running(Node& node, double simulation_time, const FireCallback& fire);
-    static void update(Node& node, double simulation_time, const FireCallback& fire);
+    static void enter_running(Node& node, const ir::EvaluationContext& context,
+                              const FireCallback& fire);
+    static void update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
 
     /// Advances the events of a running Maneuver — the scope event priority
     /// is defined over (§7.3.3) and therefore the only place that can see
     /// all the siblings a starting event has to interact with.
-    static void update_maneuver(Node& maneuver, double simulation_time, const FireCallback& fire);
+    static void update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
+                                const FireCallback& fire);
     /// Resolves the priority of the event at `index` and starts it, skips
     /// it or overrides its running siblings accordingly (§8.4.2.2).
-    static void start_event(Node& maneuver, std::size_t index, double simulation_time,
+    static void start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
                             const FireCallback& fire);
     [[nodiscard]] static bool has_running_sibling(const Node& maneuver, std::size_t index);
     /// Takes an event out of runningState with an endTransition (§8.4.2.1):

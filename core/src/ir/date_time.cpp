@@ -52,8 +52,8 @@ double DateTime::to_epoch_seconds() const {
         static_cast<long long>(hour) * 3600 + static_cast<long long>(minute) * 60 + second;
     // A local time east of UTC (positive offset) is ahead of UTC, so the
     // offset is subtracted to reach the epoch (UTC) instant.
-    const long long utc_seconds = day_count * 86400 + seconds_of_day -
-                                  static_cast<long long>(utc_offset_minutes) * 60;
+    const long long utc_seconds =
+        day_count * 86400 + seconds_of_day - static_cast<long long>(utc_offset_minutes) * 60;
     return static_cast<double>(utc_seconds) + static_cast<double>(millisecond) / 1000.0;
 }
 

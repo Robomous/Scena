@@ -6,22 +6,134 @@
 // conditions (ByValueCondition group).
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "scena/engine.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/rule.h"
+#include "scena/ir/scenario.h"
+#include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
+#include "scena/status.h"
 
+using scena::Engine;
+using scena::Status;
 using scena::ir::compare;
 using scena::ir::compare_values;
+using scena::ir::Condition;
+using scena::ir::ConditionEdge;
 using scena::ir::DateTime;
 using scena::ir::parse_scalar;
 using scena::ir::Rule;
+using scena::ir::SimulationTimeCondition;
+using scena::ir::TriggerCondition;
+using scena::runtime::ActionOutcome;
+using scena::runtime::ElementState;
+using scena::runtime::Scheduler;
 
 namespace {
 
 constexpr double kEpoch2000 = 946684800.0; // 2000-01-01T00:00:00Z, seconds.
+
+// --- Scheduler-driven helpers (trigger_test idioms) ------------------------
+
+TriggerCondition cond(std::shared_ptr<Condition> expression,
+                      ConditionEdge edge = ConditionEdge::None, double delay = 0.0) {
+    TriggerCondition condition;
+    condition.delay = delay;
+    condition.edge = edge;
+    condition.expression = std::move(expression);
+    return condition;
+}
+
+scena::ir::Trigger trigger_of(std::vector<std::vector<TriggerCondition>> groups) {
+    scena::ir::Trigger trigger;
+    for (std::vector<TriggerCondition>& conditions : groups) {
+        scena::ir::ConditionGroup group;
+        group.conditions = std::move(conditions);
+        trigger.groups.push_back(std::move(group));
+    }
+    return trigger;
+}
+
+scena::ir::Event make_event(std::string name, std::optional<scena::ir::Trigger> start_trigger,
+                            std::string entity_id) {
+    scena::ir::Event event;
+    event.name = std::move(name);
+    event.start_trigger = std::move(start_trigger);
+    event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(std::move(entity_id), 10.0));
+    return event;
+}
+
+/// story/act/group/maneuver wrapper (no act triggers).
+scena::ir::Storyboard make_storyboard(std::vector<scena::ir::Event> events) {
+    scena::ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events = std::move(events);
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scena::ir::Storyboard storyboard;
+    storyboard.stories.push_back(std::move(story));
+    return storyboard;
+}
+
+/// Steps the scheduler over `times`, returning the times at which the single
+/// "event" fired.
+std::vector<double> firing_times(Scheduler& scheduler, const std::vector<double>& times) {
+    std::vector<double> fired;
+    for (const double t : times) {
+        scheduler.step(t, [&](const scena::ir::Action&) {
+            fired.push_back(t);
+            return ActionOutcome::Complete;
+        });
+    }
+    return fired;
+}
+
+std::shared_ptr<Condition> sim_time(double value, Rule rule = Rule::GreaterOrEqual) {
+    return std::make_shared<SimulationTimeCondition>(value, rule);
+}
+
+// --- Engine-driven helpers -------------------------------------------------
+
+/// A one-entity ("ego", engine-controlled) scenario whose single event fires
+/// when `expression` holds, driving ego to 10 m/s — a firing shows up as a
+/// non-zero ego speed. `edge`/`delay` carry into the wrapping trigger.
+scena::ir::Scenario make_scenario(std::shared_ptr<Condition> expression,
+                                  ConditionEdge edge = ConditionEdge::None, double delay = 0.0) {
+    scena::ir::Scenario scenario;
+    scenario.name = "byvalue";
+    scena::ir::Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    scenario.entities.push_back(std::move(ego));
+    scena::ir::Event event =
+        make_event("event", scena::ir::make_trigger(std::move(expression), edge, delay), "ego");
+    scenario.storyboard = make_storyboard({std::move(event)});
+    return scenario;
+}
+
+/// True once ego has been driven off its initial zero speed — i.e. the event
+/// fired at some point.
+bool ego_fired(const Engine& engine) {
+    const auto state = engine.state("ego");
+    return state.has_value() && state->speed != 0.0;
+}
 
 } // namespace
 
@@ -154,12 +266,65 @@ TEST(DateTimeTest, ValidatesFieldRangesAndDayInMonth) {
     EXPECT_TRUE((DateTime{}.valid()));
     // 2001 is not a leap year, so Feb 29 does not exist.
     EXPECT_FALSE((DateTime{2001, 2, 29, 0, 0, 0, 0, 0}.valid()));
-    EXPECT_FALSE((DateTime{2000, 4, 31, 0, 0, 0, 0, 0}.valid())); // April has 30
-    EXPECT_FALSE((DateTime{2000, 0, 1, 0, 0, 0, 0, 0}.valid()));  // month underflow
-    EXPECT_FALSE((DateTime{2000, 13, 1, 0, 0, 0, 0, 0}.valid())); // month overflow
-    EXPECT_FALSE((DateTime{2000, 1, 1, 24, 0, 0, 0, 0}.valid())); // hour overflow
-    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 60, 0, 0, 0}.valid())); // minute overflow
-    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 0, 60, 0, 0}.valid())); // second overflow
-    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 0, 0, 1000, 0}.valid())); // ms overflow
+    EXPECT_FALSE((DateTime{2000, 4, 31, 0, 0, 0, 0, 0}.valid()));      // April has 30
+    EXPECT_FALSE((DateTime{2000, 0, 1, 0, 0, 0, 0, 0}.valid()));       // month underflow
+    EXPECT_FALSE((DateTime{2000, 13, 1, 0, 0, 0, 0, 0}.valid()));      // month overflow
+    EXPECT_FALSE((DateTime{2000, 1, 1, 24, 0, 0, 0, 0}.valid()));      // hour overflow
+    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 60, 0, 0, 0}.valid()));      // minute overflow
+    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 0, 60, 0, 0}.valid()));      // second overflow
+    EXPECT_FALSE((DateTime{2000, 1, 1, 0, 0, 0, 1000, 0}.valid()));    // ms overflow
     EXPECT_FALSE((DateTime{2000, 1, 1, 0, 0, 0, 0, 15 * 60}.valid())); // offset too wide
+}
+
+// ---------------------------------------------------------------------------
+// SimulationTimeCondition (§ SimulationTimeCondition, §8.4.7)
+// ---------------------------------------------------------------------------
+
+TEST(SimulationTimeConditionTest, SimulationTimeStartsWithStoryboardRunning) {
+    // §8.4.7: the storyboard enters runningState when the simulation starts,
+    // and that marks t = 0. An event guarded by SimulationTime >= 0 therefore
+    // fires in the init evaluation, before any host step, and the storyboard
+    // is already running with time at zero.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(sim_time(0.0, Rule::GreaterOrEqual))), Status::Ok);
+    EXPECT_EQ(engine.time(), 0.0);
+    EXPECT_EQ(*engine.storyboard_element_state(""), ElementState::Running);
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(SimulationTimeConditionTest, GreaterOrEqualFiresExactlyAtBoundary) {
+    // The default rule is greaterOrEqual: the condition holds from the value
+    // on, so it fires at exactly t = value and not before.
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard =
+        make_storyboard({make_event("event", trigger_of({{cond(sim_time(1.0))}}), "ego")});
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5}), (std::vector<double>{1.0}));
+}
+
+TEST(SimulationTimeConditionTest, RuleFamilyOnSimulationTime) {
+    const auto first_fire = [](Rule rule, const std::vector<double>& times) {
+        Scheduler scheduler;
+        const scena::ir::Storyboard storyboard = make_storyboard(
+            {make_event("event", trigger_of({{cond(sim_time(1.0, rule))}}), "ego")});
+        scheduler.bind(storyboard);
+        return firing_times(scheduler, times);
+    };
+    EXPECT_EQ(first_fire(Rule::EqualTo, {0.0, 0.5, 1.0, 2.0}), (std::vector<double>{1.0}));
+    EXPECT_EQ(first_fire(Rule::NotEqualTo, {0.0, 1.0}), (std::vector<double>{0.0}));
+    EXPECT_EQ(first_fire(Rule::GreaterThan, {0.0, 1.0, 1.5}), (std::vector<double>{1.5}));
+    EXPECT_EQ(first_fire(Rule::GreaterOrEqual, {0.0, 0.5, 1.0}), (std::vector<double>{1.0}));
+    EXPECT_EQ(first_fire(Rule::LessThan, {0.0, 0.5}), (std::vector<double>{0.0}));
+    EXPECT_EQ(first_fire(Rule::LessOrEqual, {0.0, 0.5}), (std::vector<double>{0.0}));
+}
+
+TEST(SimulationTimeConditionTest, SimulationTimeWithRisingEdgeAndDelay) {
+    // A SimulationTimeCondition is an ordinary logical expression: it composes
+    // with the edge and delay machinery. The rise at t = 1.0 arrives shifted
+    // by the 0.5 s delay, firing exactly once at t = 1.5.
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_storyboard({make_event(
+        "event", trigger_of({{cond(sim_time(1.0), ConditionEdge::Rising, 0.5)}}), "ego")});
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5, 2.0, 2.5}), (std::vector<double>{1.5}));
 }
