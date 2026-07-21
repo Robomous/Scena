@@ -5,6 +5,8 @@ The user guide grows sprint by sprint along the
 
 - [The storyboard model](storyboard.md) — hierarchy, element lifecycle,
   init phase, and how to observe element states.
+- [Triggers](triggers.md) — condition groups, edges, delays, stop-trigger
+  inheritance, and the stop-before-start evaluation order.
 
 Also see:
 

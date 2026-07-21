@@ -55,13 +55,14 @@ The storyboard then enters running and is evaluated once at t = 0, so
 start conditions that already hold (e.g. a simulation-time condition at
 0 s) fire before the first host step.
 
-## Triggers in this phase
+## Triggers
 
-A start/stop trigger is currently a single condition object; the full
-trigger model (condition groups, edges, delays — §7.6) replaces it in the
-next runtime sprint without changing the hierarchy. Event priorities and
-`maximumExecutionCount` also arrive in a later sprint; every event
-currently executes once.
+Start and stop triggers are the full §7.6 model — an OR of condition
+groups, each an AND of conditions with edge and delay modifiers. See
+[Triggers](triggers.md) for composition, hosting and inheritance rules,
+the edge formulas and the delay lookup. Event priorities and
+`maximumExecutionCount` arrive in a later sprint; every event currently
+executes once.
 
 ## Example
 

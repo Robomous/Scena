@@ -116,10 +116,10 @@ All with `TriggeringEntities` any/all semantics (§7.6.5.1, p5-s2).
 | Storyboard / Story / Act / ManeuverGroup / Maneuver / Event / Action nesting | §7.2.1, §7.3 | In | p1-s1 | |
 | Element state machine (standby/running/complete; start/end/stop/skip transitions) | §8.1–8.3 | In | p1-s1 | |
 | Init phase (global + private init actions before simulation time) | §8.5 | In | p1-s1, p4-s2 | Non-instantaneous init actions carry into the storyboard |
-| Trigger = OR(ConditionGroups); group = AND(Conditions); empty trigger false | §7.6.1 | In | p1-s2 | |
-| ConditionEdge none/rising/falling/risingOrFalling + first-evaluation corner cases | §7.6.2, §7.6.4 | In | p1-s2 | |
-| Condition delay (evaluates state of t−Δt; Δt ≥ 0) | §7.6.3 | In | p1-s2 | Rule-cited validation |
-| Start triggers (Act, Event only), stop triggers (Storyboard, Act) + inheritance | §7.6.1.1–7.6.1.2 | In | p1-s2 | |
+| Trigger = OR(ConditionGroups); group = AND(Conditions); empty trigger false | §7.6.1 | In | p1-s2 | Landed: absent trigger (`nullopt`) distinct from empty (always false); empty ConditionGroup rejected at init (1..\* cardinality); no short-circuit evaluation |
+| ConditionEdge none/rising/falling/risingOrFalling + first-evaluation corner cases | §7.6.2, §7.6.4 | In | p1-s2 | Landed: per-condition history; first check of an edge condition false, starting when the enclosing element enters standby |
+| Condition delay (evaluates state of t−Δt; Δt ≥ 0) | §7.6.3 | In | p1-s2 | Rule-cited validation. Landed: delay applies post-edge (per `Condition.delay` class reference over §7.6.3 prose); sample-and-hold lookup of the most recent evaluation at or before t−Δt, exact comparisons |
+| Start triggers (Act, Event only), stop triggers (Storyboard, Act) + inheritance | §7.6.1.1–7.6.1.2 | In | p1-s2 | Landed: stop checked before start at every level; stop applies from standby and running; execution-count clearing hooked in `stop_cascade` for p1-s3 |
 | Event priority `override`/`skip`/`parallel` | §7.3.2, §8.4.2.2 | In | p1-s3 | Deprecated literal `overwrite` accepted as `override` |
 | maximumExecutionCount | §8.3.3.2 | In | p1-s3 | Executions = start + skip transitions |
 | Action conflict resolution & completion reasons | §7.5 | In | p1-s3 | Incl. continuous actions (§7.5.3) and bulk/actor semantics (§7.5.4) |
