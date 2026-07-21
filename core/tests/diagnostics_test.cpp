@@ -79,6 +79,27 @@ const Diagnostic& only_diagnostic(const Engine& engine) {
     return engine.diagnostics().front();
 }
 
+/// An action kind the engine does not implement, so applying it takes the
+/// runtime's unsupported-action path. It targets a valid entity, so init
+/// validation accepts it.
+class UnsupportedAction final : public scena::ir::Action {
+public:
+    explicit UnsupportedAction(std::string entity_id) : entity_id_(std::move(entity_id)) {}
+    [[nodiscard]] const std::string& entity_id() const override { return entity_id_; }
+    [[nodiscard]] std::string_view kind() const noexcept override { return "TeleportAction"; }
+
+private:
+    std::string entity_id_;
+};
+
+/// A trigger-less event carrying one action, so it fires at t = 0.
+scena::ir::Event make_event(std::string name, std::shared_ptr<scena::ir::Action> action) {
+    scena::ir::Event event;
+    event.name = std::move(name);
+    event.actions.push_back(std::move(action));
+    return event;
+}
+
 } // namespace
 
 TEST(DiagnosticSinkTest, StartsEmpty) {
@@ -413,6 +434,43 @@ TEST(DiagnosticsTest, ClosePreservesDiagnostics) {
     ASSERT_TRUE(engine.diagnostics().empty());
     ASSERT_EQ(engine.close(), Status::Ok);
     EXPECT_TRUE(engine.diagnostics().empty()); // valid run produced none
+}
+
+TEST(DiagnosticsTest, UnsupportedActionKindWarnsButStepStaysOk) {
+    Engine engine;
+    Scenario scenario =
+        make_scenario({make_event("event-1", std::make_shared<UnsupportedAction>("ego"))});
+    // A trigger-less event fires during init (§8.4.7), so the warning is
+    // already present; init still succeeds.
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.diagnostics().size(), 1U);
+    const Diagnostic& d = engine.diagnostics().front();
+    EXPECT_EQ(d.severity, Severity::Warning);
+    EXPECT_EQ(d.code, Status::UnsupportedFeature);
+    EXPECT_EQ(d.path, "entities/ego");
+    // The kind name appears in the message so a host can identify it.
+    EXPECT_NE(d.message.find("TeleportAction"), std::string::npos);
+
+    // Stepping keeps returning Ok: a degraded scenario is not a broken engine.
+    EXPECT_EQ(engine.step(0.01), Status::Ok);
+    EXPECT_FALSE(engine.diagnostics().empty());
+}
+
+TEST(DiagnosticsTest, RuntimeWarningsAccumulateAcrossSteps) {
+    // An event with maximumExecutionCount 2 fires twice, on two evaluations.
+    Engine engine;
+    scena::ir::Event event = make_event("event-1", std::make_shared<UnsupportedAction>("ego"));
+    event.start_trigger = scena::ir::make_trigger(std::make_shared<SimulationTimeCondition>(1.0));
+    event.maximum_execution_count = 1;
+    Scenario scenario = make_scenario({std::move(event)});
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_TRUE(engine.diagnostics().empty()); // has not fired yet
+
+    for (int i = 0; i < 150; ++i) {
+        ASSERT_EQ(engine.step(0.01), Status::Ok);
+    }
+    EXPECT_EQ(engine.diagnostics().size(), 1U);
+    EXPECT_EQ(engine.diagnostics().front().code, Status::UnsupportedFeature);
 }
 
 TEST(DiagnosticsTest, IdenticalDefectiveScenariosProduceIdenticalDiagnostics) {

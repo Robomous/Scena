@@ -393,9 +393,32 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         const auto it = entities_.find(speed_action->entity_id());
         if (it != entities_.end()) {
             it->second.state.speed = speed_action->target_speed();
+        } else {
+            // init() validates every action target, so this is defensive: a
+            // Warning, not a failure. The run continues; the action is
+            // skipped. apply() sees only the ir::Action, so the entity path
+            // is the anchor.
+            Diagnostic diagnostic;
+            diagnostic.severity = Severity::Warning;
+            diagnostic.code = Status::UnknownEntity;
+            diagnostic.message =
+                "action targets unknown entity '" + speed_action->entity_id() + "'; action skipped";
+            diagnostic.path = "entities/" + speed_action->entity_id();
+            diagnostics_.report(std::move(diagnostic));
         }
+    } else {
+        // An action kind the engine does not implement yet. A parser must
+        // never silently drop input, and neither does the runtime: emit a
+        // Warning and keep going. Scheduling is unchanged — the event still
+        // completes in one evaluation (see below).
+        Diagnostic diagnostic;
+        diagnostic.severity = Severity::Warning;
+        diagnostic.code = Status::UnsupportedFeature;
+        diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
+                             "' targeting entity '" + action.entity_id() + "'; action ignored";
+        diagnostic.path = "entities/" + action.entity_id();
+        diagnostics_.report(std::move(diagnostic));
     }
-    // Unknown action kinds are ignored in this phase.
 
     // Every action the engine can apply sets a state instantaneously, so it
     // reaches its goal in the evaluation it was applied in (§7.4.1.2). The
