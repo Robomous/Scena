@@ -5,7 +5,7 @@
 
 ## Context
 
-Kinema must embed into host simulators with very different runtime models
+Scena must embed into host simulators with very different runtime models
 (fixed-step, variable-step, co-simulation). The engine therefore cannot own
 the clock, spawn threads, or assume how entities are moved: some are driven by
 scenario logic, others by the host's own vehicle models or traffic.
@@ -14,7 +14,7 @@ scenario logic, others by the host's own vehicle models or traffic.
 
 ### Step-based API contract
 
-The engine exposes exactly this lifecycle (`kinema::Engine`, mirrored by the
+The engine exposes exactly this lifecycle (`scena::Engine`, mirrored by the
 C ABI):
 
 ```

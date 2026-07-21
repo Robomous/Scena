@@ -5,11 +5,11 @@
 #include <optional>
 #include <string>
 
-#include "kinema/ir/scenario.h"
-#include "kinema/runtime/clock.h"
-#include "kinema/runtime/scheduler.h"
+#include "scena/ir/scenario.h"
+#include "scena/runtime/clock.h"
+#include "scena/runtime/scheduler.h"
 
-namespace kinema {
+namespace scena {
 
 namespace gateway {
 class ISimulatorGateway;
@@ -117,4 +117,4 @@ private:
     bool initialized_ = false;
 };
 
-} // namespace kinema
+} // namespace scena

@@ -5,7 +5,7 @@
 include(FetchContent)
 
 # googletest — tests only, never linked into shipped libraries. BSD-3-Clause.
-if(KNM_BUILD_TESTS)
+if(SCN_BUILD_TESTS)
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -26,7 +26,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(pugixml)
 
 # nanobind — Python bindings only. BSD-3-Clause.
-if(KNM_BUILD_PYTHON)
+if(SCN_BUILD_PYTHON)
     find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
     FetchContent_Declare(
         nanobind

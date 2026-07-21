@@ -5,10 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "kinema/ir/action.h"
-#include "kinema/ir/condition.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
 
-namespace kinema::ir {
+namespace scena::ir {
 
 /// Who drives an entity each step.
 enum class ControlMode {
@@ -51,4 +51,4 @@ struct Scenario {
     Storyboard storyboard;
 };
 
-} // namespace kinema::ir
+} // namespace scena::ir

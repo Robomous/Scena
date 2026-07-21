@@ -5,9 +5,9 @@
 #include <string>
 #include <vector>
 
-#include "kinema/ir/scenario.h"
+#include "scena/ir/scenario.h"
 
-namespace kinema::xml {
+namespace scena::xml {
 
 enum class Severity {
     Info,
@@ -37,4 +37,4 @@ struct LoadResult {
 /// parsing arrives with the XML frontend phase.
 LoadResult load_xosc(const std::string& path);
 
-} // namespace kinema::xml
+} // namespace scena::xml

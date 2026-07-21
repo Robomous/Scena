@@ -3,7 +3,7 @@
 
 #include <string>
 
-namespace kinema::gateway {
+namespace scena::gateway {
 
 /// Lane-relative position in road coordinates, following the ASAM OpenDRIVE
 /// s/t convention: `s` runs along the road reference line, `t` is the signed
@@ -38,4 +38,4 @@ public:
                                                  double& z) const = 0;
 };
 
-} // namespace kinema::gateway
+} // namespace scena::gateway

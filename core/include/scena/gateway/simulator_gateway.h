@@ -3,9 +3,9 @@
 
 #include <string>
 
-#include "kinema/engine.h"
+#include "scena/engine.h"
 
-namespace kinema::gateway {
+namespace scena::gateway {
 
 class IRoadQuery;
 
@@ -38,4 +38,4 @@ public:
     virtual IRoadQuery* road_query() = 0;
 };
 
-} // namespace kinema::gateway
+} // namespace scena::gateway

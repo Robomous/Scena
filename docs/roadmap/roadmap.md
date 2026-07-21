@@ -1,4 +1,4 @@
-# Kinema roadmap
+# Scena roadmap
 
 Phased development with explicit gates. A phase is done only when every gate
 criterion is verified; work beyond the active phase does not start without a

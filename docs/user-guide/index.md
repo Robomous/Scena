@@ -1,4 +1,4 @@
-# Kinema user guide
+# Scena user guide
 
 Placeholder. The user guide grows with the XML frontend phase (F1); until
 then, see:

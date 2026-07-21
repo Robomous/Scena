@@ -5,9 +5,9 @@
 #include <functional>
 #include <vector>
 
-#include "kinema/ir/scenario.h"
+#include "scena/ir/scenario.h"
 
-namespace kinema::runtime {
+namespace scena::runtime {
 
 /// Execution state of one storyboard entry's action.
 enum class ActionState {
@@ -51,4 +51,4 @@ private:
     std::vector<ActionState> states_;
 };
 
-} // namespace kinema::runtime
+} // namespace scena::runtime

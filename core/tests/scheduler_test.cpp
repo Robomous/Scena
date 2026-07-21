@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/runtime/scheduler.h"
+#include "scena/runtime/scheduler.h"
 
 #include <memory>
 #include <string>
@@ -7,15 +7,15 @@
 
 #include <gtest/gtest.h>
 
-#include "kinema/ir/action.h"
-#include "kinema/ir/condition.h"
-#include "kinema/ir/scenario.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
+#include "scena/ir/scenario.h"
 
-using kinema::ir::SimulationTimeCondition;
-using kinema::ir::SpeedAction;
-using kinema::ir::Storyboard;
-using kinema::runtime::ActionState;
-using kinema::runtime::Scheduler;
+using scena::ir::SimulationTimeCondition;
+using scena::ir::SpeedAction;
+using scena::ir::Storyboard;
+using scena::runtime::ActionState;
+using scena::runtime::Scheduler;
 
 namespace {
 
@@ -36,8 +36,8 @@ TEST(SchedulerTest, NoFiringBeforeTriggerTime) {
     scheduler.bind(storyboard);
 
     int fired = 0;
-    scheduler.step(0.5, [&](const kinema::ir::Action&) { ++fired; });
-    scheduler.step(0.999, [&](const kinema::ir::Action&) { ++fired; });
+    scheduler.step(0.5, [&](const scena::ir::Action&) { ++fired; });
+    scheduler.step(0.999, [&](const scena::ir::Action&) { ++fired; });
 
     EXPECT_EQ(fired, 0);
     EXPECT_EQ(scheduler.action_state(0), ActionState::Pending);
@@ -50,7 +50,7 @@ TEST(SchedulerTest, FiresExactlyOnce) {
 
     int fired = 0;
     for (const double t : {0.5, 1.0, 1.5, 2.0, 100.0}) {
-        scheduler.step(t, [&](const kinema::ir::Action&) { ++fired; });
+        scheduler.step(t, [&](const scena::ir::Action&) { ++fired; });
     }
 
     EXPECT_EQ(fired, 1);
@@ -68,7 +68,7 @@ TEST(SchedulerTest, StateTransitionsPendingToComplete) {
     // action observes its entry in the Running state from the fire callback.
     ActionState state_during_fire = ActionState::Pending;
     scheduler.step(
-        1.0, [&](const kinema::ir::Action&) { state_during_fire = scheduler.action_state(0); });
+        1.0, [&](const scena::ir::Action&) { state_during_fire = scheduler.action_state(0); });
 
     EXPECT_EQ(state_during_fire, ActionState::Running);
     EXPECT_EQ(scheduler.action_state(0), ActionState::Complete);
@@ -81,7 +81,7 @@ TEST(SchedulerTest, EntriesAreIndependent) {
     ASSERT_EQ(scheduler.entry_count(), 2U);
 
     std::vector<std::string> fired;
-    const auto record = [&](const kinema::ir::Action& action) {
+    const auto record = [&](const scena::ir::Action& action) {
         fired.push_back(action.entity_id());
     };
 
@@ -98,7 +98,7 @@ TEST(SchedulerTest, EntriesAreIndependent) {
 TEST(SchedulerTest, StepWithoutBindIsNoOp) {
     Scheduler scheduler;
     int fired = 0;
-    scheduler.step(100.0, [&](const kinema::ir::Action&) { ++fired; });
+    scheduler.step(100.0, [&](const scena::ir::Action&) { ++fired; });
     EXPECT_EQ(fired, 0);
     EXPECT_EQ(scheduler.entry_count(), 0U);
 }

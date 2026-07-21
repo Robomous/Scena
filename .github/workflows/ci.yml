@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DKNM_WARNINGS_AS_ERRORS=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSCN_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -53,9 +53,9 @@ jobs:
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=Debug
-          -DKNM_SANITIZE=address,undefined
-          -DKNM_WARNINGS_AS_ERRORS=ON
-          -DKNM_BUILD_PYTHON=OFF
+          -DSCN_SANITIZE=address,undefined
+          -DSCN_WARNINGS_AS_ERRORS=ON
+          -DSCN_BUILD_PYTHON=OFF
 
       - name: Build
         run: cmake --build build --parallel

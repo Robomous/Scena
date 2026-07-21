@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-namespace kinema::ir {
+namespace scena::ir {
 
 /// Base class for all storyboard trigger conditions in the Scenario IR.
 ///
@@ -32,4 +32,4 @@ private:
     double at_time_;
 };
 
-} // namespace kinema::ir
+} // namespace scena::ir

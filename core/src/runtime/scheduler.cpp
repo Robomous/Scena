@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/runtime/scheduler.h"
+#include "scena/runtime/scheduler.h"
 
-namespace kinema::runtime {
+namespace scena::runtime {
 
 void Scheduler::bind(const ir::Storyboard& storyboard) {
     storyboard_ = &storyboard;
@@ -42,4 +42,4 @@ void Scheduler::reset() noexcept {
     states_.clear();
 }
 
-} // namespace kinema::runtime
+} // namespace scena::runtime

@@ -1,6 +1,6 @@
-# Contributing to Kinema
+# Contributing to Scena
 
-Thanks for your interest in Kinema. This document covers how to build, test,
+Thanks for your interest in Scena. This document covers how to build, test,
 and submit changes. The `docs/` directory is the public source of truth for
 architecture and process; when in doubt, the ADRs in `docs/architecture/` win.
 
@@ -20,11 +20,11 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `KNM_BUILD_TESTS` | `ON` | Build the gtest suites |
-| `KNM_BUILD_PYTHON` | `ON` | Build the nanobind Python module |
-| `KNM_BUILD_CAPI` | `ON` | Build the C API shared library |
-| `KNM_WARNINGS_AS_ERRORS` | `OFF` (ON in CI) | Treat warnings as errors |
-| `KNM_SANITIZE` | empty | `address`, `undefined`, `thread` (comma-separated) |
+| `SCN_BUILD_TESTS` | `ON` | Build the gtest suites |
+| `SCN_BUILD_PYTHON` | `ON` | Build the nanobind Python module |
+| `SCN_BUILD_CAPI` | `ON` | Build the C API shared library |
+| `SCN_WARNINGS_AS_ERRORS` | `OFF` (ON in CI) | Treat warnings as errors |
+| `SCN_SANITIZE` | empty | `address`, `undefined`, `thread` (comma-separated) |
 
 Python bindings against the build tree (without installing):
 
@@ -47,7 +47,7 @@ PYTHONPATH=build/python python python/examples/hello_engine.py
 - C++20, no compiler extensions. Formatting is enforced by clang-format
   (`.clang-format`); run `./scripts/format.sh` before committing, or
   `./scripts/format.sh --check` to verify.
-- Namespace `kinema`; CMake options and macros prefixed `KNM_`.
+- Namespace `scena`; CMake options and macros prefixed `SCN_`.
 - Every source file starts with `// SPDX-License-Identifier: MIT`.
 - Implement standard behavior exclusively from the ASAM specifications; cite
   them by section number in comments (e.g. "per ASAM OpenSCENARIO XML 1.3

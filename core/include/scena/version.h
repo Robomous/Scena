@@ -3,7 +3,7 @@
 
 #include <string>
 
-namespace kinema {
+namespace scena {
 
 // Keep in sync with the top-level CMakeLists.txt project version and python/pyproject.toml.
 inline constexpr int kVersionMajor = 0;
@@ -13,4 +13,4 @@ inline constexpr int kVersionPatch = 0;
 /// Returns the library version as "major.minor.patch".
 std::string version_string();
 
-} // namespace kinema
+} // namespace scena

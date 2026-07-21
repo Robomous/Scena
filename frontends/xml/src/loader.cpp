@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/xml/loader.h"
+#include "scena/xml/loader.h"
 
-namespace kinema::xml {
+namespace scena::xml {
 
 LoadResult load_xosc(const std::string& path) {
     LoadResult result;
@@ -11,4 +11,4 @@ LoadResult load_xosc(const std::string& path) {
     return result;
 }
 
-} // namespace kinema::xml
+} // namespace scena::xml

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/engine.h"
+#include "scena/engine.h"
 
 #include <cmath>
 #include <utility>
 
-#include "kinema/gateway/simulator_gateway.h"
+#include "scena/gateway/simulator_gateway.h"
 
-namespace kinema {
+namespace scena {
 
 Engine::Engine(gateway::ISimulatorGateway* gateway) : gateway_(gateway) {}
 
@@ -141,4 +141,4 @@ void Engine::apply(const ir::Action& action) {
     // Unknown action kinds are ignored in this phase.
 }
 
-} // namespace kinema
+} // namespace scena

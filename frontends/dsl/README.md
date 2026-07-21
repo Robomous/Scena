@@ -4,7 +4,7 @@ This directory is reserved for the ASAM OpenSCENARIO DSL (2.x) frontend,
 scheduled for a later phase (see `docs/roadmap/roadmap.md`).
 
 Like the XML frontend, the DSL frontend will compile scenarios into the shared
-Scenario IR (`core/include/kinema/ir/`); the runtime stays frontend-agnostic.
+Scenario IR (`core/include/scena/ir/`); the runtime stays frontend-agnostic.
 Planned scope:
 
 - **F2** — parser and type checker for the finalized OpenSCENARIO DSL 2.x

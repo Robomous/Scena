@@ -2,10 +2,10 @@
 
 -----
 
-# Kinema
+# Scena
 
-**Kinema** — from the Greek root for motion, as in *kinematics* and *cinema* —
-is the engine that puts scenario actors in motion.
+**Scena** is the scenario execution engine of the Robomous toolchain — the
+stage where scenario actors perform.
 
 It is an open-source (MIT) scenario execution engine for autonomous-driving
 simulation, developed by [Robomous](https://robomous.ai). It executes scenarios
@@ -70,14 +70,14 @@ Or, in one line: `./scripts/build.sh`.
 Minimal embedding loop, in Python:
 
 ```python
-import kinema as knm
+import scena as scn
 
-scenario = knm.Scenario("demo")
-scenario.add_entity(knm.Entity("ego", "ego vehicle"))
-scenario.add_entry(knm.SimulationTimeCondition(at_time=2.0),
-                   knm.SpeedAction("ego", target_speed=10.0))
+scenario = scn.Scenario("demo")
+scenario.add_entity(scn.Entity("ego", "ego vehicle"))
+scenario.add_entry(scn.SimulationTimeCondition(at_time=2.0),
+                   scn.SpeedAction("ego", target_speed=10.0))
 
-engine = knm.Engine()
+engine = scn.Engine()
 engine.init(scenario)
 for _ in range(500):          # the host owns the clock
     engine.step(0.01)         # 100 Hz
@@ -103,5 +103,5 @@ Architecture decisions: [`docs/architecture/`](docs/architecture/).
 MIT — see [LICENSE](LICENSE). Third-party dependency licenses are recorded in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
-Kinema implements the ASAM OpenSCENARIO standard. It is an independent
+Scena implements the ASAM OpenSCENARIO standard. It is an independent
 project and is not affiliated with or endorsed by ASAM e.V.

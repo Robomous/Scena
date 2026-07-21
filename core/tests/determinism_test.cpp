@@ -5,17 +5,17 @@
 
 #include <gtest/gtest.h>
 
-#include "kinema/engine.h"
-#include "kinema/ir/action.h"
-#include "kinema/ir/condition.h"
-#include "kinema/ir/scenario.h"
+#include "scena/engine.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
+#include "scena/ir/scenario.h"
 
-using kinema::Engine;
-using kinema::Status;
-using kinema::ir::ControlMode;
-using kinema::ir::Scenario;
-using kinema::ir::SimulationTimeCondition;
-using kinema::ir::SpeedAction;
+using scena::Engine;
+using scena::Status;
+using scena::ir::ControlMode;
+using scena::ir::Scenario;
+using scena::ir::SimulationTimeCondition;
+using scena::ir::SpeedAction;
 
 namespace {
 

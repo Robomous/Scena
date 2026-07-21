@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-namespace kinema::runtime {
+namespace scena::runtime {
 
 /// Fixed-step deterministic simulation clock.
 ///
@@ -25,4 +25,4 @@ private:
     double time_ = 0.0;
 };
 
-} // namespace kinema::runtime
+} // namespace scena::runtime

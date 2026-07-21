@@ -3,7 +3,7 @@
 
 #include <string>
 
-namespace kinema::ir {
+namespace scena::ir {
 
 /// Base class for all scenario actions in the Scenario IR.
 ///
@@ -34,4 +34,4 @@ private:
     double target_speed_;
 };
 
-} // namespace kinema::ir
+} // namespace scena::ir

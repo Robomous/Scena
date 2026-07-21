@@ -7,22 +7,22 @@ SimulationTimeCondition at t = 2.0 s sets its speed to 10 m/s. The host loop
 steps 5 simulated seconds at 100 Hz and asserts the speed change happened.
 """
 
-import kinema as knm
+import scena as scn
 
 
 def main() -> None:
-    print(f"Kinema {knm.version()}")
+    print(f"Scena {scn.version()}")
 
-    scenario = knm.Scenario("hello-engine")
-    scenario.add_entity(knm.Entity("ego", "ego vehicle", knm.ControlMode.EngineControlled))
+    scenario = scn.Scenario("hello-engine")
+    scenario.add_entity(scn.Entity("ego", "ego vehicle", scn.ControlMode.EngineControlled))
     scenario.add_entry(
-        knm.SimulationTimeCondition(at_time=2.0),
-        knm.SpeedAction("ego", target_speed=10.0),
+        scn.SimulationTimeCondition(at_time=2.0),
+        scn.SpeedAction("ego", target_speed=10.0),
     )
 
-    engine = knm.Engine()
+    engine = scn.Engine()
     status = engine.init(scenario)
-    assert status == knm.Status.Ok, status
+    assert status == scn.Status.Ok, status
 
     dt = 0.01  # 100 Hz
     steps = 500  # 5 simulated seconds
@@ -30,7 +30,7 @@ def main() -> None:
 
     for i in range(steps):
         status = engine.step(dt)
-        assert status == knm.Status.Ok, status
+        assert status == scn.Status.Ok, status
         if i == 150:  # t = 1.51 s, before the trigger
             speed_before_trigger = engine.state("ego").speed
         if (i + 1) % 100 == 0:

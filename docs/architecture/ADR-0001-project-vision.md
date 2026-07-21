@@ -14,14 +14,14 @@ existing simulation loop without imposing its own runtime model.
 
 ## Decision
 
-Kinema is a **library-first** scenario execution engine:
+Scena is a **library-first** scenario execution engine:
 
 1. **Embeddable C++20 core.** The engine ships as a library with a stable C
    ABI (`capi/`) and Python bindings (`python/`). Any player or CLI tool is a
    thin consumer of that API, never part of the core.
 2. **Two frontends, one runtime.** Both OpenSCENARIO XML and OpenSCENARIO DSL
    compile into a common intermediate representation, the **Scenario IR**
-   (`core/include/kinema/ir/`). A single runtime executes the IR. Frontends
+   (`core/include/scena/ir/`). A single runtime executes the IR. Frontends
    depend on the core; the core knows nothing about frontends; frontends never
    depend on each other.
 3. **The simulator owns the clock.** The engine exposes a step-based API
@@ -33,8 +33,8 @@ Kinema is a **library-first** scenario execution engine:
    sole normative reference; behavior is implemented against them and cited by
    section number. See ADR-0002 for the clean-room policy.
 
-Kinema is a standalone project. Other tools may consume it as an ordinary
-dependency; Kinema never depends on them.
+Scena is a standalone project. Other tools may consume it as an ordinary
+dependency; Scena never depends on them.
 
 ## Phase plan
 

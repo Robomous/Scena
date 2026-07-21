@@ -1,29 +1,29 @@
 # SPDX-License-Identifier: MIT
-# Python bindings: nanobind extension module `kinema._kinema`.
+# Python bindings: nanobind extension module `scena._scena`.
 
-nanobind_add_module(_kinema src/bindings.cpp)
-target_link_libraries(_kinema PRIVATE kinema::core)
+nanobind_add_module(_scena src/bindings.cpp)
+target_link_libraries(_scena PRIVATE scena::core)
 
 # Stage an importable package under <build>/python so examples and tests can
 # run against the build tree: PYTHONPATH=<build>/python.
-set(KNM_PY_STAGE_DIR ${CMAKE_BINARY_DIR}/python)
-set_target_properties(_kinema PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${KNM_PY_STAGE_DIR}/kinema
+set(SCN_PY_STAGE_DIR ${CMAKE_BINARY_DIR}/python)
+set_target_properties(_scena PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${SCN_PY_STAGE_DIR}/scena
 )
 foreach(_config ${CMAKE_CONFIGURATION_TYPES})
     string(TOUPPER ${_config} _config_upper)
-    set_target_properties(_kinema PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY_${_config_upper} ${KNM_PY_STAGE_DIR}/kinema
+    set_target_properties(_scena PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY_${_config_upper} ${SCN_PY_STAGE_DIR}/scena
     )
 endforeach()
-add_custom_command(TARGET _kinema POST_BUILD
+add_custom_command(TARGET _scena POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/kinema/__init__.py
-            ${KNM_PY_STAGE_DIR}/kinema/__init__.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/scena/__init__.py
+            ${SCN_PY_STAGE_DIR}/scena/__init__.py
 )
 
 # Wheel builds driven by scikit-build-core install the module into the
-# `kinema` package.
+# `scena` package.
 if(SKBUILD)
-    install(TARGETS _kinema LIBRARY DESTINATION kinema)
+    install(TARGETS _scena LIBRARY DESTINATION scena)
 endif()

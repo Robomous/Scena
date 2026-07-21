@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/runtime/clock.h"
+#include "scena/runtime/clock.h"
 
 #include <vector>
 
 #include <gtest/gtest.h>
 
-using kinema::runtime::Clock;
+using scena::runtime::Clock;
 
 TEST(ClockTest, StartsAtZero) {
     const Clock clock;

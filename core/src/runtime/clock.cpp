@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/runtime/clock.h"
+#include "scena/runtime/clock.h"
 
-namespace kinema::runtime {
+namespace scena::runtime {
 
 void Clock::advance(double dt) noexcept {
     time_ += dt;
@@ -15,4 +15,4 @@ void Clock::reset() noexcept {
     time_ = 0.0;
 }
 
-} // namespace kinema::runtime
+} // namespace scena::runtime

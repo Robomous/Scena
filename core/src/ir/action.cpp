@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-#include "kinema/ir/action.h"
+#include "scena/ir/action.h"
 
 #include <utility>
 
-namespace kinema::ir {
+namespace scena::ir {
 
 SpeedAction::SpeedAction(std::string entity_id, double target_speed)
     : entity_id_(std::move(entity_id)), target_speed_(target_speed) {}
@@ -16,4 +16,4 @@ double SpeedAction::target_speed() const {
     return target_speed_;
 }
 
-} // namespace kinema::ir
+} // namespace scena::ir

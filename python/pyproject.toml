@@ -4,8 +4,8 @@ requires = ["scikit-build-core>=0.10"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "kinema"
-# Keep in sync with core/include/kinema/version.h and the top-level CMakeLists.txt.
+name = "scena"
+# Keep in sync with core/include/scena/version.h and the top-level CMakeLists.txt.
 version = "0.1.0"
 description = "Scenario execution engine for autonomous-driving simulation (ASAM OpenSCENARIO)"
 requires-python = ">=3.9"
@@ -24,9 +24,9 @@ classifiers = [
 # python subtree of it. Wheel builds must run from a checkout (not an sdist).
 cmake.source-dir = ".."
 cmake.version = ">=3.24"
-wheel.packages = ["src/kinema"]
+wheel.packages = ["src/scena"]
 
 [tool.scikit-build.cmake.define]
-KNM_BUILD_TESTS = "OFF"
-KNM_BUILD_CAPI = "OFF"
-KNM_BUILD_PYTHON = "ON"
+SCN_BUILD_TESTS = "OFF"
+SCN_BUILD_CAPI = "OFF"
+SCN_BUILD_PYTHON = "ON"
