@@ -1,76 +1,67 @@
 // SPDX-License-Identifier: MIT
-#include <bit>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
+#include <iterator>
 #include <limits>
-#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "scena/runtime/detmath.h"
+#include "support/detmath_probe.h"
+#include "support/trace_recorder.h"
 
 using scena::runtime::det_cos;
 using scena::runtime::det_sin;
 using scena::runtime::det_sincos;
 using scena::runtime::kDetTrigMaxAbsInput;
 using scena::runtime::SinCos;
+using scena::testsupport::detmath_probe_inputs;
+using scena::testsupport::hex_bits;
 
 namespace {
 
-// 16 lowercase hex chars of a double's IEEE-754 bit pattern. Locale-immune and
-// exact: this is the representation the cross-platform trace diff compares, so
-// the tests pin the same bytes CI pins.
-std::string hex_bits(double value) {
-    const auto bits = std::bit_cast<std::uint64_t>(value);
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string out(16, '0');
-    for (int i = 0; i < 16; ++i) {
-        out[static_cast<std::size_t>(i)] = kDigits[(bits >> ((15 - i) * 4)) & 0xF];
-    }
-    return out;
-}
-
-struct Probe {
-    double input;
+// Expected bit patterns for each detmath_probe_inputs() entry, in the same
+// order. Captured once from this implementation (NOT from libm docs or math
+// tables): build core, run each probe input through det_sin/det_cos, print
+// hex_bits, paste. The 3-OS determinism-trace CI matrix is the cross-platform
+// proof these bits are identical everywhere; AccuracyAgainstLibm proves they
+// are also numerically correct. Regenerate the same way if the algorithm ever
+// changes (a golden-breaking, release-noted event).
+struct Expected {
     const char* sin_hex;
     const char* cos_hex;
 };
 
-// Bit patterns captured once from this implementation (see the honest-capture
-// note below), NOT from libm docs or math tables. The 3-OS determinism-trace
-// CI matrix is the cross-platform proof that these bits are identical
-// everywhere; AccuracyAgainstLibm proves they are also numerically correct.
-//
-// Capture procedure: build core, run each input through det_sin/det_cos, print
-// hex_bits, paste. Regenerate the same way if the algorithm ever changes (a
-// golden-breaking, release-noted event).
-constexpr Probe kProbes[] = {
-    {0x1.0p-30, "3e10000000000000", "3ff0000000000000"},
-    {-0x1.0p-30, "be10000000000000", "3ff0000000000000"},
-    {0.3, "3fd2e9cd95baba33", "3fee921dd42f09ba"},
-    {0.5, "3fdeaee8744b05f0", "3fec1528065b7d50"},
-    {-0.5, "bfdeaee8744b05f0", "3fec1528065b7d50"},
-    {1.0, "3feaed548f090cee", "3fe14a280fb5068c"},
-    {-1.0, "bfeaed548f090cee", "3fe14a280fb5068c"},
-    {0x1.921fb54442d18p-1, "3fe6a09e667f3bcc", "3fe6a09e667f3bcd"}, // ~pi/4
-    {0x1.921fb54442d18p+0, "3ff0000000000000", "3c91a62633145800"}, // ~pi/2
-    {0x1.921fb54442d18p+1, "3ca1a62633145800", "bff0000000000000"}, // ~pi
-    {0x1.921fb54442d18p+2, "bcb1a62633145800", "3ff0000000000000"}, // ~2pi
-    {2.5, "3fe326af0dcfcab0", "bfe9a2f7ef858b7d"},
-    {-7.7, "bfef9f12fcee5458", "3fc3a1c134c1c59e"},
-    {10.0, "bfe1689ef5f34f53", "bfead9ac890c6b1f"},
-    {100.0, "bfe03425b78c4db8", "3feb981dbf665fdf"},
-    {12345.6789, "bfe68298a1cec146", "3fe6be7c89fe4a8f"},
-    {1.0e6, "bfd6664b2568d867", "3fedf9df9906d32c"},
-    {-1.0e6, "3fd6664b2568d867", "3fedf9df9906d32c"},
+constexpr Expected kExpected[] = {
+    {"3e10000000000000", "3ff0000000000000"}, // 0x1p-30
+    {"be10000000000000", "3ff0000000000000"}, // -0x1p-30
+    {"3fd2e9cd95baba33", "3fee921dd42f09ba"}, // 0.3
+    {"3fdeaee8744b05f0", "3fec1528065b7d50"}, // 0.5
+    {"bfdeaee8744b05f0", "3fec1528065b7d50"}, // -0.5
+    {"3feaed548f090cee", "3fe14a280fb5068c"}, // 1.0
+    {"bfeaed548f090cee", "3fe14a280fb5068c"}, // -1.0
+    {"3fe6a09e667f3bcc", "3fe6a09e667f3bcd"}, // ~pi/4
+    {"3ff0000000000000", "3c91a62633145800"}, // ~pi/2
+    {"3ca1a62633145800", "bff0000000000000"}, // ~pi
+    {"bcb1a62633145800", "3ff0000000000000"}, // ~2pi
+    {"3fe326af0dcfcab0", "bfe9a2f7ef858b7d"}, // 2.5
+    {"bfef9f12fcee5458", "3fc3a1c134c1c59e"}, // -7.7
+    {"bfe1689ef5f34f53", "bfead9ac890c6b1f"}, // 10.0
+    {"bfe03425b78c4db8", "3feb981dbf665fdf"}, // 100.0
+    {"bfe68298a1cec146", "3fe6be7c89fe4a8f"}, // 12345.6789
+    {"bfd6664b2568d867", "3fedf9df9906d32c"}, // 1.0e6
+    {"3fd6664b2568d867", "3fedf9df9906d32c"}, // -1.0e6
 };
 
 TEST(DetMathTest, PinnedBitPatterns) {
-    for (const Probe& p : kProbes) {
-        SCOPED_TRACE(testing::Message() << "input=" << p.input);
-        EXPECT_EQ(hex_bits(det_sin(p.input)), p.sin_hex);
-        EXPECT_EQ(hex_bits(det_cos(p.input)), p.cos_hex);
+    const std::vector<double>& inputs = detmath_probe_inputs();
+    ASSERT_EQ(inputs.size(), std::size(kExpected));
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        const double x = inputs[i];
+        SCOPED_TRACE(testing::Message() << "input=" << x);
+        EXPECT_EQ(hex_bits(det_sin(x)), kExpected[i].sin_hex);
+        EXPECT_EQ(hex_bits(det_cos(x)), kExpected[i].cos_hex);
     }
 }
 
@@ -112,20 +103,20 @@ TEST(DetMathTest, AccuracyAgainstLibm) {
         EXPECT_NEAR(det_sin(x), std::sin(x), 1e-12);
         EXPECT_NEAR(det_cos(x), std::cos(x), 1e-12);
     }
-    for (const Probe& p : kProbes) {
-        SCOPED_TRACE(testing::Message() << "probe=" << p.input);
-        EXPECT_NEAR(det_sin(p.input), std::sin(p.input), 1e-12);
-        EXPECT_NEAR(det_cos(p.input), std::cos(p.input), 1e-12);
+    for (const double x : detmath_probe_inputs()) {
+        SCOPED_TRACE(testing::Message() << "probe=" << x);
+        EXPECT_NEAR(det_sin(x), std::sin(x), 1e-12);
+        EXPECT_NEAR(det_cos(x), std::cos(x), 1e-12);
     }
 }
 
 TEST(DetMathTest, SinCosConsistency) {
-    for (const Probe& p : kProbes) {
-        SCOPED_TRACE(testing::Message() << "input=" << p.input);
-        const SinCos sc = det_sincos(p.input);
+    for (const double x : detmath_probe_inputs()) {
+        SCOPED_TRACE(testing::Message() << "input=" << x);
+        const SinCos sc = det_sincos(x);
         // The paired accessor must be bit-identical to the scalar entry points.
-        EXPECT_EQ(hex_bits(sc.sin), hex_bits(det_sin(p.input)));
-        EXPECT_EQ(hex_bits(sc.cos), hex_bits(det_cos(p.input)));
+        EXPECT_EQ(hex_bits(sc.sin), hex_bits(det_sin(x)));
+        EXPECT_EQ(hex_bits(sc.cos), hex_bits(det_cos(x)));
         // Pythagorean identity holds to a few ulp.
         EXPECT_NEAR(sc.sin * sc.sin + sc.cos * sc.cos, 1.0, 1e-12);
     }
