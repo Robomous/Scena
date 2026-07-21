@@ -11,6 +11,9 @@ The user guide grows sprint by sprint along the
 - [Error handling](error-handling.md) — status codes, structured
   diagnostics, the severity/status invariant, the path grammar, and the
   C-ABI borrowed-string lifetime.
+- [Determinism](determinism.md) — the bit-identity contract, how the engine
+  guarantees it, deterministic transcendentals (detmath), what hosts must
+  uphold, and the cross-platform replay/trace harness.
 
 Also see:
 
