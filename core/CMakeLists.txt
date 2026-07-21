@@ -4,6 +4,8 @@ add_library(scena-core STATIC
     src/engine.cpp
     src/ir/action.cpp
     src/ir/condition.cpp
+    src/ir/date_time.cpp
+    src/ir/rule.cpp
     src/ir/trigger.cpp
     src/runtime/clock.cpp
     src/runtime/detmath.cpp
