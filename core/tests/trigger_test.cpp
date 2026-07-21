@@ -391,3 +391,92 @@ TEST(TriggerTest, RepeatedEvaluationAtSameTimeUsesLatestSample) {
     single.bind(storyboard);
     EXPECT_EQ(firing_times(single, {0.0, 1.0, 2.0, 3.0}), (std::vector<double>{2.0}));
 }
+
+// ---------------------------------------------------------------------------
+// Stop triggers (§7.6.1.2)
+// ---------------------------------------------------------------------------
+
+TEST(TriggerTest, ActStopTriggerStopsItsSubtreeOnly) {
+    // Stop triggers are inherited downwards, never sideways or upwards: a
+    // stopped act takes its own subtree to completeState and leaves the
+    // rest of the storyboard running.
+    Storyboard storyboard =
+        make_storyboard({make_event("event", trigger_of({{cond(at_least(3.0))}}), "stopped")},
+                        std::nullopt, trigger_of({{cond(at_least(2.0))}}));
+    Storyboard other =
+        make_storyboard({make_event("event", trigger_of({{cond(at_least(3.0))}}), "surviving")});
+    other.stories[0].name = "other-story";
+    storyboard.stories.push_back(std::move(other.stories[0]));
+
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_TRUE(firing_times(scheduler, {0.0, 1.0, 2.0}).empty());
+    EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Complete);
+    EXPECT_EQ(*scheduler.element_transition("story/act"), TransitionKind::Stop);
+    EXPECT_EQ(*scheduler.element_transition(kEventPath), TransitionKind::Stop);
+    // The other story is untouched, and the storyboard itself keeps running.
+    EXPECT_EQ(*scheduler.element_state("other-story/act"), ElementState::Running);
+    EXPECT_FALSE(scheduler.storyboard_complete());
+
+    // Only the surviving story's event still fires.
+    EXPECT_EQ(fired_entities(scheduler, 3.0), (std::vector<std::string>{"surviving"}));
+}
+
+TEST(TriggerTest, ActStopTriggerFromStandbyCompletesWithoutRunning) {
+    // §7.6.1.2: a stop trigger takes an element out of standbyState too —
+    // the act here never starts.
+    const Storyboard storyboard =
+        make_storyboard({make_event("event", std::nullopt, "ego")},
+                        trigger_of({{cond(at_least(5.0))}}), trigger_of({{cond(at_least(1.0))}}));
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_TRUE(firing_times(scheduler, {0.0, 1.0, 5.0, 10.0}).empty());
+    EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Complete);
+    EXPECT_EQ(*scheduler.element_transition("story/act"), TransitionKind::Stop);
+}
+
+TEST(TriggerTest, StopWinsOverStartInSameStep) {
+    // Both triggers hold at t = 1.0. Stop is checked first at every level,
+    // so the act is stopped rather than started and its event never fires.
+    const Storyboard storyboard =
+        make_storyboard({make_event("event", std::nullopt, "ego")},
+                        trigger_of({{cond(at_least(1.0))}}), trigger_of({{cond(at_least(1.0))}}));
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    EXPECT_TRUE(firing_times(scheduler, {0.0, 1.0, 2.0}).empty());
+    EXPECT_EQ(*scheduler.element_transition("story/act"), TransitionKind::Stop);
+}
+
+TEST(TriggerTest, StopTriggerSupportsEdgeAndDelay) {
+    // Stop triggers are ordinary triggers: same edge and delay machinery.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", trigger_of({{cond(at_least(3.0))}}), "ego")}, std::nullopt,
+        trigger_of({{cond(at_least(1.0), ConditionEdge::Rising, 0.5)}}));
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    for (const double t : {0.0, 0.5, 1.0}) {
+        scheduler.step(t, [](const scena::ir::Action&) {});
+        EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Running) << t;
+    }
+    // The rise at t = 1.0 arrives delayed by 0.5.
+    scheduler.step(1.5, [](const scena::ir::Action&) {});
+    EXPECT_EQ(*scheduler.element_transition("story/act"), TransitionKind::Stop);
+}
+
+TEST(TriggerTest, RebindClearsTriggerState) {
+    // bind() rebuilds every condition's history, so a rising edge already
+    // consumed by a previous run is detected again.
+    const Storyboard storyboard = make_storyboard(
+        {make_event("event", trigger_of({{cond(at_least(1.0), ConditionEdge::Rising)}}), "ego")});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    ASSERT_EQ(firing_times(scheduler, {0.0, 1.0, 2.0}), (std::vector<double>{1.0}));
+
+    scheduler.bind(storyboard);
+    EXPECT_EQ(firing_times(scheduler, {0.0, 1.0, 2.0}), (std::vector<double>{1.0}));
+
+    // And a fresh binding starts its history from scratch: an expression
+    // that already holds at the first evaluation shows no rise (§7.6.4).
+    scheduler.bind(storyboard);
+    EXPECT_TRUE(firing_times(scheduler, {2.0, 3.0}).empty());
+}
