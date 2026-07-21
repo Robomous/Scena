@@ -64,10 +64,23 @@ enum class ActionOutcome {
 /// - Child start rule (§8.3): when a parent enters runningState, direct
 ///   children with a start trigger enter standbyState, all others enter
 ///   runningState immediately.
-/// - Events fire their actions on their startTransition; every action is
-///   instantaneous in this phase, so events complete within the same
-///   evaluation (§8.4.1–8.4.2, single execution — maximumExecutionCount
-///   and priorities arrive in a later sprint).
+/// - Events fire their actions on their startTransition; the event ends
+///   regularly in that same evaluation when every action reported
+///   ActionOutcome::Complete, and otherwise stays in runningState until a
+///   stopTransition ends it (§8.4.1–8.4.2).
+/// - Event priority is resolved in the scope of the Maneuver (§7.3.3,
+///   §8.4.2.2): `override` stops every *running* sibling of the same
+///   Maneuver — standby siblings are untouched — `skip` does not start
+///   while a sibling runs, and `parallel` starts regardless. A skipped
+///   start performs a skipTransition, which counts as an execution.
+/// - Execution counts (§8.3.3.2, §8.4.2.1): an event's executions are the
+///   sum of its startTransitions and skipTransitions and are performed
+///   sequentially. Leaving runningState with an endTransition returns the
+///   event to standbyState while executions remain and completes it once
+///   they are exhausted; a standby event whose executions already reached
+///   the maximum completes with a skipTransition. A stopTransition — from
+///   a stop trigger or from an overriding sibling — completes the event
+///   "regardless of the number of executions left" (§8.4.2.2).
 /// - Completion propagates child -> parent: a Maneuver completes when all
 ///   its Events completed (§8.4.3), a ManeuverGroup when all Maneuvers
 ///   (§8.4.4, an empty group completes instantly), an Act when all groups
@@ -89,6 +102,26 @@ enum class ActionOutcome {
 ///   of every trigger reachable this evaluation is evaluated exactly once,
 ///   without short-circuiting, so that edge and delay histories advance in
 ///   lockstep regardless of the trigger's Boolean outcome.
+/// - A start trigger is evaluated exactly once per evaluation and only
+///   while its element is in standbyState; an element in runningState or
+///   completeState has no reachable start trigger, so its condition
+///   histories are frozen (§7.3.2: "start triggers only make sense for
+///   events in standbyState"). Priority is therefore never expressed by
+///   *not* evaluating a trigger — a `skip` event stands by, its trigger is
+///   evaluated normally and its histories advance exactly as any other
+///   element's; only the transition that follows the evaluation differs.
+///   Re-arming does not reset condition history either (only bind() does),
+///   so an event with a rising-edge trigger re-executes on the next rise
+///   rather than immediately.
+/// - The standard gives no ordering rule for two events of one Maneuver
+///   whose start triggers hold at the same discrete time. Scena resolves
+///   them in a single pass in document order, so every decision is a pure
+///   function of the time and of the decisions taken by strictly earlier
+///   siblings. Two consequences worth knowing: of two events triggering
+///   together where the later one is `override`, the later one wins (it
+///   stops the one that just started); and a `skip` event placed before an
+///   event that starts in the same evaluation is not skipped, because
+///   nothing was running yet when its turn came.
 class Scheduler {
 public:
     using FireCallback = std::function<ActionOutcome(const ir::Action&)>;
@@ -97,8 +130,9 @@ public:
     /// including a fresh evaluation history per trigger condition (any
     /// previous history is discarded). The storyboard must be valid —
     /// Engine::init rejects null logical expressions, negative or NaN
-    /// delays and empty condition groups, and the scheduler relies on that
-    /// precondition instead of re-checking it every step.
+    /// delays, empty condition groups and negative execution counts, and
+    /// the scheduler relies on that precondition instead of re-checking it
+    /// every step.
     ///
     /// The storyboard enters runningState on the first step() call — simulation
     /// time starts with the execution of the storyboard (§8.4.7), and the
@@ -177,6 +211,14 @@ private:
         const ir::Event* event = nullptr; ///< Events only.
         ElementState state = ElementState::Standby;
         TransitionKind transition = TransitionKind::None;
+
+        /// Events only (§8.4.2.2).
+        ir::EventPriority priority = ir::EventPriority::Parallel;
+        /// Events only: the budget of §8.3.3.2 and the running tally of
+        /// §8.4.2.1 (startTransitions + skipTransitions).
+        int max_executions = 1;
+        int executions = 0;
+
         std::vector<Node> children;
     };
 
@@ -186,6 +228,24 @@ private:
     static Node build(const ir::Storyboard& storyboard);
     static void enter_running(Node& node, double simulation_time, const FireCallback& fire);
     static void update(Node& node, double simulation_time, const FireCallback& fire);
+
+    /// Advances the events of a running Maneuver — the scope event priority
+    /// is defined over (§7.3.3) and therefore the only place that can see
+    /// all the siblings a starting event has to interact with.
+    static void update_maneuver(Node& maneuver, double simulation_time, const FireCallback& fire);
+    /// Resolves the priority of the event at `index` and starts it, skips
+    /// it or overrides its running siblings accordingly (§8.4.2.2).
+    static void start_event(Node& maneuver, std::size_t index, double simulation_time,
+                            const FireCallback& fire);
+    [[nodiscard]] static bool has_running_sibling(const Node& maneuver, std::size_t index);
+    /// Takes an event out of runningState with an endTransition (§8.4.2.1):
+    /// back to standbyState while executions remain, complete once they are
+    /// exhausted.
+    static void end_execution(Node& event);
+    /// Completes a standby event whose executions already reached its
+    /// maximum, with a skipTransition (§8.4.2.1).
+    static void apply_standby_exhaustion(Node& event);
+
     static void stop_cascade(Node& node);
     static bool all_children_complete(const Node& node);
     [[nodiscard]] const Node* find(const std::string& path) const;
