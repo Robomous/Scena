@@ -96,6 +96,13 @@ def main() -> None:
     status = engine.init(build_scenario())
     assert status == scn.Status.Ok, status
 
+    # A valid scenario produces no diagnostics; a defective one would list
+    # every finding here (severity, code, element path, and — for standards
+    # violations — the ASAM checker rule id).
+    diagnostics = engine.diagnostics()
+    assert diagnostics == [], diagnostics
+    print(f"init: {len(diagnostics)} diagnostic(s)")
+
     event_path = "story/act/group/maneuver/speed-up"
     assert engine.storyboard_element_state(event_path) == scn.ElementState.Standby
 
@@ -128,6 +135,12 @@ def main() -> None:
     assert engine.storyboard_element_transition("story/act") == scn.TransitionKind.Stop
     # ...but the storyboard has no stop trigger, so it never self-completes.
     assert engine.storyboard_element_state("") == scn.ElementState.Running
+
+    # Every action the engine applied was a SpeedAction it implements, so the
+    # run recorded no runtime warnings.
+    run_diagnostics = engine.diagnostics()
+    assert run_diagnostics == [], run_diagnostics
+    print(f"run: {len(run_diagnostics)} diagnostic(s)")
 
     engine.close()
     print(
