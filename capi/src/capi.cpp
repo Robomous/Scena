@@ -6,10 +6,12 @@
 #include <string>
 #include <utility>
 
+#include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/scenario.h"
+#include "scena/status.h"
 #include "scena/version.h"
 
 struct scn_engine {
@@ -33,8 +35,28 @@ scn_status to_c_status(scena::Status status) {
         return SCN_ERROR_INVALID_CONTROL_MODE;
     case scena::Status::InvalidArgument:
         return SCN_ERROR_INVALID_ARGUMENT;
+    case scena::Status::ParseError:
+        return SCN_ERROR_PARSE;
+    case scena::Status::ValidationError:
+        return SCN_ERROR_VALIDATION;
+    case scena::Status::SemanticError:
+        return SCN_ERROR_SEMANTIC;
+    case scena::Status::UnsupportedFeature:
+        return SCN_ERROR_UNSUPPORTED_FEATURE;
     }
     return SCN_ERROR_INTERNAL;
+}
+
+scn_severity to_c_severity(scena::Severity severity) {
+    switch (severity) {
+    case scena::Severity::Info:
+        return SCN_SEVERITY_INFO;
+    case scena::Severity::Warning:
+        return SCN_SEVERITY_WARNING;
+    case scena::Severity::Error:
+        return SCN_SEVERITY_ERROR;
+    }
+    return SCN_SEVERITY_ERROR;
 }
 
 scena::EntityState from_c_state(const scn_entity_state& state) {
@@ -173,6 +195,56 @@ scn_status scn_engine_close(scn_engine* engine) {
     }
     try {
         return to_c_status(engine->engine.close());
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_diagnostic_count(scn_engine* engine, size_t* out_count) {
+    if (engine == nullptr || out_count == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        *out_count = engine->engine.diagnostics().size();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_diagnostic_at(scn_engine* engine, size_t index, scn_diagnostic* out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto& diagnostics = engine->engine.diagnostics();
+        if (index >= diagnostics.size()) {
+            return SCN_ERROR_INVALID_ARGUMENT; // out left untouched
+        }
+        const scena::Diagnostic& diagnostic = diagnostics[index];
+        // Strings borrow from the diagnostic's std::strings, which live in the
+        // engine and are stable until the next mutating call (see capi.h).
+        out->severity = to_c_severity(diagnostic.severity);
+        out->code = to_c_status(diagnostic.code);
+        out->message = diagnostic.message.c_str();
+        out->path = diagnostic.path.c_str();
+        out->file = diagnostic.location.file.c_str();
+        out->line = diagnostic.location.line;
+        out->column = diagnostic.location.column;
+        out->rule_id = diagnostic.rule_id.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_clear_diagnostics(scn_engine* engine) {
+    if (engine == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        engine->engine.clear_diagnostics();
+        return SCN_OK;
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }

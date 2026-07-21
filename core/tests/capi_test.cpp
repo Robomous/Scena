@@ -70,14 +70,86 @@ TEST(CApiTest, NullArgumentsAreRejected) {
     EXPECT_EQ(scn_engine_add_entity(nullptr, "ego", "ego", SCN_CONTROL_ENGINE),
               SCN_ERROR_INVALID_ARGUMENT);
 
+    size_t count = 42;
+    scn_diagnostic diagnostic{};
+    EXPECT_EQ(scn_engine_diagnostic_count(nullptr, &count), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_diagnostic_at(nullptr, 0, &diagnostic), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_clear_diagnostics(nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
     scn_engine* engine = scn_engine_create();
     ASSERT_NE(engine, nullptr);
     EXPECT_EQ(scn_engine_add_entity(engine, nullptr, "ego", SCN_CONTROL_ENGINE),
               SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_get_state(engine, "ego", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_diagnostic_count(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_diagnostic_at(engine, 0, nullptr), SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 
     scn_engine_destroy(nullptr); // must be a safe no-op
+}
+
+TEST(CApiTest, DiagnosticsRoundTrip) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // A speed action targeting an entity the scenario never declares: init
+    // fails with a semantic error and records a diagnostic.
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "missing", 10.0, 1.0), SCN_OK);
+    EXPECT_EQ(scn_engine_init(engine), SCN_ERROR_SEMANTIC);
+
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    ASSERT_GE(count, 1U);
+
+    scn_diagnostic diagnostic{};
+    ASSERT_EQ(scn_engine_diagnostic_at(engine, 0, &diagnostic), SCN_OK);
+    EXPECT_EQ(diagnostic.severity, SCN_SEVERITY_ERROR);
+    EXPECT_EQ(diagnostic.code, SCN_ERROR_SEMANTIC);
+    // Borrowed strings are never NULL, absent fields are "".
+    ASSERT_NE(diagnostic.message, nullptr);
+    ASSERT_NE(diagnostic.path, nullptr);
+    ASSERT_NE(diagnostic.file, nullptr);
+    ASSERT_NE(diagnostic.rule_id, nullptr);
+    EXPECT_STRNE(diagnostic.message, "");
+    EXPECT_STRNE(diagnostic.path, "");
+    EXPECT_STREQ(diagnostic.file, ""); // no source location in a built scenario
+    EXPECT_EQ(diagnostic.line, 0);
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, DiagnosticAtRejectsOutOfRange) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    size_t count = 7;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    EXPECT_EQ(count, 0U); // a valid scenario produces none
+
+    scn_diagnostic diagnostic{};
+    diagnostic.line = 99; // sentinel: must be left untouched on out-of-range
+    EXPECT_EQ(scn_engine_diagnostic_at(engine, 0, &diagnostic), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(diagnostic.line, 99);
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, ClearDiagnosticsEmptiesTheRecord) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "missing", 10.0, 1.0), SCN_OK);
+    EXPECT_EQ(scn_engine_init(engine), SCN_ERROR_SEMANTIC);
+
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    ASSERT_GE(count, 1U);
+
+    ASSERT_EQ(scn_engine_clear_diagnostics(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    EXPECT_EQ(count, 0U);
+
+    scn_engine_destroy(engine);
 }
 
 TEST(CApiTest, AddSpeedActionExDefaultsMatchPlainVariant) {
