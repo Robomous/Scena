@@ -154,6 +154,35 @@ TEST(DeterminismTest, IdenticalRunsProduceBitIdenticalStates) {
     ASSERT_EQ(engine_a.time(), engine_b.time());
 }
 
+TEST(DeterminismTest, LongHorizonAccumulationStaysBitIdentical) {
+    // The integrator now routes trig through detmath; over a long run the
+    // accumulated position must stay bit-identical between two engines fed the
+    // same varying-dt sequence. This is the in-process analogue of the
+    // cross-platform trace diff: same inputs, exactly the same bits, forever.
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_scenario()), Status::Ok);
+
+    constexpr int kSteps = 120000;
+    for (int i = 0; i < kSteps; ++i) {
+        // A varying but fully deterministic dt: cycles through seven values so
+        // the heading-dependent trig is exercised at many reduced arguments.
+        const double dt = 0.001 + 0.0005 * (i % 7);
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        // Comparing every step is too slow under ASan; sampling every 500th
+        // step plus the final step still catches any divergence, since a
+        // single differing bit never heals.
+        if (i % 500 == 0 || i == kSteps - 1) {
+            SCOPED_TRACE(i);
+            expect_bit_identical(engine_a, engine_b, "ego");
+            expect_bit_identical(engine_a, engine_b, "lead");
+        }
+    }
+    ASSERT_EQ(engine_a.time(), engine_b.time());
+}
+
 TEST(DeterminismTest, StoryboardStatesEvolveIdentically) {
     // The storyboard walk itself must be reproducible: element states agree
     // at every step of two identical runs.
