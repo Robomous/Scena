@@ -1,0 +1,196 @@
+# ASAM OpenSCENARIO XML 1.0–1.3 — v0.0.1 coverage matrix
+
+Normative scope declaration for the XML frontend and runtime. Section
+numbers follow the ASAM OpenSCENARIO XML 1.4.0 text (the local reference
+copy); Scena **targets 1.0–1.3** — 1.4-only constructs are rejected by
+version detection (p4-s1) and listed here as Excluded.
+
+Statuses: **In** = In-v0.0.1 (implemented + tested before release);
+**Post** = Post-v0.0.1 (parsed to a structured `UnsupportedFeature`
+warning, never silently dropped; implementation deferred); **Excl** =
+Excluded (with reason; rejected or warned, never executed).
+
+Rules of this document:
+- Every **In** row names the sprint that implements it; the sprint's tests
+  cover it. CI's docs-consistency check greps this file against the sprint
+  list in `docs/roadmap/roadmap.md`.
+- Deprecated-in-1.x constructs that valid 1.0–1.3 files may contain are
+  **In** with an "accepted, deprecated" note — Scena loads them and maps
+  them to their successors.
+- Introduction-version notes marked *(verify)* cannot be confirmed from the
+  local reference text alone and need the per-version XSDs from the gated
+  ASAM bundle (open question OQ-4 in the roadmap summary).
+
+## Actions — private
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| SpeedAction | §7.4.1.4 | In | p5-s4 | Absolute + relative targets, `continuous` relative tracking, all TransitionDynamics shapes |
+| SpeedProfileAction | §7.4.1.4 | In | p5-s4 | ≥1.2; entry series with accel/jerk limits |
+| LongitudinalDistanceAction | §7.4.1.4 | In | p5-s5 | distance/timeGap modes, freespace, `continuous` keeping |
+| LaneChangeAction | §7.4.1.4 | In | p5-s4 | Absolute/relative target lane, offset carryover; 1.4 lane-layer awareness excluded |
+| LaneOffsetAction | §7.4.1.4 | In | p5-s4 | Incl. `continuous` variant |
+| LateralDistanceAction | §7.4.1.4 | In | p5-s4 | Shares p2-s3 lateral machinery |
+| TeleportAction | §7.4.1.4 | In | p5-s4 | All In-scope position variants (see Positions) |
+| SynchronizeAction | §7.4.1.4 | Post | — | Requires master-relative speed synthesis (steady-state solve); deferred to keep v0.0.1 honest |
+| VisibilityAction | §7.4.1.4 | In | p5-s5 | State flags surfaced via state/gateway; no sensor semantics in engine |
+| ControllerAction (wrapper) | §7.4.1.4, §6.6 | In | p5-s5 | Wrapper for the three below |
+| AssignControllerAction | §6.6.3 | In | p5-s5 | Controller metadata handed to host via gateway |
+| ActivateControllerAction | §6.6.4 | In | p5-s5 | Lateral/longitudinal domains toggle engine default controller; lighting/animation domains → Post (appearance). Deprecated direct-under-PrivateAction placement accepted |
+| OverrideControllerValueAction (+ Throttle/Brake/Clutch/ParkingBrake/SteeringWheel/Gear) | §7.4.1.4 | Post | — | Pedal/wheel-level overrides are host-controller business; no engine vehicle-device model in v0.0.1 |
+| AssignRouteAction | §6.8.2 | In | p5-s5 | Route + RouteStrategy over P3 routes |
+| FollowTrajectoryAction | §6.9 | In | p5-s5 | timeReference none/timing × followingMode follow/position |
+| AcquirePositionAction | §7.4.1.4 | In | p5-s5 | Implicit two-waypoint route |
+| RandomRouteAction | §7.4.1.4 | Excl | — | Randomness violates the determinism contract; post-release only with host-seeded selection design *(verify introduction version)* |
+| PreferredLaneLayerAction | §7.4.1.3 | Excl | — | 1.4-only; outside targeted versions |
+| AnimationAction | §6.7 | Post | — | ≥1.2; appearance domain, no engine semantics in v0.0.1 |
+| LightStateAction | §6.7 | Post | — | ≥1.2; appearance domain |
+| ConnectTrailerAction / DisconnectTrailerAction | §7.2.2.6 | Post | — | Trailer/hitch model out of v0.0.1 entity scope *(verify introduction version)* |
+
+## Actions — global
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| EnvironmentAction | §7.4.2 | In | p5-s6 | Environment state store + TimeOfDay clock only; no physics/visual coupling (documented simplification) |
+| AddEntityAction | §7.4.2 | In | p5-s6 | Deterministic entity-table update |
+| DeleteEntityAction | §7.4.2 | In | p5-s6 | Deterministic entity-table update |
+| ParameterSetAction | class ref | In | p5-s6 | Accepted, deprecated; lowered onto the runtime variable store (1.0/1.1 compat) |
+| ParameterModifyAction (+ ModifyRule, Add/MultiplyByValueRule) | class ref | In | p5-s6 | Accepted, deprecated; same lowering |
+| VariableSetAction | §6.12 | In | p5-s6 | ≥1.2 |
+| VariableModifyAction (+ rules) | §6.12 | In | p5-s6 | ≥1.2; numeric types only per rule C.2.6 |
+| TrafficSignalControllerAction | §6.11 | In | p5-s6 | Phase model; 1.4 phase *semantics* (TrafficSignalSemantics) excluded |
+| TrafficSignalStateAction | §6.11 | In | p5-s6 | Named signal observable state |
+| TrafficSourceAction | §6.10 | Post | — | Ambient-traffic generation (with distributions) is a post-release feature family |
+| TrafficSinkAction | §6.10 | Post | — | Same family |
+| TrafficSwarmAction | §6.10 | Post | — | Same family; also inherently stochastic |
+| TrafficAreaAction | §7.4.2 | Excl | — | ≥1.3 per rule C.7.23 **and** in the deferred traffic family; excluded to avoid a partially supported family |
+| TrafficStopAction | §7.4.2 | Post | — | Meaningless without the traffic family |
+| SetMonitorAction | §6.14 | Post | — | Monitor surface deferred with monitors *(verify introduction version)* |
+
+## Actions — user defined
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| UserDefinedAction / CustomCommandAction | §7.4.3 | In | p5-s6 | Host callback through the gateway; no-op without a host (documented contract) |
+
+## Conditions — by entity
+
+All with `TriggeringEntities` any/all semantics (§7.6.5.1, p5-s2).
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| AccelerationCondition | §7.6.5.1 | In | p5-s2 | Optional direction dimension |
+| AngleCondition | §7.6.5.1 | Post | — | Introduction version unconfirmed in local text *(verify)*; low demand for v0.0.1 set |
+| CollisionCondition | §7.6.5.1 | In | p5-s3 | OBB intersection over p2-s1 bounding boxes |
+| DistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | coordinateSystem × relativeDistanceType; deprecated `alongRoute` accepted and mapped |
+| EndOfRoadCondition | §7.6.5.1 | In | p5-s3 | Requires road network (rule-cited prerequisite) |
+| OffroadCondition | §7.6.5.1 | In | p5-s3 | Requires road network |
+| ReachPositionCondition | §7.6.5.1 | In | p5-s2 | Accepted, deprecated (successor: DistanceCondition) |
+| RelativeAngleCondition | §7.6.5.1 | Post | — | Same rationale as AngleCondition *(verify)* |
+| RelativeClearanceCondition | §7.6.5.1 | In | p5-s3 | Adjacent-lane/longitudinal-window freeness |
+| RelativeDistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Freespace via bounding boxes |
+| RelativeSpeedCondition | §7.6.5.1 | In | p5-s2 | Optional direction |
+| SpeedCondition | §7.6.5.1 | In | p5-s2 | Optional direction |
+| StandStillCondition | §7.6.5.1 | In | p5-s2 | Duration accumulation |
+| TimeHeadwayCondition | §7.6.5.1, §6.4 | In | p5-s3 | Deprecated `alongRoute` accepted and mapped |
+| TimeToCollisionCondition | §7.6.5.1, §6.4 | In | p5-s3 | Closed-form (distance / closing speed, no acceleration); diverging ⇒ false |
+| TraveledDistanceCondition | §7.6.5.1 | In | p5-s2 | |
+
+## Conditions — by value
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| ParameterCondition | §7.6.5.2 | In | p5-s1 | Rule comparator; ordering only when numerically convertible |
+| VariableCondition | §7.6.5.2, §6.12 | In | p5-s1 | ≥1.2; strings equal/not-equal only |
+| SimulationTimeCondition | §7.6.5.2 | In | p5-s1 | Time starts when Storyboard enters running (§8.4.7) |
+| StoryboardElementStateCondition | §7.6.5.2, §8.1–8.2 | In | p5-s1 | States and transitions |
+| TimeOfDayCondition | §7.6.5.2 | In | p5-s1 | Fed by the EnvironmentAction time-of-day clock (p5-s6) |
+| TrafficSignalCondition | §7.6.5.2, §6.11 | In | p5-s6 | Lands with the signal actions |
+| TrafficSignalControllerCondition | §7.6.5.2, §6.11 | In | p5-s6 | Phase reached; 1.4 semantics excluded |
+| UserDefinedValueCondition | §7.6.5.2 | In | p5-s1 | Host-provided named values via gateway/API |
+
+## Storyboard & runtime semantics
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| Storyboard / Story / Act / ManeuverGroup / Maneuver / Event / Action nesting | §7.2.1, §7.3 | In | p1-s1 | |
+| Element state machine (standby/running/complete; start/end/stop/skip transitions) | §8.1–8.3 | In | p1-s1 | |
+| Init phase (global + private init actions before simulation time) | §8.5 | In | p1-s1, p4-s2 | Non-instantaneous init actions carry into the storyboard |
+| Trigger = OR(ConditionGroups); group = AND(Conditions); empty trigger false | §7.6.1 | In | p1-s2 | |
+| ConditionEdge none/rising/falling/risingOrFalling + first-evaluation corner cases | §7.6.2, §7.6.4 | In | p1-s2 | |
+| Condition delay (evaluates state of t−Δt; Δt ≥ 0) | §7.6.3 | In | p1-s2 | Rule-cited validation |
+| Start triggers (Act, Event only), stop triggers (Storyboard, Act) + inheritance | §7.6.1.1–7.6.1.2 | In | p1-s2 | |
+| Event priority `override`/`skip`/`parallel` | §7.3.2, §8.4.2.2 | In | p1-s3 | Deprecated literal `overwrite` accepted as `override` |
+| maximumExecutionCount | §8.3.3.2 | In | p1-s3 | Executions = start + skip transitions |
+| Action conflict resolution & completion reasons | §7.5 | In | p1-s3 | Incl. continuous actions (§7.5.3) and bulk/actor semantics (§7.5.4) |
+| Storyboard stop trigger as sole completion | §8.4.7 | In | p1-s1 | |
+
+## Document & reuse machinery
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| OpenScenario root / FileHeader (revMajor/revMinor 1.0–1.3) | class ref | In | p4-s1 | 1.4 rejected with diagnostic |
+| ScenarioDefinition (incl. RoadNetwork reference) | class ref | In | p4-s2 | RoadNetwork logic file handed to road backend/host |
+| ParameterDeclaration + ValueConstraint(Group) | §9.1 | In | p4-s3 | |
+| Expressions `$param`, `${...}` | §9.2 | In | p4-s3 | ≥1.1; full operator whitelist + typing rules; 1.4-only constant `pi` rejected |
+| VariableDeclaration | §6.12 | In | p4-s3 | ≥1.2; runtime store in kernel |
+| MonitorDeclaration | §6.14 | Post | — | With SetMonitorAction *(verify version)* |
+| Catalog / CatalogReference / CatalogLocations (vehicle, controller, pedestrian, miscObject, environment, maneuver, trajectory, route) | §9.4–9.6 | In | p4-s4 | 1.4-only trafficDistributionEntry catalog excluded |
+| ParameterValueDistribution files (Deterministic/Stochastic) | §9.3 | Post | — | Parameter-variation workflow belongs with the post-release generation family |
+| Entities: ScenarioObject + inline Vehicle/Pedestrian/MiscObject | §7.2.2 | In | p2-s1, p4-s2 | Performance, axles (as data), bounding boxes, properties |
+| ExternalObjectReference | §7.2.2 | Post | — | Requires road-network object binding beyond v0.0.1 map scope |
+| Trailer attributes on Vehicle | §7.2.2.6 | Post | — | With the trailer action family |
+| EntitySelection / ByType / ByObjectType | §7.2.2.2–7.2.2.5 | In | p4-s4 | Homogeneity rules cited |
+| ObjectController / Controller (+ properties) | §6.6 | In | p4-s4 | Domain typing; multiple controllers ≥1.2 accepted |
+| Environment / Weather / TimeOfDay / RoadCondition (as data) | §7.4.2 | In | p4-s4, p5-s6 | Stored + queryable; no physics coupling |
+| TrafficDefinition / TrafficDistribution | §6.10 | Post | — | With the traffic family |
+
+## Positions, trajectories, routes
+
+| Element | Section | Status | Sprint | Notes |
+|---|---|---|---|---|
+| WorldPosition | §6.3.8 | In | p2-s4 | ≥1.3 corrected calculations applied to all versions (per §5) |
+| RelativeWorldPosition | §6.3.8 | In | p2-s4 | |
+| RelativeObjectPosition | §6.3.8 | In | p2-s4 | |
+| RoadPosition / RelativeRoadPosition | §6.3.8 | In | p2-s4, p3-s4 | Via `IRoadQuery` |
+| LanePosition / RelativeLanePosition | §6.3.8 | In | p2-s4, p3-s4 | Via `IRoadQuery` |
+| RoutePosition (all InRoutePosition variants) | §6.3.8 | In | p2-s4, p3-s4 | |
+| TrajectoryPosition | §6.3.8 | In | p2-s5 | |
+| GeoPosition | §6.3.8 | Post | — | Needs geodetic datum handling (rule-cited diagnostic when encountered) |
+| Orientation + ReferenceContext | §6.3.8 | In | p2-s4 | |
+| Trajectory + Polyline / Clothoid / Nurbs | §6.9 | In | p2-s5 | |
+| ClothoidSpline | §6.9 | Post | — | Introduction version unconfirmed *(verify)*; clothoid single-segment covers v0.0.1 need |
+| Motion class / Polyline Interpolation | §6.9 | Excl | — | 1.4-only |
+| TimeReference / Timing / TrajectoryFollowingMode | §6.9.1–6.9.5 | In | p2-s5, p5-s5 | |
+| Route / Waypoint / RouteStrategy / RouteRef | §6.8 | In | p3-s3, p5-s5 | RouteStrategy `random` → Excl (determinism); fastest/shortest/leastIntersections In |
+| TrafficSignalController / Phase / TrafficSignalState | §6.11 | In | p5-s6 | 1.4 TrafficSignalSemantics / GroupState excluded |
+
+## Version-handling decisions
+
+- **1.0–1.3 accepted; 1.4 rejected** at `FileHeader` (p4-s1).
+- **≥1.3 corrected position/orientation calculations applied uniformly**
+  to all input versions, exactly as §5 prescribes; no per-version dual
+  semantics.
+- Deprecated constructs (see rows marked "accepted, deprecated") load with
+  a warning diagnostic and map onto their successors; the strict
+  no-deprecated schema variants are not enforced by Scena.
+- Elements whose introduction version the local reference cannot confirm
+  are marked *(verify)*; confirming them requires the per-version XSDs
+  from the gated ASAM bundle (maintainer action, roadmap open question).
+  Until verified, encountering them in a file that predates their
+  (suspected) introduction yields the same structured warning as any
+  Post/Excluded element — never a crash, never silence.
+
+## Declared coverage summary (targets 1.0–1.3)
+
+- Actions: **23 of 38** concrete action classes In (61%); 12 Post; 3 Excl
+  (1.4-only or determinism-incompatible).
+- Conditions: **21 of 24** condition classes In (88%); 3 Post.
+- All storyboard/runtime semantics constructs: In (100%).
+- Positions: 9 of 10 variants In (GeoPosition Post).
+- Trajectory shapes: polyline, clothoid, NURBS In; ClothoidSpline Post;
+  1.4 additions Excl.
+
+Counting rule: concrete (non-abstract) classes from the Annex A action
+tables and the §7.6.5 condition set; deprecated classes counted where
+1.0–1.3 files may legally contain them.
