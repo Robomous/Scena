@@ -48,7 +48,8 @@ NB_MODULE(_scena, m) {
         .value("NoTransition", scena::runtime::TransitionKind::None)
         .value("Start", scena::runtime::TransitionKind::Start)
         .value("End", scena::runtime::TransitionKind::End)
-        .value("Stop", scena::runtime::TransitionKind::Stop);
+        .value("Stop", scena::runtime::TransitionKind::Stop)
+        .value("Skip", scena::runtime::TransitionKind::Skip);
 
     nb::class_<ir::Entity>(m, "Entity")
         .def(
@@ -123,16 +124,32 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("target_speed", &ir::SpeedAction::target_speed);
 
     // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
+    nb::enum_<ir::EventPriority>(m, "EventPriority",
+                                 "How a starting event interacts with the other events of its "
+                                 "Maneuver (§7.3.2, §8.4.2.2). Distinct from TransitionKind.Skip, "
+                                 "which is the transition a skipped start performs.")
+        .value("Override", ir::EventPriority::Override)
+        .value("Parallel", ir::EventPriority::Parallel)
+        .value("Skip", ir::EventPriority::Skip);
+
     nb::class_<ir::Event>(m, "Event")
         .def(
             "__init__",
-            [](ir::Event* self, std::string name, std::optional<ir::Trigger> start_trigger) {
-                new (self) ir::Event{std::move(name), std::move(start_trigger), {}};
+            [](ir::Event* self, std::string name, std::optional<ir::Trigger> start_trigger,
+               ir::EventPriority priority, int maximum_execution_count) {
+                new (self) ir::Event{.name = std::move(name),
+                                     .start_trigger = std::move(start_trigger),
+                                     .priority = priority,
+                                     .maximum_execution_count = maximum_execution_count,
+                                     .actions = {}};
             },
-            "name"_a, "start_trigger"_a = nb::none(),
+            "name"_a, "start_trigger"_a = nb::none(), "priority"_a = ir::EventPriority::Parallel,
+            "maximum_execution_count"_a = 1,
             "An event; without a start trigger it starts with its parent.")
         .def_rw("name", &ir::Event::name)
         .def_rw("start_trigger", &ir::Event::start_trigger)
+        .def_rw("priority", &ir::Event::priority)
+        .def_rw("maximum_execution_count", &ir::Event::maximum_execution_count)
         .def(
             "add_action",
             [](ir::Event& event, std::shared_ptr<ir::Action> action) {
@@ -144,7 +161,7 @@ NB_MODULE(_scena, m) {
         .def(
             "__init__",
             [](ir::Maneuver* self, std::string name) {
-                new (self) ir::Maneuver{std::move(name), {}};
+                new (self) ir::Maneuver{.name = std::move(name), .events = {}};
             },
             "name"_a)
         .def_rw("name", &ir::Maneuver::name)
@@ -159,7 +176,8 @@ NB_MODULE(_scena, m) {
         .def(
             "__init__",
             [](ir::ManeuverGroup* self, std::string name) {
-                new (self) ir::ManeuverGroup{std::move(name), {}, {}};
+                new (self)
+                    ir::ManeuverGroup{.name = std::move(name), .actors = {}, .maneuvers = {}};
             },
             "name"_a)
         .def_rw("name", &ir::ManeuverGroup::name)
@@ -181,8 +199,10 @@ NB_MODULE(_scena, m) {
             "__init__",
             [](ir::Act* self, std::string name, std::optional<ir::Trigger> start_trigger,
                std::optional<ir::Trigger> stop_trigger) {
-                new (self)
-                    ir::Act{std::move(name), std::move(start_trigger), std::move(stop_trigger), {}};
+                new (self) ir::Act{.name = std::move(name),
+                                   .start_trigger = std::move(start_trigger),
+                                   .stop_trigger = std::move(stop_trigger),
+                                   .groups = {}};
             },
             "name"_a, "start_trigger"_a = nb::none(), "stop_trigger"_a = nb::none(),
             "An act; without a start trigger it starts with the storyboard.")
@@ -202,7 +222,9 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::Story>(m, "Story")
         .def(
             "__init__",
-            [](ir::Story* self, std::string name) { new (self) ir::Story{std::move(name), {}}; },
+            [](ir::Story* self, std::string name) {
+                new (self) ir::Story{.name = std::move(name), .acts = {}};
+            },
             "name"_a)
         .def_rw("name", &ir::Story::name)
         .def(
