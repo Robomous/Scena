@@ -4,27 +4,19 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "scena/diagnostic.h"
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
 #include "scena/runtime/scheduler.h"
+#include "scena/status.h"
 
 namespace scena {
 
 namespace gateway {
 class ISimulatorGateway;
 } // namespace gateway
-
-/// Result codes for all engine operations. The public API reports failures
-/// through these codes; no exceptions cross the API boundary.
-enum class Status {
-    Ok = 0,
-    AlreadyInitialized,
-    NotInitialized,
-    UnknownEntity,
-    InvalidControlMode,
-    InvalidArgument,
-};
 
 /// Kinematic state of one entity in the world frame.
 struct EntityState {
@@ -77,10 +69,17 @@ public:
     /// storyboard enters runningState and is evaluated once at t = 0
     /// (§8.4.7), firing events whose start condition already holds.
     ///
-    /// Fails with InvalidArgument on duplicate or empty entity ids, null
-    /// actions, empty or sibling-duplicate storyboard element names (element
-    /// names address the state query), and with UnknownEntity when an action
-    /// targets a non-existent entity.
+    /// Validation walks the whole scenario in document order and reports
+    /// every defect it finds through diagnostics(); it does not stop at the
+    /// first one. Fails with ValidationError on structural defects (duplicate
+    /// or empty entity ids, null actions, an event without actions, a
+    /// negative maximumExecutionCount, empty or sibling-duplicate storyboard
+    /// element names — element names address the state query, an empty
+    /// condition group, a negative or NaN condition delay), and with
+    /// SemanticError when an actor or an action targets an entity the
+    /// scenario does not declare. The returned code is that of the first
+    /// error diagnostic in document order; a failed init leaves the engine
+    /// untouched and uninitialized.
     Status init(ir::Scenario scenario);
 
     /// Advances simulation time by dt seconds (dt >= 0). Order within a step:
@@ -114,6 +113,24 @@ public:
     [[nodiscard]] std::optional<runtime::TransitionKind>
     storyboard_element_transition(const std::string& path) const;
 
+    /// Structured findings from the current scenario, in report order:
+    /// validation findings from init() first, then runtime findings in the
+    /// order the steps that produced them ran.
+    ///
+    /// The sink is cleared by init() (after the AlreadyInitialized guard, so
+    /// a rejected re-init preserves the previous record) and by
+    /// clear_diagnostics(). close() deliberately does not clear it, so a host
+    /// can inspect a finished or failed run post mortem.
+    ///
+    /// Not every failure emits: AlreadyInitialized, NotInitialized, an
+    /// invalid dt, and report_state() failures return a Status only. They
+    /// describe host API misuse rather than scenario content, and emitting
+    /// from them would let a polling loop grow the sink without bound.
+    [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept;
+
+    /// Drops every collected diagnostic.
+    void clear_diagnostics() noexcept;
+
     /// Simulation time in seconds since init().
     [[nodiscard]] double time() const noexcept;
 
@@ -138,6 +155,7 @@ private:
     runtime::Scheduler scheduler_;
     // std::map (not unordered_map) so per-step iteration order is deterministic.
     std::map<std::string, EntityRecord> entities_;
+    DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };
 

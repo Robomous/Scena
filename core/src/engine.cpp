@@ -270,6 +270,14 @@ Engine::storyboard_element_transition(const std::string& path) const {
     return scheduler_.element_transition(path);
 }
 
+const std::vector<Diagnostic>& Engine::diagnostics() const noexcept {
+    return diagnostics_.diagnostics();
+}
+
+void Engine::clear_diagnostics() noexcept {
+    diagnostics_.clear();
+}
+
 double Engine::time() const noexcept {
     return clock_.now();
 }
