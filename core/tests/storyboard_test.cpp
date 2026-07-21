@@ -86,10 +86,10 @@ TEST(StoryboardTest, TimeZeroTriggersFireDuringInit) {
 
 TEST(StoryboardTest, ElementLifecycleIsObservable) {
     Scenario scenario = make_base_scenario();
-    scenario.storyboard.stories.push_back(
-        make_story("story", "act", std::make_shared<SimulationTimeCondition>(1.0),
-                   {make_speed_event("event", std::make_shared<SimulationTimeCondition>(2.0),
-                                     "ego", 10.0)}));
+    Event event =
+        make_speed_event("event", std::make_shared<SimulationTimeCondition>(2.0), "ego", 10.0);
+    scenario.storyboard.stories.push_back(make_story(
+        "story", "act", std::make_shared<SimulationTimeCondition>(1.0), {std::move(event)}));
 
     Engine engine;
     ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
@@ -172,22 +172,22 @@ TEST(StoryboardTest, ParallelStoriesRunIndependently) {
 
 TEST(StoryboardTest, MultipleEventsInManeuverRunToCompletion) {
     Scenario scenario = make_base_scenario();
-    scenario.storyboard.stories.push_back(make_story(
-        "story", "act", nullptr,
-        {make_speed_event("accelerate", std::make_shared<SimulationTimeCondition>(1.0), "ego",
-                          15.0),
-         make_speed_event("settle", std::make_shared<SimulationTimeCondition>(2.0), "ego", 9.0)}));
+    Event accelerate =
+        make_speed_event("accelerate", std::make_shared<SimulationTimeCondition>(1.0), "ego", 15.0);
+    Event settle =
+        make_speed_event("settle", std::make_shared<SimulationTimeCondition>(2.0), "ego", 9.0);
+    scenario.storyboard.stories.push_back(
+        make_story("story", "act", nullptr, {std::move(accelerate), std::move(settle)}));
 
     Engine engine;
     ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
 
+    const std::string maneuver_path = "story/act/group/maneuver";
     ASSERT_EQ(engine.step(1.5), Status::Ok);
     EXPECT_EQ(engine.state("ego")->speed, 15.0);
-    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver"),
-              ElementState::Running);
+    EXPECT_EQ(*engine.storyboard_element_state(maneuver_path), ElementState::Running);
 
     ASSERT_EQ(engine.step(1.0), Status::Ok);
     EXPECT_EQ(engine.state("ego")->speed, 9.0);
-    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver"),
-              ElementState::Complete);
+    EXPECT_EQ(*engine.storyboard_element_state(maneuver_path), ElementState::Complete);
 }
