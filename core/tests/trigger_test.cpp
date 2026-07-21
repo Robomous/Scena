@@ -30,6 +30,7 @@ using scena::ir::Story;
 using scena::ir::Storyboard;
 using scena::ir::Trigger;
 using scena::ir::TriggerCondition;
+using scena::runtime::ActionOutcome;
 using scena::runtime::ElementState;
 using scena::runtime::Scheduler;
 using scena::runtime::TransitionKind;
@@ -128,18 +129,23 @@ Storyboard make_storyboard(std::vector<Event> events,
 
 std::vector<std::string> fired_entities(Scheduler& scheduler, double t) {
     std::vector<std::string> fired;
-    scheduler.step(t,
-                   [&](const scena::ir::Action& action) { fired.push_back(action.entity_id()); });
+    scheduler.step(t, [&](const scena::ir::Action& action) {
+        fired.push_back(action.entity_id());
+        return ActionOutcome::Complete;
+    });
     return fired;
 }
 
 /// Steps the scheduler over `times` and returns the times at which the
-/// event fired. Firings are unique per event in this phase, so the vector
-/// is empty or holds exactly one time.
+/// event fired — one entry per action firing, so an event with a
+/// maximumExecutionCount above one contributes one entry per execution.
 std::vector<double> firing_times(Scheduler& scheduler, const std::vector<double>& times) {
     std::vector<double> fired;
     for (const double t : times) {
-        scheduler.step(t, [&](const scena::ir::Action&) { fired.push_back(t); });
+        scheduler.step(t, [&](const scena::ir::Action&) {
+            fired.push_back(t);
+            return ActionOutcome::Complete;
+        });
     }
     return fired;
 }
@@ -455,11 +461,11 @@ TEST(TriggerTest, StopTriggerSupportsEdgeAndDelay) {
     Scheduler scheduler;
     scheduler.bind(storyboard);
     for (const double t : {0.0, 0.5, 1.0}) {
-        scheduler.step(t, [](const scena::ir::Action&) {});
+        scheduler.step(t, [](const scena::ir::Action&) { return ActionOutcome::Complete; });
         EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Running) << t;
     }
     // The rise at t = 1.0 arrives delayed by 0.5.
-    scheduler.step(1.5, [](const scena::ir::Action&) {});
+    scheduler.step(1.5, [](const scena::ir::Action&) { return ActionOutcome::Complete; });
     EXPECT_EQ(*scheduler.element_transition("story/act"), TransitionKind::Stop);
 }
 

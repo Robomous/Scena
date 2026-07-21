@@ -204,7 +204,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
         // regularly within the same evaluation (§8.4.2).
         for (const std::shared_ptr<ir::Action>& action : node.event->actions) {
             if (fire && action != nullptr) {
-                fire(*action);
+                static_cast<void>(fire(*action));
             }
         }
         node.state = ElementState::Complete;

@@ -21,6 +21,7 @@ using scena::ir::SimulationTimeCondition;
 using scena::ir::SpeedAction;
 using scena::ir::Story;
 using scena::ir::Storyboard;
+using scena::runtime::ActionOutcome;
 using scena::runtime::ElementState;
 using scena::runtime::Scheduler;
 using scena::runtime::TransitionKind;
@@ -65,8 +66,10 @@ Storyboard make_storyboard(std::vector<Event> events,
 
 std::vector<std::string> fired_entities(Scheduler& scheduler, double t) {
     std::vector<std::string> fired;
-    scheduler.step(t,
-                   [&](const scena::ir::Action& action) { fired.push_back(action.entity_id()); });
+    scheduler.step(t, [&](const scena::ir::Action& action) {
+        fired.push_back(action.entity_id());
+        return ActionOutcome::Complete;
+    });
     return fired;
 }
 
@@ -75,7 +78,10 @@ std::vector<std::string> fired_entities(Scheduler& scheduler, double t) {
 TEST(SchedulerTest, StepWithoutBindIsNoOp) {
     Scheduler scheduler;
     int fired = 0;
-    scheduler.step(100.0, [&](const scena::ir::Action&) { ++fired; });
+    scheduler.step(100.0, [&](const scena::ir::Action&) {
+        ++fired;
+        return ActionOutcome::Complete;
+    });
     EXPECT_EQ(fired, 0);
     EXPECT_FALSE(scheduler.element_state("").has_value());
     EXPECT_FALSE(scheduler.storyboard_complete());
@@ -113,7 +119,10 @@ TEST(SchedulerTest, FiresExactlyOnce) {
 
     int fired = 0;
     for (const double t : {0.5, 1.0, 1.5, 2.0, 100.0}) {
-        scheduler.step(t, [&](const scena::ir::Action&) { ++fired; });
+        scheduler.step(t, [&](const scena::ir::Action&) {
+            ++fired;
+            return ActionOutcome::Complete;
+        });
     }
     EXPECT_EQ(fired, 1);
     EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Complete);

@@ -130,7 +130,7 @@ private:
         EntityState state;
     };
 
-    void apply(const ir::Action& action);
+    runtime::ActionOutcome apply(const ir::Action& action);
 
     gateway::ISimulatorGateway* gateway_ = nullptr;
     ir::Scenario scenario_;

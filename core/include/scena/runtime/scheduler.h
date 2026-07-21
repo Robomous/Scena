@@ -21,12 +21,39 @@ enum class ElementState {
 
 /// Monitorable transitions of a storyboard element, per §8.2. `None` means
 /// no monitorable transition has occurred yet (the element is still in the
-/// state its parent put it in). `Skip` arrives with event priorities.
+/// state its parent put it in).
 enum class TransitionKind {
     None,
     Start, ///< Into runningState (§8.2 startTransition).
     End,   ///< Out of runningState, regular end (§8.2 endTransition).
     Stop,  ///< Stopped out of runningState or standbyState (§8.2 stopTransition).
+    /// Specific to Event (§8.2 skipTransition). The standard gives it two
+    /// distinct meanings and Scena emits it for both, distinguishing them
+    /// by the state the element ends up in: an event that could not start
+    /// because of its `skip` priority (§8.2, §8.4.2.2), and a standby event
+    /// whose executions reached its maximumExecutionCount (§8.4.2.1).
+    Skip,
+};
+
+/// What applying one action means for the element state machine (§8.4.1):
+/// an event "ends regularly when every nested Action is completed"
+/// (§8.4.2), so the applier is what tells the scheduler whether that
+/// already happened.
+///
+/// These are the two cases the standard describes completely. Actions whose
+/// end is governed by transition dynamics — the middle case — are
+/// deliberately not modelled yet and arrive as an additional enumerator
+/// with p2-s2/p5-s4; see ADR-0005.
+enum class ActionOutcome {
+    /// Reached its goal in the evaluation it was applied in. §7.4.1.2: a
+    /// LaneChangeAction, SpeedAction or LaneOffsetAction used with the step
+    /// dynamic option assigns no control strategy because "the changes are
+    /// enacted instantaneously". Every action in the Scenario IR today is
+    /// exactly this case.
+    Complete,
+    /// Ongoing and unable to end by itself; only a stopTransition ends it
+    /// (§7.5.3, never-ending actions). Its event stays in runningState.
+    Ongoing,
 };
 
 /// Storyboard executor: walks the Story/Act/ManeuverGroup/Maneuver/Event
@@ -64,7 +91,7 @@ enum class TransitionKind {
 ///   lockstep regardless of the trigger's Boolean outcome.
 class Scheduler {
 public:
-    using FireCallback = std::function<void(const ir::Action&)>;
+    using FireCallback = std::function<ActionOutcome(const ir::Action&)>;
 
     /// Binds the executor to a storyboard and builds its element tree,
     /// including a fresh evaluation history per trigger condition (any
