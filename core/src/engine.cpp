@@ -2,11 +2,78 @@
 #include "scena/engine.h"
 
 #include <cmath>
+#include <set>
 #include <utility>
 
 #include "scena/gateway/simulator_gateway.h"
 
 namespace scena {
+
+namespace {
+
+/// True when every name in the range is non-empty and unique among its
+/// siblings — element names address the storyboard state query, so they are
+/// part of the runtime contract.
+template <typename Range, typename NameOf> bool names_valid(const Range& range, NameOf name_of) {
+    std::set<std::string> seen;
+    for (const auto& element : range) {
+        const std::string& name = name_of(element);
+        if (name.empty() || !seen.insert(name).second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Validates the storyboard tree: element naming, non-null actions, and
+/// action targets that exist in `records`. Returns Status::Ok when valid.
+template <typename Records>
+Status validate_storyboard(const ir::Storyboard& storyboard, const Records& records) {
+    if (!names_valid(storyboard.stories, [](const ir::Story& s) { return s.name; })) {
+        return Status::InvalidArgument;
+    }
+    for (const ir::Story& story : storyboard.stories) {
+        if (!names_valid(story.acts, [](const ir::Act& a) { return a.name; })) {
+            return Status::InvalidArgument;
+        }
+        for (const ir::Act& act : story.acts) {
+            if (!names_valid(act.groups, [](const ir::ManeuverGroup& g) { return g.name; })) {
+                return Status::InvalidArgument;
+            }
+            for (const ir::ManeuverGroup& group : act.groups) {
+                if (!names_valid(group.maneuvers, [](const ir::Maneuver& m) { return m.name; })) {
+                    return Status::InvalidArgument;
+                }
+                for (const std::string& actor : group.actors) {
+                    if (records.find(actor) == records.end()) {
+                        return Status::UnknownEntity;
+                    }
+                }
+                for (const ir::Maneuver& maneuver : group.maneuvers) {
+                    if (!names_valid(maneuver.events, [](const ir::Event& e) { return e.name; })) {
+                        return Status::InvalidArgument;
+                    }
+                    for (const ir::Event& event : maneuver.events) {
+                        if (event.actions.empty()) {
+                            return Status::InvalidArgument;
+                        }
+                        for (const std::shared_ptr<ir::Action>& action : event.actions) {
+                            if (action == nullptr) {
+                                return Status::InvalidArgument;
+                            }
+                            if (records.find(action->entity_id()) == records.end()) {
+                                return Status::UnknownEntity;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return Status::Ok;
+}
+
+} // namespace
 
 Engine::Engine(gateway::ISimulatorGateway* gateway) : gateway_(gateway) {}
 
@@ -28,20 +95,38 @@ Status Engine::init(ir::Scenario scenario) {
         }
         it->second.mode = entity.control_mode;
     }
-    for (const ir::StoryboardEntry& entry : scenario.storyboard.entries) {
-        if (entry.condition == nullptr || entry.action == nullptr) {
+    for (const std::shared_ptr<ir::Action>& action : scenario.init_actions) {
+        if (action == nullptr) {
             return Status::InvalidArgument;
         }
-        if (records.find(entry.action->entity_id()) == records.end()) {
+        if (records.find(action->entity_id()) == records.end()) {
             return Status::UnknownEntity;
         }
+    }
+    if (const Status status = validate_storyboard(scenario.storyboard, records);
+        status != Status::Ok) {
+        return status;
     }
 
     scenario_ = std::move(scenario);
     entities_ = std::move(records);
     clock_.reset();
-    scheduler_.bind(scenario_.storyboard);
     initialized_ = true;
+
+    // Init phase (§8.5): init actions are applied before simulation time
+    // starts. All actions are instantaneous in this phase, so each one
+    // completes during init; their document order does not imply an
+    // execution order, but applying them in that order is deterministic.
+    for (const std::shared_ptr<ir::Action>& action : scenario_.init_actions) {
+        apply(*action);
+    }
+
+    // The storyboard enters runningState and simulation time starts with it
+    // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
+    // conditions that already hold fire before the first host step.
+    scheduler_.bind(scenario_.storyboard);
+    scheduler_.step(0.0, [this](const ir::Action& action) { apply(action); });
+
     return Status::Ok;
 }
 
@@ -109,6 +194,22 @@ Status Engine::report_state(const std::string& entity_id, const EntityState& sta
     }
     it->second.state = state;
     return Status::Ok;
+}
+
+std::optional<runtime::ElementState>
+Engine::storyboard_element_state(const std::string& path) const {
+    if (!initialized_) {
+        return std::nullopt;
+    }
+    return scheduler_.element_state(path);
+}
+
+std::optional<runtime::TransitionKind>
+Engine::storyboard_element_transition(const std::string& path) const {
+    if (!initialized_) {
+        return std::nullopt;
+    }
+    return scheduler_.element_transition(path);
 }
 
 double Engine::time() const noexcept {

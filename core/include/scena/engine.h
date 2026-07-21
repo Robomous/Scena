@@ -49,7 +49,8 @@ struct EntityState {
 ///
 /// Determinism: identical scenario plus identical step sequence produces
 /// bit-identical entity states. The engine reads no wall clock and uses no
-/// randomness; entity updates iterate in a deterministic (sorted) order.
+/// randomness; entity updates and the storyboard walk iterate in
+/// deterministic (sorted / document) order.
 class Engine {
 public:
     Engine() = default;
@@ -68,16 +69,26 @@ public:
 
     ~Engine() = default;
 
-    /// Loads a scenario and resets simulation time to zero. All entities start
-    /// with a zero-initialized state. Fails with InvalidArgument on duplicate
-    /// or empty entity ids and null storyboard pointers, and with
-    /// UnknownEntity when an action targets a non-existent entity.
+    /// Loads a scenario and resets simulation time to zero. All entities
+    /// start with a zero-initialized state.
+    ///
+    /// The init phase runs here, per ASAM OpenSCENARIO XML 1.4.0 §8.5: init
+    /// actions are applied before simulation time starts, then the
+    /// storyboard enters runningState and is evaluated once at t = 0
+    /// (§8.4.7), firing events whose start condition already holds.
+    ///
+    /// Fails with InvalidArgument on duplicate or empty entity ids, null
+    /// actions, empty or sibling-duplicate storyboard element names (element
+    /// names address the state query), and with UnknownEntity when an action
+    /// targets a non-existent entity.
     Status init(ir::Scenario scenario);
 
     /// Advances simulation time by dt seconds (dt >= 0). Order within a step:
     ///  1. the clock advances to t' = t + dt;
     ///  2. host-controlled entity states are polled from the gateway, if any;
-    ///  3. storyboard conditions are evaluated at t' and due actions fire once;
+    ///  3. the storyboard is evaluated at t': the stop trigger is checked,
+    ///     standby elements whose start condition holds enter runningState
+    ///     (their events fire actions), and completion propagates;
     ///  4. engine-controlled entities integrate kinematics over dt;
     ///  5. engine-controlled entity states are published to the gateway, if any.
     Status step(double dt);
@@ -89,6 +100,19 @@ public:
     /// Reports the authoritative state of a host-controlled entity. Fails with
     /// InvalidControlMode for engine-controlled entities.
     Status report_state(const std::string& entity_id, const EntityState& state);
+
+    /// Lifecycle state of a storyboard element, addressed by its name path
+    /// from the story down, joined with '/'
+    /// (e.g. "story/act/group/maneuver/event"); the empty path addresses the
+    /// storyboard itself. std::nullopt when the engine is not initialized or
+    /// the path names no element.
+    [[nodiscard]] std::optional<runtime::ElementState>
+    storyboard_element_state(const std::string& path) const;
+
+    /// Last monitorable transition of a storyboard element (same addressing
+    /// as storyboard_element_state).
+    [[nodiscard]] std::optional<runtime::TransitionKind>
+    storyboard_element_transition(const std::string& path) const;
 
     /// Simulation time in seconds since init().
     [[nodiscard]] double time() const noexcept;

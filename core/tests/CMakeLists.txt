@@ -14,6 +14,7 @@ endfunction()
 scn_add_test(version_test)
 scn_add_test(clock_test)
 scn_add_test(scheduler_test)
+scn_add_test(storyboard_test)
 scn_add_test(engine_test)
 scn_add_test(determinism_test)
 

@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "scena/ir/action.h"
-#include "scena/ir/condition.h"
+#include "scena/ir/storyboard.h"
 
 namespace scena::ir {
 
@@ -25,29 +25,20 @@ struct Entity {
     ControlMode control_mode = ControlMode::EngineControlled;
 };
 
-/// One trigger/effect pair of the simplified storyboard.
-/// Shared ownership keeps Scenario copyable; conditions and actions are
-/// immutable once attached, so sharing them between copies is safe.
-struct StoryboardEntry {
-    std::shared_ptr<Condition> condition;
-    std::shared_ptr<Action> action;
-};
-
-/// Deliberately simplified precursor of the full ASAM OpenSCENARIO storyboard:
-/// a flat, ordered list of (Condition, Action) pairs instead of the
-/// Story / Act / ManeuverGroup / Maneuver / Event hierarchy. The hierarchy,
-/// trigger groups, and priority rules arrive with the XML frontend phase; the
-/// flat list is enough to exercise the scheduler state machine end to end.
-struct Storyboard {
-    std::vector<StoryboardEntry> entries;
-};
-
 /// Root of the Scenario IR: the common representation both frontends
 /// (OpenSCENARIO XML and OpenSCENARIO DSL) compile into, and the only input
 /// the runtime executes.
+///
+/// `init_actions` model the storyboard-external init phase: they are
+/// applied concurrently during Engine::init, before simulation time
+/// starts, per ASAM OpenSCENARIO XML 1.4.0 §8.5. All actions are
+/// instantaneous in this phase, so every init action completes during
+/// init; non-instantaneous init actions (which stay running into the
+/// storyboard, §8.5.1.2) arrive with transition dynamics.
 struct Scenario {
     std::string name;
     std::vector<Entity> entities;
+    std::vector<std::shared_ptr<Action>> init_actions;
     Storyboard storyboard;
 };
 
