@@ -241,6 +241,20 @@ private:
     /// LongitudinalController; other kinds keep their one-shot behaviour.
     runtime::ActionOutcome apply(const ir::Action& action);
 
+    /// The record `action` targets, or nullptr when the entity is unknown —
+    /// which init() already rejects, so the lookup failing is defensive: it
+    /// reports a Warning and the caller skips the action.
+    EntityRecord* record_for(const ir::Action& action);
+
+    /// Drives one step of a LongitudinalDistanceAction on `record`: measures the
+    /// current gap to the reference entity, commands the speed that closes it
+    /// over the current step, and clamps that command by the action's
+    /// DynamicConstraints and the entity's Performance envelope (ADR-0014).
+    /// Returns Complete once a non-continuous action has reached its target;
+    /// a continuous one returns Running forever (§7.5.3).
+    runtime::ActionOutcome drive_distance_keeping(const ir::LongitudinalDistanceAction& action,
+                                                  EntityRecord& record);
+
     /// Installs or advances the default longitudinal controller for a
     /// longitudinal action on `record`, returning its outcome (§7.4.1.2).
     runtime::ActionOutcome drive_longitudinal(const ir::Action& action, EntityRecord& record,

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -20,7 +21,9 @@
 #include "scena/ir/interaction_condition.h"
 #include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
+#include "scena/runtime/distance_measure.h"
 #include "scena/runtime/element_ref.h"
+#include "scena/runtime/obb2.h"
 
 namespace scena {
 
@@ -707,6 +710,62 @@ void validate_action_content(const ir::Action& action, const std::string& path,
             !std::isfinite(position.z)) {
             error(sink, Status::ValidationError, "teleport action position must be finite", path);
         }
+        return;
+    }
+    if (const auto* keeping = dynamic_cast<const ir::LongitudinalDistanceAction*>(&action)) {
+        // §LongitudinalDistanceAction: the reference entity is a prerequisite
+        // (§7.5.2.2) and must resolve.
+        if (records.find(keeping->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "longitudinal distance action reference entity '" + keeping->entity_ref() +
+                      "' is unknown",
+                  path);
+        }
+        // "distance: not to be used together with timeGap attribute" — and one
+        // of the two must be there or the action has no target at all.
+        const bool has_distance = keeping->distance().has_value();
+        const bool has_time_gap = keeping->time_gap().has_value();
+        if (has_distance == has_time_gap) {
+            error(sink, Status::ValidationError,
+                  "longitudinal distance action needs exactly one of distance or timeGap", path);
+        }
+        // Both are Range [0..inf[; the negated comparison also rejects NaN.
+        if (has_distance && !(*keeping->distance() >= 0.0 && std::isfinite(*keeping->distance()))) {
+            error(sink, Status::ValidationError,
+                  "longitudinal distance action distance must be finite and in range [0..inf[",
+                  path, kRuleDistancesNotNegative);
+        }
+        if (has_time_gap && !(*keeping->time_gap() >= 0.0 && std::isfinite(*keeping->time_gap()))) {
+            error(sink, Status::ValidationError,
+                  "longitudinal distance action timeGap must be finite and in range [0..inf[",
+                  path);
+        }
+        if (keeping->constraints().has_value()) {
+            const ir::DynamicConstraints& constraints = *keeping->constraints();
+            const auto invalid = [](const std::optional<double>& value) {
+                return value.has_value() && !(*value >= 0.0 && std::isfinite(*value));
+            };
+            if (invalid(constraints.max_acceleration) || invalid(constraints.max_deceleration) ||
+                invalid(constraints.max_acceleration_rate) ||
+                invalid(constraints.max_deceleration_rate) || invalid(constraints.max_speed)) {
+                error(sink, Status::ValidationError,
+                      "longitudinal distance action dynamic constraints must be finite and in "
+                      "range [0..inf[",
+                      path);
+            }
+        }
+        // A road-based coordinate system needs a road network (p3-s4). The
+        // action then completes immediately at runtime rather than keeping a
+        // distance it cannot measure, so this is a warning, not an error —
+        // the ADR-0009 precedent for the interaction conditions.
+        const ir::CoordinateSystem cs = keeping->coordinate_system();
+        if (cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road ||
+            cs == ir::CoordinateSystem::Trajectory) {
+            warn(sink, Status::UnsupportedFeature,
+                 "road-based coordinate system needs a road network (§6.4); the longitudinal "
+                 "distance action completes immediately",
+                 path);
+        }
     }
 }
 
@@ -796,6 +855,73 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
             }
         }
     }
+}
+
+/// Half-open completion band of a non-continuous LongitudinalDistanceAction,
+/// in metres. The deadbeat command lands the gap exactly on its target in the
+/// point-mass model, so this only has to absorb the rounding of the position
+/// integration (~1e-14 m at scenario scale), never a modeling error
+/// (ADR-0014).
+constexpr double kDistanceKeepingEpsilon = 1e-9;
+
+/// The signed longitudinal separation from `actor` to `reference` along the
+/// effective coordinate system's longitudinal axis, in metres: positive when
+/// the reference is ahead of the actor, negative when behind.
+///
+/// With `freespace` false this is the projected reference-point separation
+/// (§6.4.7.1). With `freespace` true it is the bumper-to-bumper gap on that
+/// axis (§6.4.7.2) carrying the sign of the reference-point separation, so
+/// overlapping boxes report a negative gap instead of the unsigned zero the
+/// conditions want. Returns std::nullopt when a freespace measurement is asked
+/// for and either entity has no geometry — a missing prerequisite (§7.5.2.2).
+///
+/// Only the Entity and World coordinate systems reach here; the road-based
+/// systems are handled before the call (p3-s4).
+std::optional<double> signed_longitudinal_gap(const EntityState& actor,
+                                              const std::optional<ir::BoundingBox>& actor_box,
+                                              const EntityState& reference,
+                                              const std::optional<ir::BoundingBox>& reference_box,
+                                              ir::CoordinateSystem cs, bool freespace) {
+    double ux = 0.0;
+    double uy = 0.0;
+    runtime::projection_axis(cs, ir::RelativeDistanceType::Longitudinal, actor.heading, ux, uy);
+    const double rx = reference.x - actor.x;
+    const double ry = reference.y - actor.y;
+    const double reference_point_gap = rx * ux + ry * uy;
+    if (!freespace) {
+        return reference_point_gap;
+    }
+    if (!actor_box.has_value() || !reference_box.has_value()) {
+        return std::nullopt;
+    }
+    const runtime::Obb2 a = runtime::make_obb(actor, *actor_box);
+    const runtime::Obb2 b = runtime::make_obb(reference, *reference_box);
+    double a_lo = 0.0;
+    double a_hi = 0.0;
+    double b_lo = 0.0;
+    double b_hi = 0.0;
+    runtime::obb_project(a, ux, uy, a_lo, a_hi);
+    runtime::obb_project(b, ux, uy, b_lo, b_hi);
+    // Reference ahead: the gap runs from the actor's front to the reference's
+    // rear. Reference behind: from the reference's front to the actor's rear,
+    // negated so the sign convention holds.
+    return reference_point_gap >= 0.0 ? b_lo - a_hi : b_hi - a_lo;
+}
+
+/// The tighter of two optional limits, where an absent or non-positive limit
+/// does not constrain (§DynamicConstraints "missing value is interpreted as
+/// 'inf'"; the p2-s2 Performance clamp likewise only honours a positive
+/// limit). Returns infinity when neither constrains.
+double effective_limit(const std::optional<double>& constraint,
+                       const std::optional<double>& envelope) {
+    double limit = std::numeric_limits<double>::infinity();
+    if (constraint.has_value() && *constraint > 0.0) {
+        limit = *constraint;
+    }
+    if (envelope.has_value() && *envelope > 0.0) {
+        limit = std::fmin(limit, *envelope);
+    }
+    return limit;
 }
 
 /// Code of the first Error diagnostic in report order, which is document
@@ -1196,25 +1322,37 @@ Status Engine::close() {
     return Status::Ok;
 }
 
+Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
+    const auto it = entities_.find(action.entity_id());
+    if (it != entities_.end()) {
+        return &it->second;
+    }
+    // init() validates every action target, so this is defensive: a
+    // Warning, not a failure. The run continues; the action is skipped.
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = Status::UnknownEntity;
+    diagnostic.message =
+        "action targets unknown entity '" + action.entity_id() + "'; action skipped";
+    diagnostic.path = "entities/" + action.entity_id();
+    diagnostics_.report(std::move(diagnostic));
+    return nullptr;
+}
+
 runtime::ActionOutcome Engine::apply(const ir::Action& action) {
     const auto* speed_action = dynamic_cast<const ir::SpeedAction*>(&action);
     const auto* profile_action = dynamic_cast<const ir::SpeedProfileAction*>(&action);
-    if (speed_action != nullptr || profile_action != nullptr) {
-        // Longitudinal actions share the default controller.
-        const auto it = entities_.find(action.entity_id());
-        if (it == entities_.end()) {
-            // init() validates every action target, so this is defensive: a
-            // Warning, not a failure. The run continues; the action is skipped.
-            Diagnostic diagnostic;
-            diagnostic.severity = Severity::Warning;
-            diagnostic.code = Status::UnknownEntity;
-            diagnostic.message =
-                "action targets unknown entity '" + action.entity_id() + "'; action skipped";
-            diagnostic.path = "entities/" + action.entity_id();
-            diagnostics_.report(std::move(diagnostic));
+    const auto* distance_action = dynamic_cast<const ir::LongitudinalDistanceAction*>(&action);
+    if (speed_action != nullptr || profile_action != nullptr || distance_action != nullptr) {
+        // Longitudinal actions share the default controller and the single
+        // longitudinal-domain ownership slot (Annex A Table 10: SpeedAction,
+        // SpeedProfileAction and LongitudinalDistanceAction all assign a
+        // longitudinal control strategy).
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
             return runtime::ActionOutcome::Complete;
         }
-        EntityRecord& record = it->second;
+        EntityRecord& record = *found;
 
         // A longitudinal action superseded by a newer one, re-polled while still
         // in its event's running set: retire it. It completes so its event can
@@ -1227,6 +1365,20 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         }
 
         const bool is_owner = record.active_longitudinal_action == &action;
+
+        // Distance keeping (§LongitudinalDistanceAction): a controller that
+        // re-measures the gap every step rather than a finite transition, so it
+        // installs no LongitudinalController — the same shape as a continuous
+        // relative speed target.
+        if (distance_action != nullptr) {
+            if (!is_owner) {
+                supersede_longitudinal(record, &action);
+                record.longitudinal.reset();
+                record.continuous_speed.reset();
+                record.active_longitudinal_action = &action;
+            }
+            return drive_distance_keeping(*distance_action, record);
+        }
 
         // Continuous relative speed (§7.5.3): a controller keeps matching the
         // reference entity's speed and the action never ends by itself. Modeled
@@ -1270,18 +1422,11 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         // world-frame target only; the PositionResolver and the other §6.3.8
         // variants arrive with p2-s4/p3-s4. Orientation is part of the full
         // Position and is not modeled yet, so heading/pitch/roll are left as-is.
-        const auto it = entities_.find(action.entity_id());
-        if (it == entities_.end()) {
-            Diagnostic diagnostic;
-            diagnostic.severity = Severity::Warning;
-            diagnostic.code = Status::UnknownEntity;
-            diagnostic.message =
-                "action targets unknown entity '" + action.entity_id() + "'; action skipped";
-            diagnostic.path = "entities/" + action.entity_id();
-            diagnostics_.report(std::move(diagnostic));
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
             return runtime::ActionOutcome::Complete;
         }
-        EntityRecord& record = it->second;
+        EntityRecord& record = *found;
         const ir::WorldPosition& position = teleport->position();
         record.state.x = position.x;
         record.state.y = position.y;
@@ -1336,6 +1481,136 @@ runtime::ActionOutcome Engine::drive_longitudinal(const ir::Action& action, Enti
     }
     record.longitudinal = std::move(controller);
     record.active_longitudinal_action = &action;
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDistanceAction& action,
+                                                      EntityRecord& record) {
+    // Releases the longitudinal domain and completes: used for every path that
+    // cannot keep the requested distance (§7.5.2.2 missing prerequisites end an
+    // action with a stopTransition).
+    const auto give_up = [&record, &action](DiagnosticSink& sink, std::string message) {
+        record.active_longitudinal_action = nullptr;
+        warn(sink, Status::UnsupportedFeature, std::move(message),
+             "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    const ir::CoordinateSystem cs = action.coordinate_system();
+    if (cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road ||
+        cs == ir::CoordinateSystem::Trajectory) {
+        // Road-based gaps need IRoadQuery (p3-s4); warned about at init too.
+        return give_up(diagnostics_, "longitudinal distance action needs a road network for its "
+                                     "coordinate system (§6.4); action completed");
+    }
+    const auto reference_it = entities_.find(action.entity_ref()); // heterogeneous lookup
+    if (reference_it == entities_.end()) {
+        return give_up(diagnostics_, "longitudinal distance action reference entity '" +
+                                         action.entity_ref() + "' is unknown; action completed");
+    }
+    // Read-only view of the reference; the actor's own record is written below,
+    // and the two may be the same entity (a degenerate but harmless self-gap).
+    const EntityRecord& reference = reference_it->second;
+
+    const std::optional<double> gap =
+        signed_longitudinal_gap(record.state, record.bounding_box, reference.state,
+                                reference.bounding_box, cs, action.freespace());
+    if (!gap.has_value()) {
+        return give_up(diagnostics_, "longitudinal distance action needs bounding boxes for a "
+                                     "freespace gap (§6.4.7.2); action completed");
+    }
+
+    // The target gap: an absolute distance, or a headway read against the
+    // actor's own speed — the same arithmetic TimeHeadwayCondition uses.
+    const double target = action.distance().has_value() ? *action.distance()
+                                                        : *action.time_gap() * record.state.speed;
+    // Which side of the reference the actor holds (§LongitudinalDisplacement).
+    // `Any` keeps whichever side the actor is on right now.
+    double desired = target;
+    switch (action.displacement()) {
+    case ir::LongitudinalDisplacement::TrailingReferencedEntity:
+        desired = target;
+        break;
+    case ir::LongitudinalDisplacement::LeadingReferencedEntity:
+        desired = -target;
+        break;
+    case ir::LongitudinalDisplacement::Any:
+        desired = *gap >= 0.0 ? target : -target;
+        break;
+    }
+    const double error = *gap - desired;
+
+    // Table 10: a non-continuous action ends "by reaching the targeted
+    // distance" — including immediately, when the gap already holds at the
+    // start of the action (§7.5.2.1). A continuous one never ends (§7.5.3).
+    if (!action.continuous() && std::fabs(error) <= kDistanceKeepingEpsilon) {
+        record.active_longitudinal_action = nullptr;
+        return runtime::ActionOutcome::Complete;
+    }
+
+    // Deadbeat command (ADR-0014): matching the reference's speed holds the gap
+    // where it is, and the error term closes what is left over in exactly one
+    // step, before the clamps. A zero-length step commands nothing — there is
+    // no step to close the error over, and no division by zero.
+    if (last_dt_ > 0.0) {
+        const runtime::SinCos reference_heading = runtime::det_sincos(reference.state.heading);
+        double ux = 0.0;
+        double uy = 0.0;
+        runtime::projection_axis(cs, ir::RelativeDistanceType::Longitudinal, record.state.heading,
+                                 ux, uy);
+        const double reference_speed =
+            reference.state.speed * (reference_heading.cos * ux + reference_heading.sin * uy);
+
+        const std::optional<ir::DynamicConstraints>& constraints = action.constraints();
+        const std::optional<ir::Performance>& performance = record.performance;
+        const auto constraint_of =
+            [&constraints](
+                std::optional<double> ir::DynamicConstraints::*field) -> std::optional<double> {
+            return constraints.has_value() ? (*constraints).*field : std::nullopt;
+        };
+        const double acceleration_limit = effective_limit(
+            constraint_of(&ir::DynamicConstraints::max_acceleration),
+            performance.has_value() ? std::optional<double>(performance->max_acceleration)
+                                    : std::nullopt);
+        const double deceleration_limit = effective_limit(
+            constraint_of(&ir::DynamicConstraints::max_deceleration),
+            performance.has_value() ? std::optional<double>(performance->max_deceleration)
+                                    : std::nullopt);
+        // Approach rate: the deadbeat term closes the whole error this step,
+        // but only while the entity could still brake off the resulting
+        // relative speed within the error it has left. sqrt(2*a*|e|) is that
+        // glide limit; without it a rate-limited controller with a large error
+        // saturates its acceleration and overshoots the target (ADR-0014).
+        // Closing a gap is bounded by the deceleration it will take to stop
+        // closing, opening one by the acceleration it will take to stop
+        // opening. Both are IEEE-exact operations, sqrt included.
+        double approach = std::fabs(error) / last_dt_;
+        const double glide_limit = error >= 0.0 ? deceleration_limit : acceleration_limit;
+        if (std::isfinite(glide_limit)) {
+            approach = std::fmin(approach, std::sqrt(2.0 * glide_limit * std::fabs(error)));
+        }
+        const double command = reference_speed + std::copysign(approach, error);
+
+        double delta = command - record.state.speed;
+        if (delta > acceleration_limit * last_dt_) {
+            delta = acceleration_limit * last_dt_;
+        } else if (delta < -deceleration_limit * last_dt_) {
+            delta = -deceleration_limit * last_dt_;
+        }
+        double speed = record.state.speed + delta;
+        // The scalar-speed model has no reverse gear, so a distance controller
+        // never commands a negative speed; the entity stops instead.
+        if (speed < 0.0) {
+            speed = 0.0;
+        }
+        const double speed_limit = effective_limit(
+            constraint_of(&ir::DynamicConstraints::max_speed),
+            performance.has_value() ? std::optional<double>(performance->max_speed) : std::nullopt);
+        if (speed > speed_limit) {
+            speed = speed_limit;
+        }
+        record.state.speed = speed;
+    }
     return runtime::ActionOutcome::Running;
 }
 
