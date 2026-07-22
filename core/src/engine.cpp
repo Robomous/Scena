@@ -65,10 +65,12 @@ using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 template <typename EntityMap> class RuntimeContext final : public ir::EvaluationContext {
 public:
     RuntimeContext(double simulation_time, const NamedValueStore& parameters,
-                   const NamedValueStore& variables, const NamedValueStore& user_defined_values,
-                   const EntityMap& entities, std::optional<double> date_time_seconds,
-                   DiagnosticSink& sink, std::set<std::string>& warned)
-        : simulation_time_(simulation_time), parameters_(&parameters), variables_(&variables),
+                   const NamedValueStore& parameter_overrides, const NamedValueStore& variables,
+                   const NamedValueStore& user_defined_values, const EntityMap& entities,
+                   std::optional<double> date_time_seconds, DiagnosticSink& sink,
+                   std::set<std::string>& warned)
+        : simulation_time_(simulation_time), parameters_(&parameters),
+          parameter_overrides_(&parameter_overrides), variables_(&variables),
           user_defined_values_(&user_defined_values), entities_(&entities),
           date_time_seconds_(date_time_seconds), sink_(&sink), warned_(&warned) {}
 
@@ -96,9 +98,17 @@ public:
     named_value(ir::NamedValueKind kind, std::string_view name) const override {
         const NamedValueStore* store = nullptr;
         switch (kind) {
-        case ir::NamedValueKind::Parameter:
+        case ir::NamedValueKind::Parameter: {
+            // The deprecated parameter actions write an overlay that shadows the
+            // immutable §9.1 declaration; it is consulted first so a 1.0/1.1
+            // file's ParameterSetAction is visible to its ParameterCondition.
+            const auto overridden = parameter_overrides_->find(name);
+            if (overridden != parameter_overrides_->end()) {
+                return std::string_view{overridden->second};
+            }
             store = parameters_;
             break;
+        }
         case ir::NamedValueKind::Variable:
             store = variables_;
             break;
@@ -135,6 +145,7 @@ private:
 
     double simulation_time_;
     const NamedValueStore* parameters_;
+    const NamedValueStore* parameter_overrides_;
     const NamedValueStore* variables_;
     const NamedValueStore* user_defined_values_;
     const EntityMap* entities_;
@@ -688,9 +699,58 @@ std::size_t segment_index(const std::vector<double>& bounds, double value) {
 /// diagnostic cites the section only. A relative target (§RelativeTargetSpeed)
 /// additionally requires a resolvable reference entity, and a continuous target
 /// must not be combined with a time- or distance-dimensioned transition (§7.5.3).
+///
+/// The global actions (§7.4.2) validate their own references here too — they
+/// have no actor entity, so the caller's target check does not apply to them.
 template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
-                             const Records& records, DiagnosticSink& sink) {
+                             const Records& records, const NamedValueStore& parameters,
+                             const NamedValueStore& variables, DiagnosticSink& sink) {
+    if (const auto* variable_set = dynamic_cast<const ir::VariableSetAction*>(&action)) {
+        // per rule asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference
+        if (variables.find(variable_set->variable_ref()) == variables.end()) {
+            error(sink, Status::SemanticError,
+                  "variable '" + variable_set->variable_ref() + "' is not declared", path,
+                  kRuleResolvableVariable);
+        }
+        return;
+    }
+    if (const auto* variable_modify = dynamic_cast<const ir::VariableModifyAction*>(&action)) {
+        if (variables.find(variable_modify->variable_ref()) == variables.end()) {
+            error(sink, Status::SemanticError,
+                  "variable '" + variable_modify->variable_ref() + "' is not declared", path,
+                  kRuleResolvableVariable);
+        }
+        // The operand is the right-hand side of a single IEEE expression; a
+        // non-finite one would poison the store irrecoverably.
+        if (!std::isfinite(variable_modify->value())) {
+            error(sink, Status::ValidationError, "variable modify action value must be finite",
+                  path);
+        }
+        return;
+    }
+    if (const auto* parameter_set = dynamic_cast<const ir::ParameterSetAction*>(&action)) {
+        // The standard defines no rule id for parameter-reference resolvability
+        // (the ParameterCondition precedent), so the diagnostic cites §9.1.
+        if (parameters.find(parameter_set->parameter_ref()) == parameters.end()) {
+            error(sink, Status::SemanticError,
+                  "parameter '" + parameter_set->parameter_ref() + "' is not declared (§9.1)",
+                  path);
+        }
+        return;
+    }
+    if (const auto* parameter_modify = dynamic_cast<const ir::ParameterModifyAction*>(&action)) {
+        if (parameters.find(parameter_modify->parameter_ref()) == parameters.end()) {
+            error(sink, Status::SemanticError,
+                  "parameter '" + parameter_modify->parameter_ref() + "' is not declared (§9.1)",
+                  path);
+        }
+        if (!std::isfinite(parameter_modify->value())) {
+            error(sink, Status::ValidationError, "parameter modify action value must be finite",
+                  path);
+        }
+        return;
+    }
     if (const auto* speed = dynamic_cast<const ir::SpeedAction*>(&action)) {
         const ir::TransitionDynamics& td = speed->dynamics();
         if (!std::isfinite(td.value) || td.value < 0.0) {
@@ -1004,12 +1064,18 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                                       action_path);
                                 continue;
                             }
-                            if (records.find(action->entity_id()) == records.end()) {
+                            // A global action (§7.4.2/§7.4.3) has no actor, so
+                            // the target check does not apply to it; it
+                            // validates its own references in
+                            // validate_action_content.
+                            if (dynamic_cast<const ir::GlobalAction*>(action.get()) == nullptr &&
+                                records.find(action->entity_id()) == records.end()) {
                                 error(sink, Status::SemanticError,
                                       "action targets unknown entity '" + action->entity_id() + "'",
                                       action_path);
                             }
-                            validate_action_content(*action, action_path, records, sink);
+                            validate_action_content(*action, action_path, records, parameters,
+                                                    variables, sink);
                         }
                     }
                 }
@@ -1179,11 +1245,14 @@ Status Engine::init(ir::Scenario scenario) {
             error(diagnostics_, Status::ValidationError, "init action is null", action_path);
             continue;
         }
-        if (records.find(action->entity_id()) == records.end()) {
+        // Global actions are legal in the init phase (§8.5) and carry no actor.
+        if (dynamic_cast<const ir::GlobalAction*>(action.get()) == nullptr &&
+            records.find(action->entity_id()) == records.end()) {
             error(diagnostics_, Status::SemanticError,
                   "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
-        validate_action_content(*action, action_path, records, diagnostics_);
+        validate_action_content(*action, action_path, records, scenario.parameters,
+                                scenario.variables, diagnostics_);
     }
     validate_storyboard(scenario.storyboard, records, scenario.parameters, scenario.variables,
                         diagnostics_);
@@ -1201,6 +1270,9 @@ Status Engine::init(ir::Scenario scenario) {
     // them before init so they are visible at the t = 0 evaluation, and they
     // persist across init() until close().
     variables_ = scenario_.variables;
+    // The deprecated parameter overlay is per-run state, not host state: a
+    // fresh init starts from the declared §9.1 values.
+    parameter_overrides_.clear();
     warned_values_.clear();
     clock_.reset();
     initialized_ = true;
@@ -1237,9 +1309,15 @@ Status Engine::init(ir::Scenario scenario) {
     // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
     // conditions that already hold fire before the first host step.
     scheduler_.bind(scenario_.storyboard);
-    RuntimeContext context{
-        0.0,       scenario_.parameters,           variables_,   user_defined_values_,
-        entities_, current_date_time_seconds(0.0), diagnostics_, warned_values_};
+    RuntimeContext context{0.0,
+                           scenario_.parameters,
+                           parameter_overrides_,
+                           variables_,
+                           user_defined_values_,
+                           entities_,
+                           current_date_time_seconds(0.0),
+                           diagnostics_,
+                           warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     // The init phase has no integrate stage, so a follower that placed an
@@ -1290,10 +1368,15 @@ Status Engine::step(double dt) {
         refresh_observations(dt);
     }
 
-    RuntimeContext context{clock_.now(), scenario_.parameters,
-                           variables_,   user_defined_values_,
-                           entities_,    current_date_time_seconds(clock_.now()),
-                           diagnostics_, warned_values_};
+    RuntimeContext context{clock_.now(),
+                           scenario_.parameters,
+                           parameter_overrides_,
+                           variables_,
+                           user_defined_values_,
+                           entities_,
+                           current_date_time_seconds(clock_.now()),
+                           diagnostics_,
+                           warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
@@ -1520,6 +1603,7 @@ Status Engine::close() {
     clock_.reset();
     entities_.clear();
     variables_.clear();
+    parameter_overrides_.clear();
     // User-defined values and the time-of-day anchor persist across init()
     // but not across close(): a closed engine forgets everything the host
     // staged.
@@ -1548,7 +1632,105 @@ Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
     return nullptr;
 }
 
+void Engine::warn_once(std::string path, Status code, std::string message) {
+    if (!warned_values_.insert(path).second) {
+        return; // already reported for this path in this run
+    }
+    warn(diagnostics_, code, std::move(message), std::move(path));
+}
+
+std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::GlobalAction& action) {
+    // Every action here is a cheap state write that "completes immediately (does
+    // not consume simulation time)" (Annex A Tables 11 and 12), so none of them
+    // touches record_for or the domain-ownership machinery.
+
+    /// Applies a modify operator to a stored string value, or reports rule
+    /// C.2.6 and leaves it alone. `store` is the map the value lives in.
+    const auto modify_named_value = [this](NamedValueStore& store, const std::string& name,
+                                           ir::ModifyOperator op, double operand,
+                                           const std::string& path) {
+        const auto it = store.find(name);
+        if (it == store.end()) {
+            return; // init rejects an undeclared ref; defensive
+        }
+        const std::optional<double> current = ir::parse_scalar(it->second);
+        if (!current.has_value()) {
+            // per rule
+            // asam.net:xosc:1.2.0:data_type.variable_modification_or_comparison_possible:
+            // a modify action "shall only act on int, unsignedInt,
+            // unsignedShort or double types". Scena has no typed declarations
+            // yet (p4-s3), so scalar-convertibility stands in for the type
+            // check and the action is a no-op rather than a run-ending error.
+            warn_once(path, Status::UnsupportedFeature,
+                      "modify action on non-numeric value '" + name + "' = '" + it->second +
+                          "'; action ignored");
+            return;
+        }
+        // One fixed IEEE expression per operator — no reassociation, so the
+        // result is bit-identical everywhere.
+        const double result =
+            op == ir::ModifyOperator::Add ? *current + operand : *current * operand;
+        it->second = ir::format_scalar(result);
+    };
+
+    /// Warns once that a deprecated parameter action ran, then hands back the
+    /// overlay slot it writes. The overlay is seeded from the declaration so a
+    /// modify action reads the §9.1 value the first time.
+    const auto parameter_slot = [this](const std::string& name, const char* successor) {
+        warn_once("parameters/" + name, Status::DeprecatedFeature,
+                  "parameter action on '" + name + "' is deprecated with version 1.2; use the " +
+                      successor);
+        const auto existing = parameter_overrides_.find(name);
+        if (existing == parameter_overrides_.end()) {
+            const auto declared = scenario_.parameters.find(name);
+            parameter_overrides_[name] =
+                declared != scenario_.parameters.end() ? declared->second : std::string{};
+        }
+    };
+
+    if (const auto* variable_set = dynamic_cast<const ir::VariableSetAction*>(&action)) {
+        // §6.12: a variable's value changes during the run; the store is the one
+        // the VariableCondition and the host both read.
+        const auto it = variables_.find(variable_set->variable_ref());
+        if (it != variables_.end()) {
+            it->second = variable_set->value();
+        }
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* variable_modify = dynamic_cast<const ir::VariableModifyAction*>(&action)) {
+        modify_named_value(variables_, variable_modify->variable_ref(), variable_modify->op(),
+                           variable_modify->value(),
+                           "variables/" + variable_modify->variable_ref());
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* parameter_set = dynamic_cast<const ir::ParameterSetAction*>(&action)) {
+        parameter_slot(parameter_set->parameter_ref(), "variable set action");
+        parameter_overrides_[parameter_set->parameter_ref()] = parameter_set->value();
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* parameter_modify = dynamic_cast<const ir::ParameterModifyAction*>(&action)) {
+        parameter_slot(parameter_modify->parameter_ref(), "variable modify action");
+        modify_named_value(parameter_overrides_, parameter_modify->parameter_ref(),
+                           parameter_modify->op(), parameter_modify->value(),
+                           "parameters/" + parameter_modify->parameter_ref() + "/modify");
+        return runtime::ActionOutcome::Complete;
+    }
+
+    return std::nullopt; // not implemented; the caller reports it
+}
+
 runtime::ActionOutcome Engine::apply(const ir::Action& action) {
+    // Global actions first: they write engine-level state, never an entity
+    // record, so they short-circuit the whole private-action chain below.
+    if (const auto* global = dynamic_cast<const ir::GlobalAction*>(&action)) {
+        if (const std::optional<runtime::ActionOutcome> outcome = apply_global_action(*global)) {
+            return *outcome;
+        }
+    }
+
     const auto* speed_action = dynamic_cast<const ir::SpeedAction*>(&action);
     const auto* profile_action = dynamic_cast<const ir::SpeedProfileAction*>(&action);
     const auto* distance_action = dynamic_cast<const ir::LongitudinalDistanceAction*>(&action);
@@ -1769,9 +1951,17 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
     Diagnostic diagnostic;
     diagnostic.severity = Severity::Warning;
     diagnostic.code = Status::UnsupportedFeature;
-    diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
-                         "' targeting entity '" + action.entity_id() + "'; action ignored";
-    diagnostic.path = "entities/" + action.entity_id();
+    if (action.entity_id().empty()) {
+        // An actor-less action has no entity to key the path on (§7.4.2), so it
+        // is addressed by its kind instead.
+        diagnostic.message =
+            "unsupported action kind '" + std::string(action.kind()) + "'; action ignored";
+        diagnostic.path = "actions/" + std::string(action.kind());
+    } else {
+        diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
+                             "' targeting entity '" + action.entity_id() + "'; action ignored";
+        diagnostic.path = "entities/" + action.entity_id();
+    }
     diagnostics_.report(std::move(diagnostic));
     return runtime::ActionOutcome::Complete;
 }

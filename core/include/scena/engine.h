@@ -322,6 +322,19 @@ private:
     /// LongitudinalController; other kinds keep their one-shot behaviour.
     runtime::ActionOutcome apply(const ir::Action& action);
 
+    /// Applies an actor-less §7.4.2 / §7.4.3 action, or std::nullopt when the
+    /// kind is not implemented (the caller then reports it like any other
+    /// unsupported kind). Every global action completes in the evaluation it
+    /// fires (Annex A Tables 11 and 12), so the outcome is always Complete;
+    /// the optional distinguishes "handled" from "unknown", not the lifetime.
+    std::optional<runtime::ActionOutcome> apply_global_action(const ir::GlobalAction& action);
+
+    /// Reports `message` once per `path` during a run, through the same
+    /// warned_values_ dedup the evaluation-time facet warnings use. Repeated
+    /// applications of the same action (a re-executed event) must not grow the
+    /// diagnostic sink without bound.
+    void warn_once(std::string path, Status code, std::string message);
+
     /// The record `action` targets, or nullptr when the entity is unknown —
     /// which init() already rejects, so the lookup failing is defensive: it
     /// reports a Warning and the caller skips the action.
@@ -426,6 +439,14 @@ private:
     // mutable through set_variable during the run (§6.12). std::less<> gives
     // heterogeneous lookup on a string_view. Cleared by close().
     std::map<std::string, std::string, std::less<>> variables_;
+    // Runtime overlay over scenario_.parameters, written only by the deprecated
+    // ParameterSetAction / ParameterModifyAction (§ParameterSetAction,
+    // deprecated with 1.2). A 1.0/1.1 file's parameter action must be visible to
+    // the ParameterCondition that reads it, and the overlay gives it that
+    // without breaking §9.1 immutability for 1.2+ content — which cannot
+    // contain these actions at all. Consulted before scenario_.parameters;
+    // cleared by init() and close().
+    std::map<std::string, std::string, std::less<>> parameter_overrides_;
     // Host-supplied external values (UserDefinedValueCondition). Persist across
     // init() so a host can stage them before the run; cleared only by close().
     std::map<std::string, std::string, std::less<>> user_defined_values_;
