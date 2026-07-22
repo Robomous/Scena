@@ -149,9 +149,10 @@ keyword). A complete runnable example lives in
 [`python/examples/hello_engine.py`](../../python/examples/hello_engine.py).
 
 The logical expression inside a condition is any of the ASAM condition
-classes. The **by-value** set — comparing the simulation time, a parameter,
-a variable, an external value, the time of day, or another element's state —
-has its own chapter, [By-value conditions](conditions.md):
+classes — the by-value set (simulation time, parameter, variable, external
+value, time of day, storyboard element state) and the by-entity set (speed,
+relative speed, acceleration, stand still, traveled distance, reach
+position). Both have their own chapter, [Conditions](conditions.md):
 
 ```python
 import scena as scn

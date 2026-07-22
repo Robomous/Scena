@@ -8,10 +8,12 @@ The user guide grows sprint by sprint along the
   element states.
 - [Triggers](triggers.md) — condition groups, edges, delays, stop-trigger
   inheritance, and the stop-before-start evaluation order.
-- [By-value conditions](conditions.md) — the Rule comparator, the
-  simulation-time / parameter / variable / user-defined-value / time-of-day /
-  storyboard-element-state conditions, the host-value interface (C++/C/Python),
-  and the one-evaluation transition window.
+- [Conditions](conditions.md) — the by-value conditions (Rule comparator,
+  simulation time, parameter/variable/user-defined value, time of day,
+  storyboard element state) and the by-entity conditions (triggering-entities
+  any/all, speed/relative-speed/acceleration, stand still, traveled distance,
+  reach position), the scalar-velocity model, the observation-sampling
+  contract, and the host interface (C++/C/Python).
 - [Error handling](error-handling.md) — status codes, structured
   diagnostics, the severity/status invariant, the path grammar, and the
   C-ABI borrowed-string lifetime.
