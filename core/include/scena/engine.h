@@ -235,6 +235,14 @@ private:
     [[nodiscard]] runtime::LongitudinalController
     build_speed_controller(const ir::SpeedAction& action, const EntityRecord& record) const;
 
+    /// Builds the controller for a SpeedProfileAction: one linear
+    /// (position-mode) segment per entry, chained from `record`'s current
+    /// speed. An entry with no time is reached as fast as the Performance
+    /// envelope allows.
+    [[nodiscard]] runtime::LongitudinalController
+    build_profile_controller(const ir::SpeedProfileAction& action,
+                             const EntityRecord& record) const;
+
     /// Snaps a just-installed init-action transition to its terminal value
     /// (§8.5: init actions are instantaneous).
     void finalize_longitudinal(const ir::Action& action, EntityRecord& record);

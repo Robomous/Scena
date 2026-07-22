@@ -29,4 +29,26 @@ const TransitionDynamics& SpeedAction::dynamics() const {
     return dynamics_;
 }
 
+SpeedProfileAction::SpeedProfileAction(std::string entity_id,
+                                       std::vector<SpeedProfileEntry> entries,
+                                       FollowingMode following_mode)
+    : entity_id_(std::move(entity_id)), entries_(std::move(entries)),
+      following_mode_(following_mode) {}
+
+const std::string& SpeedProfileAction::entity_id() const {
+    return entity_id_;
+}
+
+std::string_view SpeedProfileAction::kind() const noexcept {
+    return "SpeedProfileAction";
+}
+
+const std::vector<SpeedProfileEntry>& SpeedProfileAction::entries() const {
+    return entries_;
+}
+
+FollowingMode SpeedProfileAction::following_mode() const {
+    return following_mode_;
+}
+
 } // namespace scena::ir

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "scena/ir/dynamics.h"
 
@@ -57,6 +59,47 @@ private:
     std::string entity_id_;
     double target_speed_;
     TransitionDynamics dynamics_;
+};
+
+/// One speed target of a SpeedProfileAction. Per ASAM OpenSCENARIO XML 1.4.0
+/// §SpeedProfileEntry.
+struct SpeedProfileEntry {
+    /// The speed to reach. Unit: [m/s].
+    double speed = 0.0;
+    /// The time to reach it. The first entry's time is a delta from the start
+    /// of the action, each later entry a delta from the previous entry. Absent
+    /// ⇒ reached as soon as the Performance settings allow. Unit: [s], range
+    /// [0..inf[.
+    std::optional<double> time;
+};
+
+/// Changes an entity's speed through a series of speed targets over time. Per
+/// ASAM OpenSCENARIO XML 1.4.0 §SpeedProfileAction.
+///
+/// Scena models `FollowingMode::Position`: strictly linear interpolation
+/// between successive targets, starting from the entity's current speed. An
+/// entry with no time is reached as fast as the Performance envelope allows.
+/// The entityRef-relative profile and the jerk/DynamicConstraints of
+/// followingMode=follow are deferred (ADR-0011).
+class SpeedProfileAction final : public Action {
+public:
+    SpeedProfileAction(std::string entity_id, std::vector<SpeedProfileEntry> entries,
+                       FollowingMode following_mode = FollowingMode::Position);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The ordered series of speed targets (§SpeedProfileEntry).
+    [[nodiscard]] const std::vector<SpeedProfileEntry>& entries() const;
+
+    /// Interpolation behavior between targets (§FollowingMode).
+    [[nodiscard]] FollowingMode following_mode() const;
+
+private:
+    std::string entity_id_;
+    std::vector<SpeedProfileEntry> entries_;
+    FollowingMode following_mode_;
 };
 
 } // namespace scena::ir

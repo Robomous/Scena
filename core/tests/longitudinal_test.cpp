@@ -338,3 +338,84 @@ TEST(LongitudinalEngineTest, InvalidTransitionValueIsRejectedAtInit) {
         make_speed_scenario(10.0, {DynamicsShape::Linear, DynamicsDimension::Time, -1.0}));
     EXPECT_EQ(status, Status::ValidationError);
 }
+
+// --- SpeedProfileAction: piecewise position-mode profile -------------------
+
+Scenario make_profile_scenario(std::vector<scena::ir::SpeedProfileEntry> entries,
+                               double initial_speed = 0.0,
+                               std::optional<Performance> perf = std::nullopt) {
+    Scenario scenario;
+    scenario.name = "profile-integration";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    if (perf.has_value()) {
+        Vehicle vehicle;
+        vehicle.performance = *perf;
+        ego.object = vehicle;
+    }
+    scenario.entities.push_back(std::move(ego));
+    if (initial_speed != 0.0) {
+        scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", initial_speed));
+    }
+
+    scena::ir::Event event;
+    event.name = "event";
+    event.actions.push_back(
+        std::make_shared<scena::ir::SpeedProfileAction>("ego", std::move(entries)));
+    scena::ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(event));
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+TEST(LongitudinalProfileTest, PiecewiseLinearProfileFollowsTargets) {
+    // 0 -> 10 over 2 s, then 10 -> 4 over 3 s (linear interpolation each leg).
+    Engine engine;
+    ASSERT_EQ(engine.init(make_profile_scenario({{10.0, 2.0}, {4.0, 3.0}})), Status::Ok);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 5.0, kTol); // midway up the first leg
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 10.0, kTol); // first target reached
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 7.0, kTol); // midway down the second leg
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 4.0); // final target, exact
+    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver/event"),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(LongitudinalProfileTest, EntryWithoutTimeUsesPerformanceAcceleration) {
+    // No time on the entry ⇒ reach 6 m/s as fast as max_acceleration (2 m/s^2)
+    // allows: 3 s.
+    Engine engine;
+    const Performance perf{60.0, 2.0, 2.0, std::nullopt, std::nullopt};
+    ASSERT_EQ(engine.init(make_profile_scenario({{6.0, std::nullopt}}, 0.0, perf)), Status::Ok);
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 3.0, kTol); // halfway there at 1.5 s
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 6.0);
+}
+
+TEST(LongitudinalProfileTest, EmptyProfileIsRejectedAtInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(make_profile_scenario({})), Status::ValidationError);
+}
+
+TEST(LongitudinalProfileTest, NegativeEntryTimeIsRejectedAtInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(make_profile_scenario({{5.0, -1.0}})), Status::ValidationError);
+}
