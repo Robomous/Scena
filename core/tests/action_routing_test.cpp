@@ -155,7 +155,8 @@ TEST(RoutingActionTest, ALaterRouteOverwritesTheEarlierOne) {
 
     std::vector<scena::ir::Event> events;
     events.push_back(timed_event("first", 1.0, std::make_shared<AssignRouteAction>("ego", first)));
-    events.push_back(timed_event("second", 2.0, std::make_shared<AssignRouteAction>("ego", second)));
+    events.push_back(
+        timed_event("second", 2.0, std::make_shared<AssignRouteAction>("ego", second)));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(0.0, std::move(events))), Status::Ok);
     ASSERT_EQ(engine.step(1.0), Status::Ok);
@@ -201,10 +202,11 @@ TEST(RoutingActionTest, RouteAssignmentLeavesARunningSpeedRampAlone) {
     route.waypoints.push_back(Waypoint{WorldPosition{0.0, 0.0, 0.0}, RouteStrategy::Shortest});
     route.waypoints.push_back(Waypoint{WorldPosition{9.0, 0.0, 0.0}, RouteStrategy::Shortest});
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "ramp", 0.0,
-        std::make_shared<SpeedAction>(
-            "ego", 20.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 10.0})));
+    events.push_back(
+        timed_event("ramp", 0.0,
+                    std::make_shared<SpeedAction>(
+                        "ego", 20.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 10.0})));
     events.push_back(timed_event("assign", 2.0, std::make_shared<AssignRouteAction>("ego", route)));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
@@ -222,13 +224,13 @@ TEST(RoutingActionValidationTest, RouteNeedsTwoFiniteWaypoints) {
     Route single;
     single.waypoints.push_back(Waypoint{WorldPosition{1.0, 0.0, 0.0}, RouteStrategy::Shortest});
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("assign", 0.0, std::make_shared<AssignRouteAction>("ego", single)));
+    events.push_back(
+        timed_event("assign", 0.0, std::make_shared<AssignRouteAction>("ego", single)));
     Engine engine;
     EXPECT_EQ(engine.init(make_scenario(0.0, std::move(events))), Status::ValidationError);
 
     Route infinite;
-    infinite.waypoints.push_back(
-        Waypoint{WorldPosition{0.0, 0.0, 0.0}, RouteStrategy::Shortest});
+    infinite.waypoints.push_back(Waypoint{WorldPosition{0.0, 0.0, 0.0}, RouteStrategy::Shortest});
     infinite.waypoints.push_back(Waypoint{
         WorldPosition{std::numeric_limits<double>::infinity(), 0.0, 0.0}, RouteStrategy::Shortest});
     std::vector<scena::ir::Event> bad_events;
@@ -240,10 +242,10 @@ TEST(RoutingActionValidationTest, RouteNeedsTwoFiniteWaypoints) {
 
 TEST(RoutingActionValidationTest, AcquirePositionRejectsANonFiniteTarget) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "acquire", 0.0,
-        std::make_shared<AcquirePositionAction>(
-            "ego", WorldPosition{0.0, std::numeric_limits<double>::quiet_NaN(), 0.0})));
+    events.push_back(
+        timed_event("acquire", 0.0,
+                    std::make_shared<AcquirePositionAction>(
+                        "ego", WorldPosition{0.0, std::numeric_limits<double>::quiet_NaN(), 0.0})));
     Engine engine;
     EXPECT_EQ(engine.init(make_scenario(0.0, std::move(events))), Status::ValidationError);
 }
@@ -267,8 +269,7 @@ TEST(FollowTrajectoryTest, TimeFreeModeTeleportsToTheStartAndFollowsTheShape) {
     // no longitudinal strategy).
     std::vector<scena::ir::Event> events;
     events.push_back(timed_event(
-        "follow", 1.0,
-        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
+        "follow", 1.0, std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
 
@@ -299,8 +300,7 @@ TEST(FollowTrajectoryTest, TimeFreeModeTeleportsToTheStartAndFollowsTheShape) {
 TEST(FollowTrajectoryTest, EndsExactlyOnTheFinalVertex) {
     std::vector<scena::ir::Event> events;
     events.push_back(timed_event(
-        "follow", 0.0,
-        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
+        "follow", 0.0, std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 20; ++i) { // 200 m of arc at 10 m/s
@@ -345,8 +345,7 @@ TEST(FollowTrajectoryTest, TimeFreeModeAdvancesWithTheCurrentSpeed) {
     // time-free mode leaves the longitudinal domain to whoever owns it.
     std::vector<scena::ir::Event> events;
     events.push_back(timed_event(
-        "follow", 0.0,
-        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
+        "follow", 0.0, std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
     events.push_back(timed_event("slow", 3.0, std::make_shared<SpeedAction>("ego", 2.0)));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
@@ -366,11 +365,11 @@ TEST(FollowTrajectoryTest, TimeFreeModeAdvancesWithTheCurrentSpeed) {
 TEST(FollowTrajectoryTest, AbsoluteTimingDrivesThePositionAndSpeed) {
     // Vertices at t = 0, 10, 20 over 100 m segments ⇒ 10 m/s along each.
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("follow", 0.0,
-                                 std::make_shared<FollowTrajectoryAction>(
-                                     "ego", make_corner_trajectory(0.0, 10.0, 20.0),
-                                     FollowingMode::Position,
-                                     Timing{ReferenceContext::Absolute, 1.0, 0.0})));
+    events.push_back(timed_event(
+        "follow", 0.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory(0.0, 10.0, 20.0),
+                                                 FollowingMode::Position,
+                                                 Timing{ReferenceContext::Absolute, 1.0, 0.0})));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(0.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 5; ++i) {
@@ -398,11 +397,11 @@ TEST(FollowTrajectoryTest, RelativeTimingWithScaleAndOffsetShiftsTheSchedule) {
     // every vertex time and offset 1 shifts them: t' = t*2 + 1 + 2, so the
     // vertices land at t = 3, 23, 43.
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("follow", 2.0,
-                                 std::make_shared<FollowTrajectoryAction>(
-                                     "ego", make_corner_trajectory(0.0, 10.0, 20.0),
-                                     FollowingMode::Position,
-                                     Timing{ReferenceContext::Relative, 2.0, 1.0})));
+    events.push_back(timed_event(
+        "follow", 2.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory(0.0, 10.0, 20.0),
+                                                 FollowingMode::Position,
+                                                 Timing{ReferenceContext::Relative, 2.0, 1.0})));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(0.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 2; ++i) { // t = 2: before the shifted start at t = 3
@@ -420,11 +419,11 @@ TEST(FollowTrajectoryTest, AFutureTimeReferenceLetsTheEntityKeepMovingFirst) {
     // §6.9.2: the action starts, "the entity keeps moving as before until t1.
     // At t = t1, the entity teleports to the start of the trajectory".
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("follow", 1.0,
-                                 std::make_shared<FollowTrajectoryAction>(
-                                     "ego", make_corner_trajectory(5.0, 15.0, 25.0),
-                                     FollowingMode::Position,
-                                     Timing{ReferenceContext::Absolute, 1.0, 0.0})));
+    events.push_back(timed_event(
+        "follow", 1.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory(5.0, 15.0, 25.0),
+                                                 FollowingMode::Position,
+                                                 Timing{ReferenceContext::Absolute, 1.0, 0.0})));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 4; ++i) { // t = 4, still before t1 = 5
@@ -441,11 +440,11 @@ TEST(FollowTrajectoryTest, APastTimeReferenceJoinsAtTheInterpolatedPoint) {
     // at the position interpolated between the most recent time reference and
     // the earliest future time reference".
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("follow", 4.0,
-                                 std::make_shared<FollowTrajectoryAction>(
-                                     "ego", make_corner_trajectory(0.0, 10.0, 20.0),
-                                     FollowingMode::Position,
-                                     Timing{ReferenceContext::Absolute, 1.0, 0.0})));
+    events.push_back(timed_event(
+        "follow", 4.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory(0.0, 10.0, 20.0),
+                                                 FollowingMode::Position,
+                                                 Timing{ReferenceContext::Absolute, 1.0, 0.0})));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 4; ++i) {
@@ -459,18 +458,18 @@ TEST(FollowTrajectoryTest, APastTimeReferenceJoinsAtTheInterpolatedPoint) {
 
 TEST(FollowTrajectoryTest, TimedTrajectorySupersedesARunningSpeedRampButTimeFreeDoesNot) {
     std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("ramp", 0.0,
+                    std::make_shared<SpeedAction>(
+                        "ego", 30.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 20.0})));
     events.push_back(timed_event(
-        "ramp", 0.0,
-        std::make_shared<SpeedAction>(
-            "ego", 30.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 20.0})));
+        "free", 2.0, std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
     events.push_back(timed_event(
-        "free", 2.0,
-        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory())));
-    events.push_back(timed_event("timed", 5.0,
-                                 std::make_shared<FollowTrajectoryAction>(
-                                     "ego", make_corner_trajectory(5.0, 45.0, 85.0),
-                                     FollowingMode::Position,
-                                     Timing{ReferenceContext::Absolute, 1.0, 0.0})));
+        "timed", 5.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_corner_trajectory(5.0, 45.0, 85.0),
+                                                 FollowingMode::Position,
+                                                 Timing{ReferenceContext::Absolute, 1.0, 0.0})));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
 
@@ -558,8 +557,8 @@ TEST(FollowTrajectoryValidationTest, ClosedAndFollowModeAreAcceptedWithAWarning)
     Trajectory closed = make_corner_trajectory();
     closed.closed = true;
     Engine engine;
-    ASSERT_EQ(engine.init(make_trajectory_scenario(std::make_shared<FollowTrajectoryAction>(
-                  "ego", closed, FollowingMode::Follow))),
+    ASSERT_EQ(engine.init(make_trajectory_scenario(
+                  std::make_shared<FollowTrajectoryAction>("ego", closed, FollowingMode::Follow))),
               Status::Ok);
     int warnings = 0;
     for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {

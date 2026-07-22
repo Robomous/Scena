@@ -11,6 +11,7 @@
 
 #include "scena/diagnostic.h"
 #include "scena/entity_state.h"
+#include "scena/entity_visibility.h"
 #include "scena/ir/action.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
@@ -24,6 +25,16 @@ namespace scena {
 namespace gateway {
 class ISimulatorGateway;
 } // namespace gateway
+
+/// Which movement domains of an entity the engine currently controls, per ASAM
+/// OpenSCENARIO XML 1.4.0 §ActivateControllerAction. Both start active: an
+/// entity with no controller action is driven by the engine's default
+/// controller in both domains. Deactivating a domain releases the engine's
+/// control of it and suppresses actions targeting it (ADR-0014).
+struct ControllerActivation {
+    bool lateral = true;
+    bool longitudinal = true;
+};
 
 /// Step-based scenario execution engine.
 ///
@@ -116,6 +127,24 @@ public:
     /// borrowed and is invalidated by the next routing action on that entity,
     /// by close(), and by init().
     [[nodiscard]] const ir::Route* route_of(const std::string& entity_id) const;
+
+    /// The controller assigned to an entity by the last AssignControllerAction
+    /// (§AssignControllerAction), or nullptr when it has none, the id is
+    /// unknown, or the engine is not initialized. Borrowed with the same
+    /// lifetime rules as route_of.
+    [[nodiscard]] const ir::Controller* assigned_controller_of(const std::string& entity_id) const;
+
+    /// Which movement domains the engine currently controls for an entity, or
+    /// std::nullopt when the id is unknown. Both are active until an
+    /// ActivateControllerAction (or an AssignControllerAction's activation
+    /// flags) says otherwise.
+    [[nodiscard]] std::optional<ControllerActivation>
+    controller_activation_of(const std::string& entity_id) const;
+
+    /// Current detectability of an entity (§VisibilityAction), or std::nullopt
+    /// when the id is unknown. Visible everywhere until a VisibilityAction
+    /// changes it.
+    [[nodiscard]] std::optional<EntityVisibility> visibility_of(const std::string& entity_id) const;
 
     /// Reports the authoritative state of a host-controlled entity. Fails with
     /// InvalidControlMode for engine-controlled entities.
@@ -267,6 +296,16 @@ private:
         // integrate phase of that same step. It is the one-step hand-off that
         // keeps the phase order of step() intact (ADR-0014).
         bool trajectory_moved = false;
+        // The controller model assigned by the last AssignControllerAction.
+        // Scena implements no controller models: this is stored, handed to the
+        // gateway, and readable by the host (§AssignControllerAction).
+        std::optional<ir::Controller> assigned_controller;
+        // Which movement domains the engine's default controller currently
+        // drives (§ActivateControllerAction). Deactivating a domain releases
+        // the engine's control of it; actions targeting it are then suppressed.
+        ControllerActivation activation;
+        // Detectability (§VisibilityAction): visible everywhere by default.
+        EntityVisibility visibility;
         // Derived observation state for the by-entity conditions (p5-s2),
         // written only by init seeding and the phase-2b refresh. Every member
         // is default-initialized: an uninitialized read would be a determinism
@@ -309,6 +348,24 @@ private:
     /// longitudinal action on `record`, returning its outcome (§7.4.1.2).
     runtime::ActionOutcome drive_longitudinal(const ir::Action& action, EntityRecord& record,
                                               runtime::LongitudinalController controller);
+
+    /// Releases the engine's control of a domain on `record`, retiring whatever
+    /// action owned it so that action completes on its next re-poll (the
+    /// §7.5.2.1 override path). The entity keeps the state it has: a released
+    /// longitudinal domain holds the current speed, a released lateral one
+    /// stops following its trajectory where it stands.
+    void release_longitudinal_domain(EntityRecord& record);
+    void release_lateral_domain(EntityRecord& record);
+
+    /// Applies the tri-state activation flags of a controller action to
+    /// `record`: an unset flag means "no change for controlling that domain",
+    /// activating restores normal dispatch, deactivating releases the domain.
+    void apply_activation(EntityRecord& record, const std::optional<bool>& lateral,
+                          const std::optional<bool>& longitudinal);
+
+    /// Reports that `action` was fired while one of the domains it needs is
+    /// deactivated, and skips it (the missing-prerequisite analog of §7.5.2.2).
+    void report_inactive_domain(const ir::Action& action, const char* domain);
 
     /// Retires the longitudinal action currently owning `record` when a
     /// different `incoming` action supersedes it, so the outgoing action reports

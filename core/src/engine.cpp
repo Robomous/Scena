@@ -16,6 +16,7 @@
 
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/controller.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/interaction_condition.h"
@@ -44,6 +45,8 @@ constexpr const char* kRuleDistancesNotNegative =
     "asam.net:xosc:1.1.0:data_type.distances_are_not_negative";
 constexpr const char* kRuleTrajectoryTiming =
     "asam.net:xosc:1.0.0:routing.trajectory_timing_exists_if_requested";
+constexpr const char* kRuleControllerActivation =
+    "asam.net:xosc:1.2.0:scenario_logic.controller_activation";
 constexpr const char* kRuleTrajectoryOffset =
     "asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length";
 
@@ -900,6 +903,30 @@ void validate_action_content(const ir::Action& action, const std::string& path,
             warn(sink, Status::UnsupportedFeature,
                  "trajectoryFollowingMode 'follow' is executed as 'position' (§6.9)", path);
         }
+        return;
+    }
+    if (const auto* assign_controller = dynamic_cast<const ir::AssignControllerAction*>(&action)) {
+        // per rule asam.net:xosc:1.2.0:scenario_logic.controller_activation: a
+        // controller "shall not be activated in a domain where it is not
+        // defined through the controllerType".
+        const ir::Controller& controller = assign_controller->controller();
+        const auto activates = [](const std::optional<bool>& flag) {
+            return flag.has_value() && *flag;
+        };
+        if (activates(assign_controller->activate_lateral()) &&
+            !ir::controls_lateral(controller.type)) {
+            error(sink, Status::ValidationError,
+                  "controller '" + controller.name +
+                      "' is not defined for the lateral domain it activates",
+                  path, kRuleControllerActivation);
+        }
+        if (activates(assign_controller->activate_longitudinal()) &&
+            !ir::controls_longitudinal(controller.type)) {
+            error(sink, Status::ValidationError,
+                  "controller '" + controller.name +
+                      "' is not defined for the longitudinal domain it activates",
+                  path, kRuleControllerActivation);
+        }
     }
 }
 
@@ -1346,6 +1373,31 @@ const ir::Route* Engine::route_of(const std::string& entity_id) const {
     return &*it->second.route;
 }
 
+const ir::Controller* Engine::assigned_controller_of(const std::string& entity_id) const {
+    const auto it = entities_.find(entity_id);
+    if (it == entities_.end() || !it->second.assigned_controller.has_value()) {
+        return nullptr;
+    }
+    return &*it->second.assigned_controller;
+}
+
+std::optional<ControllerActivation>
+Engine::controller_activation_of(const std::string& entity_id) const {
+    const auto it = entities_.find(entity_id);
+    if (it == entities_.end()) {
+        return std::nullopt;
+    }
+    return it->second.activation;
+}
+
+std::optional<EntityVisibility> Engine::visibility_of(const std::string& entity_id) const {
+    const auto it = entities_.find(entity_id);
+    if (it == entities_.end()) {
+        return std::nullopt;
+    }
+    return it->second.visibility;
+}
+
 Status Engine::report_state(const std::string& entity_id, const EntityState& state) {
     if (!initialized_) {
         return Status::NotInitialized;
@@ -1521,6 +1573,14 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             return runtime::ActionOutcome::Complete;
         }
 
+        // A longitudinal action fired while the engine does not control that
+        // domain has a missing prerequisite: it is reported and skipped rather
+        // than fighting a host controller for the entity (§7.5.2.2, ADR-0014).
+        if (!record.activation.longitudinal) {
+            report_inactive_domain(action, "longitudinal");
+            return runtime::ActionOutcome::Complete;
+        }
+
         const bool is_owner = record.active_longitudinal_action == &action;
 
         // Distance keeping (§LongitudinalDistanceAction): a controller that
@@ -1641,7 +1701,65 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             record.retired_actions.erase(retired);
             return runtime::ActionOutcome::Complete;
         }
+        // Every trajectory steers (Table 10: all four rows assign a lateral
+        // control strategy), and a timed one drives the speed as well; if the
+        // engine does not control a domain the action needs, it is skipped.
+        if (!record.activation.lateral) {
+            report_inactive_domain(action, "lateral");
+            return runtime::ActionOutcome::Complete;
+        }
+        if (follow->time_reference().has_value() && !record.activation.longitudinal) {
+            report_inactive_domain(action, "longitudinal");
+            return runtime::ActionOutcome::Complete;
+        }
         return drive_trajectory(*follow, record);
+    }
+
+    if (const auto* assign_controller = dynamic_cast<const ir::AssignControllerAction*>(&action)) {
+        // §AssignControllerAction: assigns the controller model and optionally
+        // activates or deactivates domains; completes immediately (Table 10).
+        // Scena implements no controller models, so the assignment is state the
+        // host reads — the gateway hears about it at this exact point in the
+        // step (ADR-0014).
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        found->assigned_controller = assign_controller->controller();
+        if (gateway_ != nullptr) {
+            gateway_->on_controller_assigned(action.entity_id(), *found->assigned_controller);
+        }
+        apply_activation(*found, assign_controller->activate_lateral(),
+                         assign_controller->activate_longitudinal());
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* activate = dynamic_cast<const ir::ActivateControllerAction*>(&action)) {
+        // §ActivateControllerAction: toggles controlled behavior per domain and
+        // completes immediately (Table 10). Scena's engine is the default
+        // controller, so this toggles the engine's own control (ADR-0014).
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        apply_activation(*found, activate->lateral(), activate->longitudinal());
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* visibility = dynamic_cast<const ir::VisibilityAction*>(&action)) {
+        // §VisibilityAction: all three flags are required by the XSD, so the
+        // action always states a complete visibility. Completes immediately
+        // (Table 10).
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        found->visibility =
+            EntityVisibility{visibility->graphics(), visibility->sensors(), visibility->traffic()};
+        if (gateway_ != nullptr) {
+            gateway_->on_visibility_changed(action.entity_id(), found->visibility);
+        }
+        return runtime::ActionOutcome::Complete;
     }
 
     // An action kind the engine does not implement yet. A parser must never
@@ -2045,6 +2163,62 @@ runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAc
     runtime::LongitudinalController controller;
     controller.segments.push_back(seg);
     return controller;
+}
+
+void Engine::release_longitudinal_domain(EntityRecord& record) {
+    // Retires the current owner (it completes on its next re-poll, the
+    // stopTransition analog of §7.5.2.1) and leaves the entity at its current
+    // speed — the engine simply stops commanding it.
+    supersede_longitudinal(record, nullptr);
+    record.longitudinal.reset();
+    record.continuous_speed.reset();
+    record.active_longitudinal_action = nullptr;
+}
+
+void Engine::release_lateral_domain(EntityRecord& record) {
+    if (!record.trajectory.has_value()) {
+        return;
+    }
+    const ir::Action* outgoing = record.trajectory->action;
+    if (outgoing != nullptr &&
+        std::find(record.retired_actions.begin(), record.retired_actions.end(), outgoing) ==
+            record.retired_actions.end()) {
+        record.retired_actions.push_back(outgoing);
+    }
+    // A timed trajectory also owned the longitudinal domain; releasing the
+    // lateral one ends the whole action, so that ownership goes too.
+    if (record.active_longitudinal_action == outgoing) {
+        record.active_longitudinal_action = nullptr;
+    }
+    record.trajectory.reset();
+}
+
+void Engine::apply_activation(EntityRecord& record, const std::optional<bool>& lateral,
+                              const std::optional<bool>& longitudinal) {
+    // "If not specified: No change for controlling the dimension is applied."
+    if (lateral.has_value()) {
+        if (!*lateral && record.activation.lateral) {
+            release_lateral_domain(record);
+        }
+        record.activation.lateral = *lateral;
+    }
+    if (longitudinal.has_value()) {
+        if (!*longitudinal && record.activation.longitudinal) {
+            release_longitudinal_domain(record);
+        }
+        record.activation.longitudinal = *longitudinal;
+    }
+}
+
+void Engine::report_inactive_domain(const ir::Action& action, const char* domain) {
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = Status::InvalidControlMode;
+    diagnostic.message = "action '" + std::string(action.kind()) + "' needs the " +
+                         std::string(domain) + " domain of entity '" + action.entity_id() +
+                         "', which is deactivated; action skipped";
+    diagnostic.path = "entities/" + action.entity_id();
+    diagnostics_.report(std::move(diagnostic));
 }
 
 void Engine::supersede_longitudinal(EntityRecord& record, const ir::Action* incoming) {
