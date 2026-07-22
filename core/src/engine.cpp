@@ -637,6 +637,44 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
     }
 }
 
+/// Validates action content beyond target existence. A SpeedAction's transition
+/// dynamics value carries a time [s], distance [m] or rate [delta/s] and must be
+/// finite and in range [0..inf[ (per ASAM OpenSCENARIO XML 1.4.0
+/// §TransitionDynamics); the standard defines no asam.net rule id, so the
+/// diagnostic cites the section only.
+void validate_action_content(const ir::Action& action, const std::string& path,
+                             DiagnosticSink& sink) {
+    if (const auto* speed = dynamic_cast<const ir::SpeedAction*>(&action)) {
+        const ir::TransitionDynamics& td = speed->dynamics();
+        if (!std::isfinite(td.value) || td.value < 0.0) {
+            error(sink, Status::ValidationError,
+                  "speed action transition dynamics value must be finite and in range [0..inf[",
+                  path);
+        }
+        return;
+    }
+    if (const auto* profile = dynamic_cast<const ir::SpeedProfileAction*>(&action)) {
+        // §SpeedProfileAction requires at least one entry; each entry's speed is
+        // finite and its optional time is finite and in range [0..inf[.
+        if (profile->entries().empty()) {
+            error(sink, Status::ValidationError, "speed profile action has no entries", path);
+        }
+        std::size_t entry_index = 0;
+        for (const ir::SpeedProfileEntry& entry : profile->entries()) {
+            const std::string entry_path = path + "/entry[" + std::to_string(entry_index) + "]";
+            ++entry_index;
+            if (!std::isfinite(entry.speed)) {
+                error(sink, Status::ValidationError, "speed profile entry speed must be finite",
+                      entry_path);
+            }
+            if (entry.time.has_value() && (!std::isfinite(*entry.time) || *entry.time < 0.0)) {
+                error(sink, Status::ValidationError,
+                      "speed profile entry time must be finite and in range [0..inf[", entry_path);
+            }
+        }
+    }
+}
+
 /// Validates the storyboard tree in document order: element naming,
 /// triggers, non-null actions, and action targets that exist in `records`.
 /// Every defect is appended to `sink`; the walk never stops early.
@@ -716,6 +754,7 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                                       "action targets unknown entity '" + action->entity_id() + "'",
                                       action_path);
                             }
+                            validate_action_content(*action, action_path, sink);
                         }
                     }
                 }
@@ -806,6 +845,8 @@ Status Engine::init(ir::Scenario scenario) {
                       "entity '" + entity.id + "' has invalid performance limits",
                       "entities/" + entity.id);
             }
+            // Copied once for the default longitudinal controller (p2-s2).
+            it->second.performance = *perf;
         }
     }
     std::size_t init_action_index = 0;
@@ -820,6 +861,7 @@ Status Engine::init(ir::Scenario scenario) {
             error(diagnostics_, Status::SemanticError,
                   "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
+        validate_action_content(*action, action_path, diagnostics_);
     }
     validate_storyboard(scenario.storyboard, records, scenario.parameters, scenario.variables,
                         diagnostics_);
@@ -846,7 +888,15 @@ Status Engine::init(ir::Scenario scenario) {
     // completes during init; their document order does not imply an
     // execution order, but applying them in that order is deterministic.
     for (const std::shared_ptr<ir::Action>& action : scenario_.init_actions) {
-        apply(*action);
+        if (apply(*action) == runtime::ActionOutcome::Running) {
+            // §8.5: init actions take effect instantaneously. A transition
+            // installed here would otherwise never be re-polled, so snap it to
+            // its terminal value and release the entity.
+            const auto it = entities_.find(action->entity_id());
+            if (it != entities_.end()) {
+                finalize_longitudinal(*action, it->second);
+            }
+        }
     }
 
     // Seed the derived-observation baseline after init actions, before the
@@ -880,6 +930,10 @@ Status Engine::step(double dt) {
     if (!(dt >= 0.0)) { // rejects negative values and NaN
         return Status::InvalidArgument;
     }
+
+    // The scheduler's fire callback re-polls longitudinal actions without a dt
+    // argument; expose the current step to it.
+    last_dt_ = dt;
 
     clock_.advance(dt);
 
@@ -1108,43 +1162,171 @@ Status Engine::close() {
 }
 
 runtime::ActionOutcome Engine::apply(const ir::Action& action) {
-    if (const auto* speed_action = dynamic_cast<const ir::SpeedAction*>(&action)) {
-        const auto it = entities_.find(speed_action->entity_id());
-        if (it != entities_.end()) {
-            it->second.state.speed = speed_action->target_speed();
-        } else {
+    const auto* speed_action = dynamic_cast<const ir::SpeedAction*>(&action);
+    const auto* profile_action = dynamic_cast<const ir::SpeedProfileAction*>(&action);
+    if (speed_action != nullptr || profile_action != nullptr) {
+        // Longitudinal actions share the default controller.
+        const auto it = entities_.find(action.entity_id());
+        if (it == entities_.end()) {
             // init() validates every action target, so this is defensive: a
-            // Warning, not a failure. The run continues; the action is
-            // skipped. apply() sees only the ir::Action, so the entity path
-            // is the anchor.
+            // Warning, not a failure. The run continues; the action is skipped.
             Diagnostic diagnostic;
             diagnostic.severity = Severity::Warning;
             diagnostic.code = Status::UnknownEntity;
             diagnostic.message =
-                "action targets unknown entity '" + speed_action->entity_id() + "'; action skipped";
-            diagnostic.path = "entities/" + speed_action->entity_id();
+                "action targets unknown entity '" + action.entity_id() + "'; action skipped";
+            diagnostic.path = "entities/" + action.entity_id();
             diagnostics_.report(std::move(diagnostic));
+            return runtime::ActionOutcome::Complete;
         }
-    } else {
-        // An action kind the engine does not implement yet. A parser must
-        // never silently drop input, and neither does the runtime: emit a
-        // Warning and keep going. Scheduling is unchanged — the event still
-        // completes in one evaluation (see below).
-        Diagnostic diagnostic;
-        diagnostic.severity = Severity::Warning;
-        diagnostic.code = Status::UnsupportedFeature;
-        diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
-                             "' targeting entity '" + action.entity_id() + "'; action ignored";
-        diagnostic.path = "entities/" + action.entity_id();
-        diagnostics_.report(std::move(diagnostic));
+        EntityRecord& record = it->second;
+        if (record.active_longitudinal_action == &action) {
+            // Owning action's re-poll: the controller argument is unused.
+            return drive_longitudinal(action, record, runtime::LongitudinalController{});
+        }
+        return drive_longitudinal(action, record,
+                                  speed_action != nullptr
+                                      ? build_speed_controller(*speed_action, record)
+                                      : build_profile_controller(*profile_action, record));
     }
 
-    // Every action the engine can apply sets a state instantaneously, so it
-    // reaches its goal in the evaluation it was applied in (§7.4.1.2). The
-    // engine will report other outcomes once it gains actions whose end is
-    // governed by transition dynamics (p2-s2); until then an event driven
-    // through Engine always completes in one evaluation, exactly as before.
+    // An action kind the engine does not implement yet. A parser must never
+    // silently drop input, and neither does the runtime: emit a Warning and
+    // keep going. Scheduling is unchanged — the event completes in one
+    // evaluation.
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = Status::UnsupportedFeature;
+    diagnostic.message = "unsupported action kind '" + std::string(action.kind()) +
+                         "' targeting entity '" + action.entity_id() + "'; action ignored";
+    diagnostic.path = "entities/" + action.entity_id();
+    diagnostics_.report(std::move(diagnostic));
     return runtime::ActionOutcome::Complete;
+}
+
+runtime::ActionOutcome Engine::drive_longitudinal(const ir::Action& action, EntityRecord& record,
+                                                  runtime::LongitudinalController controller) {
+    if (record.active_longitudinal_action == &action) {
+        // Owner: advance the installed controller by the current step. The
+        // distance travelled this step (for a distance-dimensioned transition)
+        // is estimated from the speed at the start of the step — the same
+        // explicit scheme the position integrator uses (ADR-0011).
+        const double step_distance = record.state.speed * last_dt_;
+        record.state.speed = record.longitudinal->advance(last_dt_, step_distance);
+        if (record.longitudinal->done()) {
+            record.longitudinal.reset();
+            record.active_longitudinal_action = nullptr;
+            return runtime::ActionOutcome::Complete;
+        }
+        return runtime::ActionOutcome::Running;
+    }
+
+    // First application (or a later action superseding whatever drove this
+    // entity): advance the fresh controller by a zero step to consume any
+    // instantaneous (Step / zero-duration) segments up front.
+    const double settled = controller.advance(0.0, 0.0);
+    record.state.speed = settled;
+    if (controller.done()) {
+        // Instantaneous: reached its goal in this evaluation. Any previous
+        // transition on this entity is dropped.
+        record.longitudinal.reset();
+        record.active_longitudinal_action = nullptr;
+        return runtime::ActionOutcome::Complete;
+    }
+    record.longitudinal = std::move(controller);
+    record.active_longitudinal_action = &action;
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAction& action,
+                                                               const EntityRecord& record) const {
+    const ir::TransitionDynamics& td = action.dynamics();
+    const std::optional<ir::Performance>& perf = record.performance;
+
+    runtime::LongitudinalController::Segment seg;
+    seg.from = record.state.speed;
+    seg.shape = td.shape;
+
+    // Clamp the target to the entity's maximum speed (§Performance). Only a
+    // positive maxSpeed constrains; other targets pass through.
+    double target = action.target_speed();
+    if (perf.has_value() && perf->max_speed > 0.0 && target > perf->max_speed) {
+        target = perf->max_speed;
+    }
+    seg.to = target;
+
+    if (td.dimension == ir::DynamicsDimension::Distance) {
+        seg.by_distance = true;
+        seg.span = td.value; // metres; <= 0 ⇒ instantaneous
+    } else {
+        double duration = runtime::transition_duration(td, seg.from, seg.to);
+        // Performance acceleration clamp (time/rate dimensions): extend the
+        // duration so the transition's peak acceleration stays within the
+        // envelope. Direction picks the accel or decel limit (ADR-0011).
+        if (perf.has_value() && td.shape != ir::DynamicsShape::Step) {
+            const double delta = std::fabs(seg.to - seg.from);
+            const double limit =
+                seg.to >= seg.from ? perf->max_acceleration : perf->max_deceleration;
+            if (delta > 0.0 && limit > 0.0) {
+                const double min_duration =
+                    runtime::shape_peak_gradient_factor(td.shape) * delta / limit;
+                if (min_duration > duration) {
+                    duration = min_duration;
+                }
+            }
+        }
+        seg.span = duration;
+    }
+
+    runtime::LongitudinalController controller;
+    controller.segments.push_back(seg);
+    return controller;
+}
+
+runtime::LongitudinalController
+Engine::build_profile_controller(const ir::SpeedProfileAction& action,
+                                 const EntityRecord& record) const {
+    const std::optional<ir::Performance>& perf = record.performance;
+    runtime::LongitudinalController controller;
+    double from = record.state.speed;
+    for (const ir::SpeedProfileEntry& entry : action.entries()) {
+        double to = entry.speed;
+        if (perf.has_value() && perf->max_speed > 0.0 && to > perf->max_speed) {
+            to = perf->max_speed;
+        }
+        runtime::LongitudinalController::Segment seg;
+        seg.from = from;
+        seg.to = to;
+        // Position mode: strictly linear interpolation between targets
+        // (§SpeedProfileAction).
+        seg.shape = ir::DynamicsShape::Linear;
+        seg.by_distance = false;
+        if (entry.time.has_value()) {
+            // Authored duration is honoured exactly (strict linear); a zero
+            // time is an instantaneous jump.
+            seg.span = *entry.time;
+        } else {
+            // No time: reach the target as soon as the Performance envelope
+            // allows. Without a Performance limit the jump is instantaneous.
+            const double delta = std::fabs(to - from);
+            const double limit = to >= from ? (perf.has_value() ? perf->max_acceleration : 0.0)
+                                            : (perf.has_value() ? perf->max_deceleration : 0.0);
+            seg.span = limit > 0.0 && delta > 0.0 ? delta / limit : 0.0;
+        }
+        controller.segments.push_back(seg);
+        from = to;
+    }
+    return controller;
+}
+
+void Engine::finalize_longitudinal(const ir::Action& action, EntityRecord& record) {
+    if (record.active_longitudinal_action == &action && record.longitudinal.has_value() &&
+        !record.longitudinal->segments.empty()) {
+        // §8.5: init actions are instantaneous — jump to the terminal target.
+        record.state.speed = record.longitudinal->segments.back().to;
+    }
+    record.longitudinal.reset();
+    record.active_longitudinal_action = nullptr;
 }
 
 } // namespace scena

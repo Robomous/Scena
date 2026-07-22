@@ -278,3 +278,82 @@ TEST(SchedulerTest, CompletionRollUpWaitsForOngoingEvents) {
     EXPECT_EQ(*scheduler.element_state("story/act"), ElementState::Running);
     EXPECT_EQ(*scheduler.element_state("story"), ElementState::Running);
 }
+
+TEST(SchedulerTest, TransitionActionIsRePolledUntilComplete) {
+    // An action reporting Running (transition dynamics) keeps its event in
+    // runningState and is re-polled each step until it reports Complete, at
+    // which point the event ends regularly (§8.4.2).
+    const Storyboard storyboard = make_storyboard({make_event("event", nullptr, "ego", 10.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    int calls = 0;
+    auto ramp = [&](const scena::ir::Action&) {
+        ++calls;
+        return calls < 3 ? ActionOutcome::Running : ActionOutcome::Complete;
+    };
+
+    scheduler.step(0.0, ramp); // call 1: initial fire -> Running
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    scheduler.step(1.0, ramp); // call 2: re-poll -> Running
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    scheduler.step(2.0, ramp); // call 3: re-poll -> Complete, event ends regularly
+    EXPECT_EQ(calls, 3);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Complete);
+    EXPECT_EQ(*scheduler.element_transition("story/act/group/maneuver/event"), TransitionKind::End);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver"), ElementState::Complete);
+
+    // Once complete, the action is no longer re-polled.
+    scheduler.step(3.0, ramp);
+    EXPECT_EQ(calls, 3);
+}
+
+TEST(SchedulerTest, NeverEndingActionIsNotRePolled) {
+    // Ongoing (never-ending, §7.5.3) is distinct from Running: it fires once
+    // and is never re-polled, so a stopTransition is the only way out.
+    const Storyboard storyboard = make_storyboard({make_event("event", nullptr, "ego", 10.0)});
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    int calls = 0;
+    auto ongoing = [&](const scena::ir::Action&) {
+        ++calls;
+        return ActionOutcome::Ongoing;
+    };
+    scheduler.step(0.0, ongoing);
+    scheduler.step(1.0, ongoing);
+    scheduler.step(2.0, ongoing);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+}
+
+TEST(SchedulerTest, RunningAlongsideNeverEndingStaysRunning) {
+    // An event with both a transition (Running) and a never-ending (Ongoing)
+    // action: completing the transition does not end the event — the
+    // never-ending action holds it in runningState (§8.4.2, "every nested
+    // Action is completed").
+    Event event;
+    event.name = "event";
+    event.actions.push_back(std::make_shared<SpeedAction>("ego", 10.0));  // transition
+    event.actions.push_back(std::make_shared<SpeedAction>("other", 5.0)); // never-ending
+    std::vector<Event> events;
+    events.push_back(std::move(event));
+    const Storyboard storyboard = make_storyboard(std::move(events));
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+
+    // ego ramps and completes after one re-poll; other never ends.
+    int ego_calls = 0;
+    auto drive_two = [&](const scena::ir::Action& action) {
+        if (action.entity_id() == "other") {
+            return ActionOutcome::Ongoing;
+        }
+        ++ego_calls;
+        return ego_calls < 2 ? ActionOutcome::Running : ActionOutcome::Complete;
+    };
+
+    scheduler.step(0.0, drive_two); // ego Running, other Ongoing
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+    scheduler.step(1.0, drive_two); // ego Complete, other still Ongoing
+    EXPECT_EQ(*scheduler.element_state("story/act/group/maneuver/event"), ElementState::Running);
+}

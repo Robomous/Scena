@@ -114,6 +114,25 @@ TEST(CApiTest, NullArgumentsAreRejected) {
     EXPECT_EQ(scn_engine_entity_performance(nullptr, "v", &out_perf), SCN_ERROR_INVALID_ARGUMENT);
     (void)out_box;
 
+    // Longitudinal builders reject nulls.
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_LINEAR, SCN_DYNAMICS_DIMENSION_TIME,
+                                           1.0, SCN_FOLLOWING_MODE_POSITION};
+    EXPECT_EQ(scn_engine_add_speed_action_dyn(engine, nullptr, 8.0, &dynamics, 0.0,
+                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_speed_action_dyn(engine, "ego", 8.0, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    const scn_speed_profile_entry entries[] = {{5.0, 1.0}};
+    EXPECT_EQ(scn_engine_add_speed_profile_action(engine, nullptr, entries, 1,
+                                                  SCN_FOLLOWING_MODE_POSITION, 0.0,
+                                                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action(engine, "ego", nullptr, 1,
+                                                  SCN_FOLLOWING_MODE_POSITION, 0.0,
+                                                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+
     scn_engine_destroy(engine);
 
     scn_engine_destroy(nullptr); // must be a safe no-op
@@ -230,6 +249,82 @@ TEST(CApiTest, AddSpeedActionExRejectsInvalidArguments) {
     EXPECT_EQ(scn_engine_add_speed_action_ex(nullptr, "ego", 1.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
               SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_add_speed_action_ex(engine, nullptr, 1.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedActionDynRampsAcrossSteps) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_LINEAR, SCN_DYNAMICS_DIMENSION_TIME,
+                                           4.0, SCN_FOLLOWING_MODE_POSITION};
+    ASSERT_EQ(scn_engine_add_speed_action_dyn(engine, "ego", 8.0, &dynamics, 0.0,
+                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 0.0); // installed, not yet advanced
+
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 4.0); // halfway up the 4 s ramp
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 8.0); // target reached
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedProfileActionFollowsTargets) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    const scn_speed_profile_entry entries[] = {{10.0, 2.0}, {4.0, 2.0}};
+    ASSERT_EQ(scn_engine_add_speed_profile_action(engine, "ego", entries, 2,
+                                                  SCN_FOLLOWING_MODE_POSITION, 0.0,
+                                                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 10.0); // first target
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 4.0); // second target
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LongitudinalBuildersRejectInvalidArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_LINEAR, SCN_DYNAMICS_DIMENSION_TIME,
+                                           4.0, SCN_FOLLOWING_MODE_POSITION};
+    // NULL dynamics, out-of-range shape, NULL engine/entity.
+    EXPECT_EQ(
+        scn_engine_add_speed_action_dyn(engine, "ego", 8.0, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    const scn_transition_dynamics bad_shape{static_cast<scn_dynamics_shape>(99),
+                                            SCN_DYNAMICS_DIMENSION_TIME, 4.0,
+                                            SCN_FOLLOWING_MODE_POSITION};
+    EXPECT_EQ(scn_engine_add_speed_action_dyn(engine, "ego", 8.0, &bad_shape, 0.0,
+                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_action_dyn(nullptr, "ego", 8.0, &dynamics, 0.0,
+                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Profile: NULL entries, zero count.
+    const scn_speed_profile_entry entries[] = {{5.0, 1.0}};
+    EXPECT_EQ(scn_engine_add_speed_profile_action(engine, "ego", nullptr, 1,
+                                                  SCN_FOLLOWING_MODE_POSITION, 0.0,
+                                                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action(engine, "ego", entries, 0,
+                                                  SCN_FOLLOWING_MODE_POSITION, 0.0,
+                                                  SCN_PRIORITY_PARALLEL, 1),
               SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }

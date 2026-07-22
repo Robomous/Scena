@@ -190,6 +190,44 @@ typedef struct scn_performance {
     double max_deceleration_rate; /* m/s^3; negative ⇒ unspecified (infinite) */
 } scn_performance;
 
+/* Shape of a speed transition (§DynamicsShape). Values mirror the IR enum. */
+typedef enum scn_dynamics_shape {
+    SCN_DYNAMICS_SHAPE_LINEAR = 0,
+    SCN_DYNAMICS_SHAPE_CUBIC = 1,
+    SCN_DYNAMICS_SHAPE_SINUSOIDAL = 2,
+    SCN_DYNAMICS_SHAPE_STEP = 3 /* instantaneous; value must be 0 */
+} scn_dynamics_shape;
+
+/* How the target is acquired (§DynamicsDimension). Values mirror the IR enum. */
+typedef enum scn_dynamics_dimension {
+    SCN_DYNAMICS_DIMENSION_TIME = 0,     /* value is a duration [s] */
+    SCN_DYNAMICS_DIMENSION_DISTANCE = 1, /* value is a distance [m] */
+    SCN_DYNAMICS_DIMENSION_RATE = 2      /* value is a rate [delta/s] */
+} scn_dynamics_dimension;
+
+/* Shape-following behavior (§FollowingMode). Values mirror the IR enum. Scena
+ * models position; follow is accepted but treated as position (ADR-0011). */
+typedef enum scn_following_mode {
+    SCN_FOLLOWING_MODE_POSITION = 0,
+    SCN_FOLLOWING_MODE_FOLLOW = 1
+} scn_following_mode;
+
+/* Dynamics of a speed transition (§TransitionDynamics). Transparent struct;
+ * append fields only. */
+typedef struct scn_transition_dynamics {
+    scn_dynamics_shape shape;
+    scn_dynamics_dimension dimension;
+    double value; /* s | m | delta/s, Range [0..inf[ */
+    scn_following_mode following_mode;
+} scn_transition_dynamics;
+
+/* One speed target of a SpeedProfileAction (§SpeedProfileEntry). Transparent
+ * struct; append fields only. */
+typedef struct scn_speed_profile_entry {
+    double speed; /* m/s */
+    double time;  /* s; negative ⇒ unspecified (reach as fast as performance allows) */
+} scn_speed_profile_entry;
+
 /* One structured diagnostic read back from the engine.
  *
  * The string members are borrowed from the engine and are never NULL — an
@@ -269,6 +307,28 @@ SCN_API scn_status scn_engine_add_speed_action_ex(scn_engine* engine, const char
                                                   double target_speed, double at_time,
                                                   scn_event_priority priority,
                                                   int maximum_execution_count);
+
+/* As scn_engine_add_speed_action_ex, with transition dynamics governing how the
+ * target speed is reached (§SpeedAction). A NULL `dynamics`, an out-of-range
+ * shape/dimension/following_mode, or a negative maximum_execution_count is
+ * rejected with SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_speed_action_dyn(scn_engine* engine, const char* entity_id,
+                                                   double target_speed,
+                                                   const scn_transition_dynamics* dynamics,
+                                                   double at_time, scn_event_priority priority,
+                                                   int maximum_execution_count);
+
+/* Adds a SpeedProfileAction (§SpeedProfileAction) on `entity_id` triggered at
+ * `at_time`. `entries` points to `entry_count` speed targets (>= 1); an entry
+ * whose time is negative is reached as fast as the Performance envelope allows.
+ * A NULL `entries`, a zero `entry_count`, an out-of-range following_mode, or a
+ * negative maximum_execution_count is rejected with SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const char* entity_id,
+                                                       const scn_speed_profile_entry* entries,
+                                                       size_t entry_count,
+                                                       scn_following_mode following_mode,
+                                                       double at_time, scn_event_priority priority,
+                                                       int maximum_execution_count);
 
 /* Lifecycle. */
 SCN_API scn_status scn_engine_init(scn_engine* engine);

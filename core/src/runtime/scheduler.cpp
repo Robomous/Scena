@@ -263,15 +263,28 @@ void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
         // Actions enter runningState with their parent event (§8.4.1). The
         // event "ends regularly when every nested Action is completed"
         // (§8.4.2), so it stays in runningState as soon as one action is
-        // still ongoing. Every action is fired regardless — the outcome of
-        // an earlier one must not decide whether a later one is applied.
-        bool ongoing = false;
+        // still ongoing (never-ending) or running (transition dynamics). Every
+        // action is fired regardless — the outcome of an earlier one must not
+        // decide whether a later one is applied. Actions reporting Running are
+        // recorded so progress_event can re-poll them each step in document
+        // order.
+        node.running_actions.clear();
+        node.has_ongoing = false;
         for (const std::shared_ptr<ir::Action>& action : node.event->actions) {
             if (fire && action != nullptr) {
-                ongoing = (fire(*action) == ActionOutcome::Ongoing) || ongoing;
+                switch (fire(*action)) {
+                case ActionOutcome::Complete:
+                    break;
+                case ActionOutcome::Ongoing:
+                    node.has_ongoing = true;
+                    break;
+                case ActionOutcome::Running:
+                    node.running_actions.push_back(action.get());
+                    break;
+                }
             }
         }
-        if (!ongoing) {
+        if (node.running_actions.empty() && !node.has_ongoing) {
             end_execution(node);
         }
         return;
@@ -395,9 +408,25 @@ void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& con
     // the standard gives no ordering rule for that case.
     for (std::size_t i = 0; i < maneuver.children.size(); ++i) {
         Node& event = maneuver.children[i];
-        // Running and complete events have no reachable start trigger
-        // (§7.3.2), so their condition histories stay frozen; an event never
-        // has two simultaneous instantiations.
+        // A running event has no reachable start trigger (§7.3.2), but its
+        // transition-dynamics actions are re-polled here so it can end
+        // regularly when they finish (§8.4.2). An event re-armed to standby by
+        // this same pass keeps its turn to next step — its state was Running
+        // when its turn came.
+        if (event.state == ElementState::Running) {
+            // Re-poll transition-dynamics actions, but not on the same
+            // evaluation the event fired them: an action advances starting the
+            // step after its startTransition, so its goal is not reached in the
+            // evaluation it was applied in (that is the Complete case).
+            const bool started_this_step = event.transition == TransitionKind::Start &&
+                                           event.transition_evaluation == evaluation_;
+            if (!started_this_step) {
+                progress_event(event, fire);
+            }
+            continue;
+        }
+        // Complete events, and events not yet triggered, are left alone; a
+        // standby event never has two simultaneous instantiations.
         if (event.state != ElementState::Standby) {
             continue;
         }
@@ -405,6 +434,30 @@ void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& con
             continue;
         }
         start_event(maneuver, i, context, fire);
+    }
+}
+
+void Scheduler::progress_event(Node& event, const FireCallback& fire) {
+    if (event.running_actions.empty()) {
+        // Nothing to re-poll: either the event has only never-ending actions
+        // (has_ongoing) that a stopTransition must end, or none at all.
+        return;
+    }
+    // Re-poll each still-running action in document order; keep those that
+    // remain Running. An action that has completed drops out.
+    std::vector<const ir::Action*> still_running;
+    still_running.reserve(event.running_actions.size());
+    for (const ir::Action* action : event.running_actions) {
+        if (fire && action != nullptr && fire(*action) == ActionOutcome::Running) {
+            still_running.push_back(action);
+        }
+    }
+    event.running_actions = std::move(still_running);
+
+    // The event ends regularly once every nested action completed (§8.4.2). A
+    // never-ending action keeps it running regardless.
+    if (event.running_actions.empty() && !event.has_ongoing) {
+        end_execution(event);
     }
 }
 

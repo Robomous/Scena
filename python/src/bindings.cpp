@@ -728,13 +728,64 @@ NB_MODULE(_scena, m) {
           "delay"_a = 0.0,
           "Wraps one logical expression into a single-group, single-condition trigger.");
 
+    // Longitudinal transition dynamics (§TransitionDynamics / §DynamicsShape).
+    nb::enum_<ir::DynamicsShape>(m, "DynamicsShape",
+                                 "Shape of a speed transition (§DynamicsShape).")
+        .value("Linear", ir::DynamicsShape::Linear)
+        .value("Cubic", ir::DynamicsShape::Cubic)
+        .value("Sinusoidal", ir::DynamicsShape::Sinusoidal)
+        .value("Step", ir::DynamicsShape::Step);
+    nb::enum_<ir::DynamicsDimension>(m, "DynamicsDimension",
+                                     "How a target value is acquired (§DynamicsDimension).")
+        .value("Time", ir::DynamicsDimension::Time)
+        .value("Distance", ir::DynamicsDimension::Distance)
+        .value("Rate", ir::DynamicsDimension::Rate);
+    nb::enum_<ir::FollowingMode>(m, "FollowingMode",
+                                 "Shape-following behavior (§FollowingMode). Scena models "
+                                 "Position; Follow is accepted but treated as Position.")
+        .value("Position", ir::FollowingMode::Position)
+        .value("Follow", ir::FollowingMode::Follow);
+
+    nb::class_<ir::TransitionDynamics>(m, "TransitionDynamics")
+        .def(
+            "__init__",
+            [](ir::TransitionDynamics* self, ir::DynamicsShape shape,
+               ir::DynamicsDimension dimension, double value, ir::FollowingMode following_mode) {
+                new (self) ir::TransitionDynamics{shape, dimension, value, following_mode};
+            },
+            "shape"_a = ir::DynamicsShape::Step, "dimension"_a = ir::DynamicsDimension::Time,
+            "value"_a = 0.0, "following_mode"_a = ir::FollowingMode::Position)
+        .def_rw("shape", &ir::TransitionDynamics::shape)
+        .def_rw("dimension", &ir::TransitionDynamics::dimension)
+        .def_rw("value", &ir::TransitionDynamics::value)
+        .def_rw("following_mode", &ir::TransitionDynamics::following_mode);
+
     nb::class_<ir::Action>(m, "Action")
         .def_prop_ro("kind", &ir::Action::kind,
                      "Stable ASAM element name of the action kind (e.g. 'SpeedAction').");
     nb::class_<ir::SpeedAction, ir::Action>(m, "SpeedAction")
         .def(nb::init<std::string, double>(), "entity_id"_a, "target_speed"_a)
+        .def(nb::init<std::string, double, ir::TransitionDynamics>(), "entity_id"_a,
+             "target_speed"_a, "dynamics"_a)
         .def_prop_ro("entity_id", &ir::SpeedAction::entity_id)
-        .def_prop_ro("target_speed", &ir::SpeedAction::target_speed);
+        .def_prop_ro("target_speed", &ir::SpeedAction::target_speed)
+        .def_prop_ro("dynamics", &ir::SpeedAction::dynamics);
+
+    nb::class_<ir::SpeedProfileEntry>(m, "SpeedProfileEntry")
+        .def(
+            "__init__",
+            [](ir::SpeedProfileEntry* self, double speed, std::optional<double> time) {
+                new (self) ir::SpeedProfileEntry{speed, time};
+            },
+            "speed"_a = 0.0, "time"_a = nb::none())
+        .def_rw("speed", &ir::SpeedProfileEntry::speed)
+        .def_rw("time", &ir::SpeedProfileEntry::time);
+    nb::class_<ir::SpeedProfileAction, ir::Action>(m, "SpeedProfileAction")
+        .def(nb::init<std::string, std::vector<ir::SpeedProfileEntry>, ir::FollowingMode>(),
+             "entity_id"_a, "entries"_a, "following_mode"_a = ir::FollowingMode::Position)
+        .def_prop_ro("entity_id", &ir::SpeedProfileAction::entity_id)
+        .def_prop_ro("entries", &ir::SpeedProfileAction::entries)
+        .def_prop_ro("following_mode", &ir::SpeedProfileAction::following_mode);
 
     // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
     nb::enum_<ir::EventPriority>(m, "EventPriority",

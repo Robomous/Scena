@@ -13,6 +13,7 @@
 #include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
+#include "scena/runtime/longitudinal.h"
 #include "scena/runtime/scheduler.h"
 #include "scena/status.h"
 
@@ -30,9 +31,11 @@ class ISimulatorGateway;
 /// imposes no main loop.
 ///
 /// Control ownership is per entity: engine-controlled entities integrate
-/// straight-line kinematics from speed and heading each step (placeholder
-/// physics for this phase); host-controlled entities move only when the host
-/// reports their state via report_state() or the gateway.
+/// straight-line kinematics from speed and heading each step, where speed is
+/// driven by a default longitudinal controller (SpeedAction / SpeedProfileAction
+/// transition dynamics, clamped by the entity's Performance envelope — a
+/// point-mass model, see docs/user-guide/motion.md); host-controlled entities
+/// move only when the host reports their state via report_state() or the gateway.
 ///
 /// Determinism: identical scenario plus identical step sequence produces
 /// bit-identical entity states, on every platform and ISA. The engine reads no
@@ -92,8 +95,11 @@ public:
     ///     (§7.6.5.1); it is an addition to this list, not a reordering.
     ///  3. the storyboard is evaluated at t': the stop trigger is checked,
     ///     standby elements whose start condition holds enter runningState
-    ///     (their events fire actions), and completion propagates;
-    ///  4. engine-controlled entities integrate kinematics over dt;
+    ///     (their events fire actions), in-progress transition-dynamics actions
+    ///     are re-polled and advance the longitudinal controller (updating
+    ///     speed to t'), and completion propagates;
+    ///  4. engine-controlled entities integrate position from the updated speed
+    ///     over dt;
     ///  5. engine-controlled entity states are published to the gateway, if any.
     Status step(double dt);
 
@@ -191,6 +197,17 @@ private:
         // entity-kinematics facet for freespace math; absent ⇒ freespace
         // metrics are a deterministic false.
         std::optional<ir::BoundingBox> bounding_box;
+        // Performance envelope (p2-s2), present only on a Vehicle. Copied once
+        // from the scenario at init; the default longitudinal controller clamps
+        // transitions to it (max speed, and per-shape peak acceleration).
+        std::optional<ir::Performance> performance;
+        // Active longitudinal transition (p2-s2): the default controller
+        // driving this entity's speed, and the action that owns it. An entity
+        // has at most one; a new longitudinal action supersedes any previous.
+        // active_longitudinal_action is compared by identity only (never
+        // dereferenced for ordering), so it does not reach results.
+        std::optional<runtime::LongitudinalController> longitudinal;
+        const ir::Action* active_longitudinal_action = nullptr;
         // Derived observation state for the by-entity conditions (p5-s2),
         // written only by init seeding and the phase-2b refresh. Every member
         // is default-initialized: an uninitialized read would be a determinism
@@ -202,7 +219,33 @@ private:
         double standstill_seconds = 0.0;    ///< s, contiguous time at speed == 0.0.
     };
 
+    /// Applies an action on its first fire and re-polls it on later steps (the
+    /// scheduler's fire callback). Longitudinal actions install and advance a
+    /// LongitudinalController; other kinds keep their one-shot behaviour.
     runtime::ActionOutcome apply(const ir::Action& action);
+
+    /// Installs or advances the default longitudinal controller for a
+    /// longitudinal action on `record`, returning its outcome (§7.4.1.2).
+    runtime::ActionOutcome drive_longitudinal(const ir::Action& action, EntityRecord& record,
+                                              runtime::LongitudinalController controller);
+
+    /// Builds the controller for a SpeedAction from `record`'s current speed,
+    /// clamped by its Performance envelope (max speed and per-shape peak
+    /// acceleration).
+    [[nodiscard]] runtime::LongitudinalController
+    build_speed_controller(const ir::SpeedAction& action, const EntityRecord& record) const;
+
+    /// Builds the controller for a SpeedProfileAction: one linear
+    /// (position-mode) segment per entry, chained from `record`'s current
+    /// speed. An entry with no time is reached as fast as the Performance
+    /// envelope allows.
+    [[nodiscard]] runtime::LongitudinalController
+    build_profile_controller(const ir::SpeedProfileAction& action,
+                             const EntityRecord& record) const;
+
+    /// Snaps a just-installed init-action transition to its terminal value
+    /// (§8.5: init actions are instantaneous).
+    void finalize_longitudinal(const ir::Action& action, EntityRecord& record);
 
     /// The simulated instant (epoch seconds) at `simulation_time`, or nullopt
     /// when no time-of-day anchor has been set.
@@ -217,6 +260,11 @@ private:
     ir::Scenario scenario_;
     runtime::Clock clock_;
     runtime::Scheduler scheduler_;
+    // Duration of the step currently being processed, set at the top of step().
+    // The scheduler's fire callback re-polls a longitudinal action without a dt
+    // argument, so the controller reads the current step from here. 0 during
+    // init and outside a step.
+    double last_dt_ = 0.0;
     // std::map (not unordered_map) so per-step iteration order is deterministic.
     // std::less<> gives heterogeneous string_view lookup for the entity
     // facet without changing the (sorted) iteration order.

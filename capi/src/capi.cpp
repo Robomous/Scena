@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
@@ -144,6 +145,64 @@ static_assert(static_cast<int>(scena::ir::MiscObjectCategory::Wind) == SCN_MISC_
 static_assert(static_cast<int>(scena::ir::Role::None) == SCN_ROLE_NONE);
 static_assert(static_cast<int>(scena::ir::Role::TrafficControl) == SCN_ROLE_TRAFFIC_CONTROL);
 
+// The transition-dynamics enums mirror the IR enumerations 1:1 and in order.
+static_assert(static_cast<int>(scena::ir::DynamicsShape::Linear) == SCN_DYNAMICS_SHAPE_LINEAR);
+static_assert(static_cast<int>(scena::ir::DynamicsShape::Step) == SCN_DYNAMICS_SHAPE_STEP);
+static_assert(static_cast<int>(scena::ir::DynamicsDimension::Time) == SCN_DYNAMICS_DIMENSION_TIME);
+static_assert(static_cast<int>(scena::ir::DynamicsDimension::Rate) == SCN_DYNAMICS_DIMENSION_RATE);
+static_assert(static_cast<int>(scena::ir::FollowingMode::Position) == SCN_FOLLOWING_MODE_POSITION);
+static_assert(static_cast<int>(scena::ir::FollowingMode::Follow) == SCN_FOLLOWING_MODE_FOLLOW);
+
+/* Maps and range-checks the priority enum arriving across the ABI. */
+bool to_ir_priority(scn_event_priority priority, scena::ir::EventPriority& out) {
+    switch (priority) {
+    case SCN_PRIORITY_OVERRIDE:
+        out = scena::ir::EventPriority::Override;
+        return true;
+    case SCN_PRIORITY_PARALLEL:
+        out = scena::ir::EventPriority::Parallel;
+        return true;
+    case SCN_PRIORITY_SKIP:
+        out = scena::ir::EventPriority::Skip;
+        return true;
+    }
+    return false;
+}
+
+/* Appends one event (a SimulationTimeCondition start trigger at `at_time` plus
+ * `action`) to a lazily created default Story -> Act -> ManeuverGroup ->
+ * Maneuver chain — the flat C builder surface. May throw (allocations); callers
+ * wrap it in try/catch. */
+void append_storyboard_event(scn_engine* engine, double at_time, scena::ir::EventPriority priority,
+                             int maximum_execution_count,
+                             std::shared_ptr<scena::ir::Action> action) {
+    scena::ir::Storyboard& storyboard = engine->scenario.storyboard;
+    if (storyboard.stories.empty()) {
+        scena::ir::Story story;
+        story.name = "story";
+        scena::ir::Act act;
+        act.name = "act";
+        scena::ir::ManeuverGroup group;
+        group.name = "group";
+        scena::ir::Maneuver maneuver;
+        maneuver.name = "maneuver";
+        group.maneuvers.push_back(std::move(maneuver));
+        act.groups.push_back(std::move(group));
+        story.acts.push_back(std::move(act));
+        storyboard.stories.push_back(std::move(story));
+    }
+    scena::ir::Maneuver& maneuver =
+        storyboard.stories.front().acts.front().groups.front().maneuvers.front();
+    scena::ir::Event event;
+    event.name = "event-" + std::to_string(maneuver.events.size() + 1);
+    event.start_trigger =
+        scena::ir::make_trigger(std::make_shared<scena::ir::SimulationTimeCondition>(at_time));
+    event.priority = priority;
+    event.maximum_execution_count = maximum_execution_count;
+    event.actions.push_back(std::move(action));
+    maneuver.events.push_back(std::move(event));
+}
+
 } // namespace
 
 const char* scn_version(void) {
@@ -264,54 +323,77 @@ scn_status scn_engine_add_speed_action_ex(scn_engine* engine, const char* entity
                                           double target_speed, double at_time,
                                           scn_event_priority priority,
                                           int maximum_execution_count) {
-    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0) {
-        return SCN_ERROR_INVALID_ARGUMENT;
-    }
-    // The enumeration cannot be trusted across the ABI, so it is range
-    // checked here rather than static_cast blindly into the IR enum.
     scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
-    switch (priority) {
-    case SCN_PRIORITY_OVERRIDE:
-        ir_priority = scena::ir::EventPriority::Override;
-        break;
-    case SCN_PRIORITY_PARALLEL:
-        ir_priority = scena::ir::EventPriority::Parallel;
-        break;
-    case SCN_PRIORITY_SKIP:
-        ir_priority = scena::ir::EventPriority::Skip;
-        break;
-    default:
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
         return SCN_ERROR_INVALID_ARGUMENT;
     }
     try {
-        // The C builder surface stays flat: each call appends one event
-        // (SimulationTimeCondition start trigger + SpeedAction) to a lazily
-        // created default Story -> Act -> ManeuverGroup -> Maneuver chain.
-        scena::ir::Storyboard& storyboard = engine->scenario.storyboard;
-        if (storyboard.stories.empty()) {
-            scena::ir::Story story;
-            story.name = "story";
-            scena::ir::Act act;
-            act.name = "act";
-            scena::ir::ManeuverGroup group;
-            group.name = "group";
-            scena::ir::Maneuver maneuver;
-            maneuver.name = "maneuver";
-            group.maneuvers.push_back(std::move(maneuver));
-            act.groups.push_back(std::move(group));
-            story.acts.push_back(std::move(act));
-            storyboard.stories.push_back(std::move(story));
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_speed_action_dyn(scn_engine* engine, const char* entity_id,
+                                           double target_speed,
+                                           const scn_transition_dynamics* dynamics, double at_time,
+                                           scn_event_priority priority,
+                                           int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || dynamics == nullptr ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(dynamics->shape) > static_cast<unsigned>(SCN_DYNAMICS_SHAPE_STEP) ||
+        static_cast<unsigned>(dynamics->dimension) >
+            static_cast<unsigned>(SCN_DYNAMICS_DIMENSION_RATE) ||
+        static_cast<unsigned>(dynamics->following_mode) >
+            static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::TransitionDynamics td{
+            static_cast<scena::ir::DynamicsShape>(dynamics->shape),
+            static_cast<scena::ir::DynamicsDimension>(dynamics->dimension), dynamics->value,
+            static_cast<scena::ir::FollowingMode>(dynamics->following_mode)};
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed, td));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const char* entity_id,
+                                               const scn_speed_profile_entry* entries,
+                                               size_t entry_count,
+                                               scn_following_mode following_mode, double at_time,
+                                               scn_event_priority priority,
+                                               int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || entries == nullptr || entry_count == 0 ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(following_mode) > static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        std::vector<scena::ir::SpeedProfileEntry> ir_entries;
+        ir_entries.reserve(entry_count);
+        for (size_t i = 0; i < entry_count; ++i) {
+            scena::ir::SpeedProfileEntry entry;
+            entry.speed = entries[i].speed;
+            // A negative time means "unspecified" across the ABI.
+            if (entries[i].time >= 0.0) {
+                entry.time = entries[i].time;
+            }
+            ir_entries.push_back(entry);
         }
-        scena::ir::Maneuver& maneuver =
-            storyboard.stories.front().acts.front().groups.front().maneuvers.front();
-        scena::ir::Event event;
-        event.name = "event-" + std::to_string(maneuver.events.size() + 1);
-        event.start_trigger =
-            scena::ir::make_trigger(std::make_shared<scena::ir::SimulationTimeCondition>(at_time));
-        event.priority = ir_priority;
-        event.maximum_execution_count = maximum_execution_count;
-        event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(entity_id, target_speed));
-        maneuver.events.push_back(std::move(event));
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::SpeedProfileAction>(
+                                    entity_id, std::move(ir_entries),
+                                    static_cast<scena::ir::FollowingMode>(following_mode)));
         return SCN_OK;
     } catch (...) {
         return SCN_ERROR_INTERNAL;
