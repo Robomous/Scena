@@ -116,12 +116,23 @@ public:
     ///  5. engine-controlled entity states are published to the gateway, if any.
     Status step(double dt);
 
-    /// Current state of an entity, or std::nullopt when the id is unknown or
-    /// the engine is not initialized.
+    /// Current state of an entity, or std::nullopt when the id is unknown, the
+    /// entity is not currently in the scenario (a DeleteEntityAction removed
+    /// it, §EntityAction), or the engine is not initialized.
     [[nodiscard]] std::optional<EntityState> state(const std::string& entity_id) const;
 
+    /// Whether a declared entity is currently in the scenario (§EntityAction),
+    /// or std::nullopt when the id is not declared at all. Every entity starts
+    /// active; a DeleteEntityAction makes it inactive and an AddEntityAction
+    /// brings it back. An inactive entity does not move, is not published to
+    /// the gateway, and is invisible to the by-entity conditions.
+    [[nodiscard]] std::optional<bool> entity_active(const std::string& entity_id) const;
+
     /// The route currently assigned to an entity (§6.8.2), or nullptr when it
-    /// has none, the id is unknown, or the engine is not initialized. A route
+    /// has none, the id is unknown or inactive, or the engine is not
+    /// initialized. The same "unknown or inactive" rule applies to
+    /// assigned_controller_of, controller_activation_of and visibility_of: an
+    /// entity that is not in the scenario reports nothing. A route
     /// is installed by an AssignRouteAction or an AcquirePositionAction and
     /// stays until another routing action overwrites it. The pointer is
     /// borrowed and is invalidated by the next routing action on that entity,
@@ -147,7 +158,9 @@ public:
     [[nodiscard]] std::optional<EntityVisibility> visibility_of(const std::string& entity_id) const;
 
     /// Reports the authoritative state of a host-controlled entity. Fails with
-    /// InvalidControlMode for engine-controlled entities.
+    /// InvalidControlMode for engine-controlled entities, and with
+    /// UnknownEntity when the entity is not currently in the scenario — a
+    /// deleted entity has no state to report (§EntityAction).
     Status report_state(const std::string& entity_id, const EntityState& state);
 
     /// Sets the current value of a global variable (§6.12), the host-side half
@@ -250,6 +263,12 @@ private:
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
+        // Whether the entity is currently in the scenario (§EntityAction).
+        // A DeleteEntityAction clears this and an AddEntityAction sets it
+        // again; the map's structure never changes at runtime, so entity
+        // iteration order and per-record bookkeeping are unaffected — which is
+        // exactly why the lifecycle is a flag and not an erase/insert.
+        bool active = true;
         // Optional geometry (p5-s3), copied once from the scenario at init and
         // immutable at runtime. The interaction conditions read it through the
         // entity-kinematics facet for freespace math; absent ⇒ freespace
@@ -338,7 +357,26 @@ private:
     /// The record `action` targets, or nullptr when the entity is unknown —
     /// which init() already rejects, so the lookup failing is defensive: it
     /// reports a Warning and the caller skips the action.
+    ///
+    /// Also nullptr when the entity is not currently in the scenario: a
+    /// private action needs "a valid entity" as its actor (§7.5.2.2), so a
+    /// DeleteEntityAction stops whatever was driving it. Every private-action
+    /// branch maps a null record to Complete, which is how the owning event
+    /// ends — one evaluation later than the spec's action-level stopTransition,
+    /// because Scena has no per-action observable transitions (ADR-0015).
     EntityRecord* record_for(const ir::Action& action);
+
+    /// Takes an entity out of the scenario (§DeleteEntityAction): clears every
+    /// piece of runtime motion, assignment and derived-observation state while
+    /// keeping the declared immutables (control mode, geometry, performance),
+    /// so a later AddEntityAction restarts from a clean slate.
+    void deactivate_entity(EntityRecord& record);
+
+    /// Puts an entity into the scenario at `position` (§AddEntityAction): a
+    /// fresh state, and the derived-observation baseline seeded from it exactly
+    /// as init() seeds it, so the first step after the add reports no phantom
+    /// acceleration.
+    void activate_entity(EntityRecord& record, const ir::WorldPosition& position);
 
     /// Drives one step of a LongitudinalDistanceAction on `record`: measures the
     /// current gap to the reference entity, commands the speed that closes it

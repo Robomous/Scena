@@ -79,7 +79,10 @@ public:
     [[nodiscard]] std::optional<ir::EntityKinematics>
     entity_kinematics(std::string_view id) const override {
         const auto it = entities_->find(id); // heterogeneous lookup (std::less<>)
-        if (it == entities_->end()) {
+        // An entity removed by a DeleteEntityAction is absent as far as the
+        // by-entity conditions are concerned, so every expression over it is a
+        // deterministic false (the ADR-0007 absent-facet grain).
+        if (it == entities_->end() || !it->second.active) {
             return std::nullopt;
         }
         const auto& record = it->second;
@@ -706,6 +709,30 @@ template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
                              const Records& records, const NamedValueStore& parameters,
                              const NamedValueStore& variables, DiagnosticSink& sink) {
+    if (const auto* add = dynamic_cast<const ir::AddEntityAction*>(&action)) {
+        // §EntityAction: "Entities to be added or deleted must be defined in
+        // the Entities section." The standard names no checker rule for it.
+        if (records.find(add->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "add entity action references undeclared entity '" + add->entity_ref() + "'",
+                  path);
+        }
+        const ir::WorldPosition& position = add->position();
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+            !std::isfinite(position.z)) {
+            error(sink, Status::ValidationError, "add entity action position must be finite", path);
+        }
+        return;
+    }
+    if (const auto* remove = dynamic_cast<const ir::DeleteEntityAction*>(&action)) {
+        if (records.find(remove->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "delete entity action references undeclared entity '" + remove->entity_ref() +
+                      "'",
+                  path);
+        }
+        return;
+    }
     if (const auto* variable_set = dynamic_cast<const ir::VariableSetAction*>(&action)) {
         // per rule asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference
         if (variables.find(variable_set->variable_ref()) == variables.end()) {
@@ -1346,6 +1373,9 @@ Status Engine::step(double dt) {
 
     if (gateway_ != nullptr) {
         for (auto& [id, record] : entities_) {
+            if (!record.active) {
+                continue; // not in the scenario (§EntityAction)
+            }
             if (record.mode == ir::ControlMode::HostControlled) {
                 EntityState polled;
                 if (gateway_->poll_state(id, polled)) {
@@ -1381,6 +1411,9 @@ Status Engine::step(double dt) {
 
     for (auto& [id, record] : entities_) {
         (void)id;
+        if (!record.active) {
+            continue; // a deleted entity does not move
+        }
         if (record.mode == ir::ControlMode::EngineControlled) {
             if (record.trajectory_moved) {
                 // A trajectory follower already placed this entity for this
@@ -1405,7 +1438,7 @@ Status Engine::step(double dt) {
 
     if (gateway_ != nullptr) {
         for (const auto& [id, record] : entities_) {
-            if (record.mode == ir::ControlMode::EngineControlled) {
+            if (record.active && record.mode == ir::ControlMode::EngineControlled) {
                 gateway_->publish_state(id, record.state);
             }
         }
@@ -1419,6 +1452,12 @@ void Engine::refresh_observations(double dt) {
     // std::map order for determinism.
     for (auto& [id, record] : entities_) {
         (void)id;
+        if (!record.active) {
+            // Nothing accrues while an entity is out of the scenario, and
+            // prev_sample stays where the delete left it — the re-add seeds a
+            // fresh baseline anyway.
+            continue;
+        }
         if (record.has_prev_sample) {
             // Finite differences of exactly the observed snapshots. Fixed
             // operand order; std::sqrt is IEEE-exact.
@@ -1442,15 +1481,25 @@ void Engine::refresh_observations(double dt) {
 
 std::optional<EntityState> Engine::state(const std::string& entity_id) const {
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end()) {
+    // An entity taken out by a DeleteEntityAction reports nothing until it is
+    // added back — the host sees exactly what the conditions see.
+    if (it == entities_.end() || !it->second.active) {
         return std::nullopt;
     }
     return it->second.state;
 }
 
+std::optional<bool> Engine::entity_active(const std::string& entity_id) const {
+    const auto it = entities_.find(entity_id);
+    if (it == entities_.end()) {
+        return std::nullopt; // not declared at all
+    }
+    return it->second.active;
+}
+
 const ir::Route* Engine::route_of(const std::string& entity_id) const {
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end() || !it->second.route.has_value()) {
+    if (it == entities_.end() || !it->second.active || !it->second.route.has_value()) {
         return nullptr;
     }
     return &*it->second.route;
@@ -1458,7 +1507,8 @@ const ir::Route* Engine::route_of(const std::string& entity_id) const {
 
 const ir::Controller* Engine::assigned_controller_of(const std::string& entity_id) const {
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end() || !it->second.assigned_controller.has_value()) {
+    if (it == entities_.end() || !it->second.active ||
+        !it->second.assigned_controller.has_value()) {
         return nullptr;
     }
     return &*it->second.assigned_controller;
@@ -1467,7 +1517,7 @@ const ir::Controller* Engine::assigned_controller_of(const std::string& entity_i
 std::optional<ControllerActivation>
 Engine::controller_activation_of(const std::string& entity_id) const {
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end()) {
+    if (it == entities_.end() || !it->second.active) {
         return std::nullopt;
     }
     return it->second.activation;
@@ -1475,7 +1525,7 @@ Engine::controller_activation_of(const std::string& entity_id) const {
 
 std::optional<EntityVisibility> Engine::visibility_of(const std::string& entity_id) const {
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end()) {
+    if (it == entities_.end() || !it->second.active) {
         return std::nullopt;
     }
     return it->second.visibility;
@@ -1486,7 +1536,9 @@ Status Engine::report_state(const std::string& entity_id, const EntityState& sta
         return Status::NotInitialized;
     }
     const auto it = entities_.find(entity_id);
-    if (it == entities_.end()) {
+    // An inactive entity is not currently in the scenario, so there is nothing
+    // to report a state for (§EntityAction).
+    if (it == entities_.end() || !it->second.active) {
         return Status::UnknownEntity;
     }
     if (it->second.mode != ir::ControlMode::HostControlled) {
@@ -1617,8 +1669,20 @@ Status Engine::close() {
 
 Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
     const auto it = entities_.find(action.entity_id());
-    if (it != entities_.end()) {
+    if (it != entities_.end() && it->second.active) {
         return &it->second;
+    }
+    if (it != entities_.end()) {
+        // The entity is declared but a DeleteEntityAction took it out of the
+        // scenario. "A general prerequisite for private actions is that the
+        // actor is a valid entity" (§7.5.2.2), so the action stops; the
+        // scheduler sees the Complete its caller returns and ends the owning
+        // event on the next evaluation. Warn-once: an event re-polled every
+        // step must not flood the sink.
+        warn_once("entities/" + action.entity_id(), Status::UnknownEntity,
+                  "action '" + std::string(action.kind()) + "' targets inactive entity '" +
+                      action.entity_id() + "'; action stopped (§7.5.2.2)");
+        return nullptr;
     }
     // init() validates every action target, so this is defensive: a
     // Warning, not a failure. The run continues; the action is skipped.
@@ -1630,6 +1694,46 @@ Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
     diagnostic.path = "entities/" + action.entity_id();
     diagnostics_.report(std::move(diagnostic));
     return nullptr;
+}
+
+void Engine::deactivate_entity(EntityRecord& record) {
+    record.active = false;
+    // Motion and domain ownership: nothing may keep driving an entity that is
+    // no longer in the scenario, and nothing may survive into a later re-add.
+    record.longitudinal.reset();
+    record.active_longitudinal_action = nullptr;
+    record.continuous_speed.reset();
+    record.trajectory.reset();
+    record.trajectory_moved = false;
+    record.retired_actions.clear();
+    // Assignments (§6.8.2, §AssignControllerAction, §VisibilityAction) are
+    // runtime state too, so a re-added entity starts from the defaults.
+    record.route.reset();
+    record.assigned_controller.reset();
+    record.activation = ControllerActivation{};
+    record.visibility = EntityVisibility{};
+    // Derived observations: the odometer and the standstill timer restart, and
+    // acceleration goes absent so no finite difference straddles the gap.
+    record.has_prev_sample = false;
+    record.acceleration.reset();
+    record.traveled_distance = 0.0;
+    record.standstill_seconds = 0.0;
+    // The declared immutables (mode, bounding_box, performance) stay: they come
+    // from the Entities section, which a delete does not touch.
+}
+
+void Engine::activate_entity(EntityRecord& record, const ir::WorldPosition& position) {
+    record.active = true;
+    record.state = EntityState{};
+    record.state.x = position.x;
+    record.state.y = position.y;
+    record.state.z = position.z;
+    // Seed the observation baseline from the entity's own arrival state, the
+    // same way init() seeds it after the init actions: the first step after the
+    // add differences against where the entity actually appeared, so there is
+    // no phantom acceleration or teleport-sized odometer jump.
+    record.prev_sample = record.state;
+    record.has_prev_sample = true;
 }
 
 void Engine::warn_once(std::string path, Status code, std::string message) {
@@ -1719,6 +1823,26 @@ std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::Glob
         return runtime::ActionOutcome::Complete;
     }
 
+    if (const auto* add = dynamic_cast<const ir::AddEntityAction*>(&action)) {
+        // §EntityAction: "An entity can only exist in one copy. Adding an
+        // already active entity will have no effect."
+        const auto it = entities_.find(add->entity_ref());
+        if (it != entities_.end() && !it->second.active) {
+            activate_entity(it->second, add->position());
+        }
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* remove = dynamic_cast<const ir::DeleteEntityAction*>(&action)) {
+        // "neither will deleting an already inactive entity" — a no-op, not a
+        // diagnostic.
+        const auto it = entities_.find(remove->entity_ref());
+        if (it != entities_.end() && it->second.active) {
+            deactivate_entity(it->second);
+        }
+        return runtime::ActionOutcome::Complete;
+    }
+
     return std::nullopt; // not implemented; the caller reports it
 }
 
@@ -1744,6 +1868,25 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             return runtime::ActionOutcome::Complete;
         }
         EntityRecord& record = *found;
+
+        // A relative speed target needs its reference entity to be in the
+        // scenario (§7.5.2.2 prerequisites); a DeleteEntityAction on the
+        // reference stops the action, one-shot and continuous alike.
+        if (speed_action != nullptr && speed_action->is_relative()) {
+            const std::string& reference = speed_action->relative_target()->entity_ref;
+            const auto reference_it = entities_.find(reference);
+            if (reference_it == entities_.end() || !reference_it->second.active) {
+                warn_once("entities/" + reference + "/speedReference", Status::UnknownEntity,
+                          "speed action reference entity '" + reference +
+                              "' is not in the scenario (§7.5.2.2); action stopped");
+                if (record.active_longitudinal_action == &action) {
+                    record.active_longitudinal_action = nullptr;
+                    record.longitudinal.reset();
+                    record.continuous_speed.reset();
+                }
+                return runtime::ActionOutcome::Complete;
+            }
+        }
 
         // A longitudinal action superseded by a newer one, re-polled while still
         // in its event's running set: retire it. It completes so its event can
@@ -2023,6 +2166,15 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     if (reference_it == entities_.end()) {
         return give_up(diagnostics_, "longitudinal distance action reference entity '" +
                                          action.entity_ref() + "' is unknown; action completed");
+    }
+    if (!reference_it->second.active) {
+        // §7.5.2.1: "if the referenced entity of an instance of a
+        // LongitudinalDistanceAction disappears" the action is missing a
+        // prerequisite and stops. A DeleteEntityAction is exactly that.
+        return give_up(diagnostics_, "longitudinal distance action reference entity '" +
+                                         action.entity_ref() +
+                                         "' is no longer in the scenario (§7.5.2.2); action "
+                                         "completed");
     }
     // Read-only view of the reference; the actor's own record is written below,
     // and the two may be the same entity (a degenerate but harmless self-gap).
@@ -2436,9 +2588,11 @@ double Engine::resolve_relative_speed(const ir::RelativeTargetSpeed& target,
     // The reference is validated to exist at init; the fallback to the actor's
     // own speed is defensive (yields a no-op delta / identity factor) and never
     // taken on a validated scenario.
+    // An inactive reference is treated like a missing one: apply() stops the
+    // action before it gets here, so this fallback is defensive only.
     const auto it = entities_.find(target.entity_ref); // heterogeneous lookup
     const double reference_speed =
-        it != entities_.end() ? it->second.state.speed : record.state.speed;
+        it != entities_.end() && it->second.active ? it->second.state.speed : record.state.speed;
     switch (target.value_type) {
     case ir::SpeedTargetValueType::Delta:
         return reference_speed + target.value;

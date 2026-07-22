@@ -341,4 +341,30 @@ double ParameterModifyAction::value() const noexcept {
     return value_;
 }
 
+AddEntityAction::AddEntityAction(std::string entity_ref, WorldPosition position)
+    : entity_ref_(std::move(entity_ref)), position_(position) {}
+
+std::string_view AddEntityAction::kind() const noexcept {
+    return "AddEntityAction";
+}
+
+const std::string& AddEntityAction::entity_ref() const {
+    return entity_ref_;
+}
+
+const WorldPosition& AddEntityAction::position() const {
+    return position_;
+}
+
+DeleteEntityAction::DeleteEntityAction(std::string entity_ref)
+    : entity_ref_(std::move(entity_ref)) {}
+
+std::string_view DeleteEntityAction::kind() const noexcept {
+    return "DeleteEntityAction";
+}
+
+const std::string& DeleteEntityAction::entity_ref() const {
+    return entity_ref_;
+}
+
 } // namespace scena::ir
