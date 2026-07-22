@@ -266,6 +266,10 @@ private:
         [[nodiscard]] std::optional<bool>
         storyboard_element_state(ir::StoryboardElementType type, std::string_view ref,
                                  ir::StoryboardElementState state) const override;
+        [[nodiscard]] std::optional<ir::EntityKinematics>
+        entity_kinematics(std::string_view id) const override {
+            return host_->entity_kinematics(id);
+        }
 
     private:
         const ir::EvaluationContext* host_;

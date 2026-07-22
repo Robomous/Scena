@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "scena/engine.h"
+#include "scena/entity_state.h"
 
 namespace scena::gateway {
 

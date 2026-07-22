@@ -4,6 +4,8 @@
 #include <optional>
 #include <string_view>
 
+#include "scena/entity_state.h"
+
 namespace scena::ir {
 
 /// The kind of storyboard element a StoryboardElementStateCondition refers to,
@@ -41,6 +43,18 @@ enum class NamedValueKind {
     Parameter,
     Variable,
     UserDefinedValue,
+};
+
+/// Per-entity kinematic observation the by-entity conditions read (§7.6.5.1):
+/// the state one evaluation observes plus the derived quantities the engine
+/// accumulates. `acceleration` is a finite difference and is absent until two
+/// samples exist (ADR-0007 absent ⇒ deterministic false, at the finest grain:
+/// AccelerationCondition is false while Speed on the same entity still works).
+struct EntityKinematics {
+    EntityState state;                  ///< Snapshot the evaluation observes.
+    std::optional<double> acceleration; ///< m/s^2; absent until two samples exist.
+    double traveled_distance = 0.0;     ///< m, cumulative world-frame path since init.
+    double standstill_seconds = 0.0;    ///< s, contiguous time at speed == 0.0.
 };
 
 /// Read-only runtime context a condition is evaluated against.
@@ -84,6 +98,17 @@ public:
     [[nodiscard]] virtual std::optional<bool>
     storyboard_element_state(StoryboardElementType /*type*/, std::string_view /*ref*/,
                              StoryboardElementState /*state*/) const {
+        return std::nullopt;
+    }
+
+    /// Kinematic observation of the entity `id` (§7.6.5.1, by-entity
+    /// conditions). std::nullopt when the entity is unknown or the context
+    /// provides no entity facet at all (e.g. TimeOnlyEvaluationContext) — the
+    /// per-entity expression then evaluates to a deterministic false. One
+    /// coarse facet, not one per quantity: a two-entity condition (p5-s3)
+    /// calls it twice and tests override a single method.
+    [[nodiscard]] virtual std::optional<EntityKinematics>
+    entity_kinematics(std::string_view /*id*/) const {
         return std::nullopt;
     }
 };

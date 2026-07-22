@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "scena/diagnostic.h"
+#include "scena/entity_state.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
@@ -20,15 +21,6 @@ namespace scena {
 namespace gateway {
 class ISimulatorGateway;
 } // namespace gateway
-
-/// Kinematic state of one entity in the world frame.
-struct EntityState {
-    double x = 0.0;       ///< World position, meters.
-    double y = 0.0;       ///< World position, meters.
-    double z = 0.0;       ///< World position, meters.
-    double heading = 0.0; ///< Yaw around +Z, radians; 0 points along +X.
-    double speed = 0.0;   ///< Longitudinal speed along the heading, m/s.
-};
 
 /// Step-based scenario execution engine.
 ///
