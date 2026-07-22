@@ -8,8 +8,12 @@ The user guide grows sprint by sprint along the
   full h/p/r pose, and how to build and query entities from C++/C/Python.
 - [Motion](motion.md) — longitudinal dynamics: SpeedAction transition
   dynamics (shapes × dimensions), the default controller and its Performance
-  clamp, speed profiles, the point-mass simplifications, and how to drive
-  speed from C++/C/Python.
+  clamp, speed profiles, distance keeping, the point-mass simplifications, and
+  how to drive speed from C++/C/Python.
+- [Routing, trajectories and controllers](routing.md) — routes and waypoints,
+  polyline trajectories with and without a time reference, controller
+  assignment and per-domain activation, and entity visibility, plus which of
+  those actions consume simulation time.
 - [The storyboard model](storyboard.md) — hierarchy, element lifecycle,
   init phase, event priority and execution counts, and how to observe
   element states.

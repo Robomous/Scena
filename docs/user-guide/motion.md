@@ -103,6 +103,39 @@ an absolute ramp, a relative target, a profile, or a continuous target — it
 minimal single-domain rule (§7.5.1); the full conflict/priority catalog is a
 later sprint.
 
+## Distance keeping
+
+A `LongitudinalDistanceAction` makes an entity hold a **distance** [m] or a
+**time gap** [s] to a reference entity — the two are mutually exclusive. It
+belongs to the same longitudinal domain as `SpeedAction`, so it supersedes and
+is superseded by the actions above.
+
+- `freespace` chooses how the gap is measured: between the closest
+  bounding-box points (needs geometry on both entities) or between reference
+  points. It is the same measurement the interaction conditions use, so an
+  action and a `DistanceCondition` never disagree.
+- `displacement` chooses which side of the reference the actor holds:
+  `trailingReferencedEntity` (behind, the default), `leadingReferencedEntity`
+  (ahead), or `any` (keep whichever side it is on).
+- `continuous=false` ends the action when the gap reaches its target;
+  `continuous=true` keeps holding it and never ends on its own.
+- `DynamicConstraints` (max acceleration, deceleration, speed) limit the
+  controller; whichever is tighter, they or the entity's `Performance`
+  envelope, wins. A missing constraint means unlimited.
+
+The controller matches the reference's speed — which holds the gap where it is
+— plus a term that closes the remaining error, bounded by the speed the entity
+could still brake off within the error it has left. That bound is what keeps an
+acceleration-limited approach from overshooting; close to the target the error
+term takes over and the gap lands exactly. The entity never reverses: it stops
+instead. A time gap is read against the actor's own speed, so a slower follower
+targets a shorter gap.
+
+A road-based `coordinateSystem`, or a freespace gap on an entity without a
+bounding box, cannot be measured yet: the action reports an
+`UnsupportedFeature` warning and ends rather than guessing (the
+missing-prerequisite rule of §7.5.2.2).
+
 ## Teleport
 
 A `TeleportAction` moves an entity to a target **position** instantaneously and
@@ -121,6 +154,7 @@ later sprint, so a teleport currently leaves heading, pitch and roll unchanged.
 | Following mode | `position` shapes + hard Performance clamp | `follow` jerk-shaping, `DynamicConstraints` (accel/decel-rate) |
 | Speed profile | Position-mode linear interpolation | `entityRef`-relative profile |
 | Overlap | One active longitudinal action per entity; a later one supersedes and retires the earlier | Full cross-domain / bulk-actor §7.5 conflict resolution |
+| Distance keeping | Distance and time-gap targets, freespace or reference-point gaps, `DynamicConstraints` + Performance clamping, one-shot and continuous | Jerk (rate) clamping; road-based coordinate systems |
 | Teleport | World-frame (`WorldPosition`) target; orientation untouched | Other position variants + orientation (position resolver) |
 | Distance dimension | Explicit progress from accumulated travel | — |
 | XML lowering | Built in code (IR / C ABI / Python) | XML frontend (P4/p5-s4) |
@@ -149,6 +183,9 @@ event.actions.push_back(std::make_shared<SpeedAction>(
 init_actions.push_back(std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
 ```
 
+Distance keeping and the routing actions have their own chapter:
+[Routing, trajectories and controllers](routing.md).
+
 **C ABI** — `scn_engine_add_speed_action_dyn`,
 `scn_engine_add_speed_profile_action` (a negative entry `time` means
 "unspecified"), `scn_engine_add_relative_speed_action`, and
@@ -164,10 +201,21 @@ scn_transition_dynamics step = {SCN_DYNAMICS_SHAPE_STEP, SCN_DYNAMICS_DIMENSION_
 scn_engine_add_relative_speed_action(engine, "ego", "lead", 3.0, SCN_SPEED_TARGET_DELTA,
                                      /*continuous=*/1, &step, 0.0, SCN_PRIORITY_PARALLEL, 1);
 scn_engine_add_teleport_action(engine, "ego", 0.0, 0.0, 0.0, 0.0, SCN_PRIORITY_PARALLEL, 1);
+
+/* Hold 25 m behind the lead, bumper to bumper, for as long as the scenario runs.
+   A negative distance/timeGap means "not used"; exactly one must be given. */
+scn_dynamic_constraints limits = {2.0, -1.0, 3.0, -1.0, 40.0};
+scn_engine_add_longitudinal_distance_action(engine, "ego", "lead", /*distance=*/25.0,
+                                            /*time_gap=*/-1.0, /*freespace=*/1,
+                                            /*continuous=*/1, SCN_COORDINATE_SYSTEM_ENTITY,
+                                            SCN_LONGITUDINAL_DISPLACEMENT_TRAILING, &limits,
+                                            0.0, SCN_PRIORITY_PARALLEL, 1);
 ```
 
 **Python** — see [`python/examples/longitudinal.py`](../../python/examples/longitudinal.py)
-and [`python/examples/relative_speed.py`](../../python/examples/relative_speed.py):
+and [`python/examples/relative_speed.py`](../../python/examples/relative_speed.py), and
+[`python/examples/distance_keeping.py`](../../python/examples/distance_keeping.py)
+for the traffic-jam approach:
 
 ```python
 td = scn.TransitionDynamics(shape=scn.DynamicsShape.Cubic,
@@ -178,4 +226,7 @@ target = scn.RelativeTargetSpeed("lead", 3.0, value_type=scn.SpeedTargetValueTyp
                                  continuous=True)
 event.add_action(scn.SpeedAction("ego", target, scn.TransitionDynamics()))
 scenario.add_init_action(scn.TeleportAction("ego", scn.WorldPosition(0.0, 0.0, 0.0)))
+
+event.add_action(scn.LongitudinalDistanceAction("ego", "lead", distance=25.0,
+                                                freespace=True, continuous=True))
 ```

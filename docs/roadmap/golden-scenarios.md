@@ -120,6 +120,12 @@ the gap; jam dissolves at a timed trigger and ego resumes.
   limits), P5 (TTC, standstill, distance keeping), P4, P6.
 - **Pass:** bit-identical trace; minimum gap never below declared floor; no
   collision (freespace distance > 0 throughout).
+- **Status (p5-s5):** runs end to end through the C++ API
+  (`core/tests/action_distance_test.cpp`, `GS4TrafficJamApproachHoldsTheGap`)
+  with the functional pass criteria asserted, and is a bit-identity anchor in
+  `determinism_test.cpp`. A Python flavour lives in
+  `python/examples/distance_keeping.py`. The XML form waits for the frontend
+  (P4).
 
 ### GS-5 — Pedestrian crossing
 
@@ -159,6 +165,10 @@ via `TimeReference`), on a straight road.
   values match analytically computed curve points within 1e-9 m on the same
   platform; curvature continuity checkpoints at segment joins.
 - **Role:** retires the trajectory numerical-fidelity risk (R3).
+- **Status (p5-s5):** does **not** run yet. p5-s5 landed the polyline half of
+  `FollowTrajectoryAction` (both `timeReference` modes, position following);
+  the clothoid and NURBS segments this scenario chains need p2-s5, so GS-7
+  moves with it.
 
 ### GS-8 — Route through a junction
 
@@ -170,6 +180,10 @@ crossing vehicle yields via a `ReachPositionCondition` trigger.
   conversions), P5 (routing actions, reach position), P2, P4, P6.
 - **Pass:** bit-identical trace; ego's road-id sequence equals the declared
   route; both vehicles clear the junction without freespace violation.
+- **Status (p5-s5):** does **not** run yet. p5-s5 landed route *assignment*
+  (`AssignRouteAction`, `AcquirePositionAction`) and the per-entity route
+  state, but following a route through a junction needs the road network and
+  the hand-authored map, so GS-8 moves with p3-s4.
 
 ### GS-9 — Catalogs, parameters, and expressions
 

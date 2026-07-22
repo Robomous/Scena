@@ -696,7 +696,10 @@ citation in code; per-family determinism fixtures green.
   (convergence bounds, freespace hold), controller/visibility round-trip
   tests.
 - **Exit:** suites green; GS-4/GS-7/GS-8 scenario bodies run via the C++
-  API.
+  API. *(Met partially as of p5-s5: GS-4 runs and is a determinism anchor;
+  GS-7 needs the clothoid/NURBS shapes of p2-s5 and GS-8 the road network of
+  p3-s4, so both move with those sprints — see ADR-0014 and the status notes
+  in `golden-scenarios.md`.)*
 
 ### p5-s6 — Global & infrastructure actions
 
