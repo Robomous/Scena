@@ -9,11 +9,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
+#include "scena/ir/interaction_condition.h"
 #include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/element_ref.h"
@@ -33,6 +35,8 @@ constexpr const char* kRuleResolvableVariable =
     "asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference";
 constexpr const char* kRuleResolvableStoryboardElement =
     "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref";
+constexpr const char* kRuleDistancesNotNegative =
+    "asam.net:xosc:1.1.0:data_type.distances_are_not_negative";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -66,7 +70,7 @@ public:
         }
         const auto& record = it->second;
         return ir::EntityKinematics{record.state, record.acceleration, record.traveled_distance,
-                                    record.standstill_seconds};
+                                    record.standstill_seconds, record.bounding_box};
     }
 
     [[nodiscard]] std::optional<double> date_time_seconds() const override {
@@ -183,6 +187,40 @@ void warn_if_ordering_non_numeric(DiagnosticSink& sink, const std::string& path,
     }
     warn(sink, Status::UnsupportedFeature,
          "ordering rule on a non-scalar value; condition is always false", path);
+}
+
+/// Warns for the shared distance-parameter modes of the interaction conditions
+/// (Distance / RelativeDistance / TimeHeadway / TimeToCollision): a deprecated
+/// alongRoute, the deprecated cartesianDistance literal, and a road-based
+/// effective coordinate system that is deferred to a real road network. All
+/// three leave the condition running (deterministic false for the deferred CS),
+/// so they are warnings, not errors. `authored_rdt` is the authored
+/// relativeDistanceType (nullopt when defaulted); `along_route` is the authored
+/// alongRoute (nullopt when absent — RelativeDistance never has one).
+void warn_interaction_modes(DiagnosticSink& sink, const std::string& path,
+                            ir::CoordinateSystem effective_cs,
+                            std::optional<ir::RelativeDistanceType> authored_rdt,
+                            std::optional<bool> along_route) {
+    if (along_route.has_value()) {
+        // Deprecated attribute; the standard defines no rule id for it.
+        warn(sink, Status::DeprecatedFeature,
+             "alongRoute is deprecated (§ DistanceCondition); it is ignored when "
+             "coordinateSystem or relativeDistanceType is set",
+             path);
+    }
+    if (authored_rdt.has_value() && *authored_rdt == ir::RelativeDistanceType::CartesianDistance) {
+        warn(sink, Status::DeprecatedFeature,
+             "cartesianDistance is deprecated; treated as euclidianDistance", path);
+    }
+    if (effective_cs == ir::CoordinateSystem::Lane || effective_cs == ir::CoordinateSystem::Road ||
+        effective_cs == ir::CoordinateSystem::Trajectory) {
+        // A road prerequisite has no asam.net rule id, so the diagnostic cites
+        // section numbers (p5-s1 precedent) rather than inventing one.
+        warn(sink, Status::UnsupportedFeature,
+             "road/lane/trajectory coordinate system requires road network topology "
+             "(§7.6.5.1, §6.4.5); condition is a deterministic false until p3-s4",
+             path);
+    }
 }
 
 /// Counts the storyboard elements of `type` whose name reference matches
@@ -387,6 +425,134 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
             warn(sink, Status::DeprecatedFeature,
                  "reach position condition is deprecated with version 1.2; superseded by the "
                  "distance condition",
+                 condition_path);
+        } else if (const auto* distance = dynamic_cast<const ir::DistanceCondition*>(expression)) {
+            // value in [0..inf[; a NaN or negative target distance is a content
+            // defect (rule distances_are_not_negative). The negated >= rejects
+            // NaN too.
+            if (!(distance->value() >= 0.0)) {
+                error(sink, Status::ValidationError, "distance condition value is negative or NaN",
+                      condition_path, kRuleDistancesNotNegative);
+            }
+            const ir::WorldPosition& position = distance->position();
+            if (std::isnan(position.x) || std::isnan(position.y) || std::isnan(position.z)) {
+                error(sink, Status::ValidationError, "distance condition position is NaN",
+                      condition_path);
+            }
+            warn_interaction_modes(sink, condition_path, distance->effective_coordinate_system(),
+                                   distance->relative_distance_type(), distance->along_route());
+        } else if (const auto* relative_distance =
+                       dynamic_cast<const ir::RelativeDistanceCondition*>(expression)) {
+            if (!(relative_distance->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "relative distance condition value is negative or NaN", condition_path,
+                      kRuleDistancesNotNegative);
+            }
+            if (records.find(relative_distance->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "reference entity '" + relative_distance->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+            // RelativeDistance has no alongRoute; relativeDistanceType is
+            // required, so it is always "authored".
+            warn_interaction_modes(sink, condition_path,
+                                   relative_distance->effective_coordinate_system(),
+                                   relative_distance->relative_distance_type(), std::nullopt);
+        } else if (const auto* headway =
+                       dynamic_cast<const ir::TimeHeadwayCondition*>(expression)) {
+            // A time value in [0..inf[; the standard defines no rule id for the
+            // headway range, so the diagnostic cites the section only. The
+            // negated >= rejects NaN.
+            if (!(headway->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "time headway condition value is negative or NaN (§ TimeHeadwayCondition)",
+                      condition_path);
+            }
+            if (records.find(headway->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "reference entity '" + headway->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+            warn_interaction_modes(sink, condition_path, headway->effective_coordinate_system(),
+                                   headway->relative_distance_type(), headway->along_route());
+        } else if (const auto* ttc =
+                       dynamic_cast<const ir::TimeToCollisionCondition*>(expression)) {
+            if (!(ttc->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "time to collision condition value is negative or NaN "
+                      "(§ TimeToCollisionCondition)",
+                      condition_path);
+            }
+            // The target is an entity XOR a position (holds_alternative rather
+            // than std::visit to keep MSVC /W4 quiet).
+            if (std::holds_alternative<std::string>(ttc->target())) {
+                const std::string& target_ref = std::get<std::string>(ttc->target());
+                if (records.find(target_ref) == records.end()) {
+                    error(sink, Status::SemanticError,
+                          "target entity '" + target_ref + "' is unknown", condition_path);
+                }
+            } else {
+                const ir::WorldPosition& position = std::get<ir::WorldPosition>(ttc->target());
+                if (std::isnan(position.x) || std::isnan(position.y) || std::isnan(position.z)) {
+                    error(sink, Status::ValidationError,
+                          "time to collision condition target position is NaN", condition_path);
+                }
+            }
+            warn_interaction_modes(sink, condition_path, ttc->effective_coordinate_system(),
+                                   ttc->relative_distance_type(), ttc->along_route());
+        } else if (const auto* collision =
+                       dynamic_cast<const ir::CollisionCondition*>(expression)) {
+            // Only the EntityRef target is modeled (ByObjectType needs the p2-s1
+            // category); the referenced entity must resolve.
+            if (records.find(collision->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "collision reference entity '" + collision->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+        } else if (const auto* end_of_road =
+                       dynamic_cast<const ir::EndOfRoadCondition*>(expression)) {
+            if (!(end_of_road->duration() >= 0.0)) {
+                error(sink, Status::ValidationError, "end of road condition duration is negative",
+                      condition_path);
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "end of road condition requires road network topology (§7.6.5.1); "
+                 "deterministic false until p3-s4",
+                 condition_path);
+        } else if (const auto* offroad = dynamic_cast<const ir::OffroadCondition*>(expression)) {
+            if (!(offroad->duration() >= 0.0)) {
+                error(sink, Status::ValidationError, "offroad condition duration is negative",
+                      condition_path);
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "offroad condition requires road network topology (§7.6.5.1); "
+                 "deterministic false until p3-s4",
+                 condition_path);
+        } else if (const auto* clearance =
+                       dynamic_cast<const ir::RelativeClearanceCondition*>(expression)) {
+            if (!(clearance->distance_backward() >= 0.0) ||
+                !(clearance->distance_forward() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "relative clearance condition distance is negative or NaN", condition_path,
+                      kRuleDistancesNotNegative);
+            }
+            for (const ir::RelativeLaneRange& range : clearance->lane_ranges()) {
+                // Both limits present and inverted (from > to) is an empty
+                // range — a content defect.
+                if (range.from.has_value() && range.to.has_value() && *range.from > *range.to) {
+                    error(sink, Status::ValidationError,
+                          "relative clearance lane range has from > to", condition_path);
+                }
+            }
+            for (const std::string& ref : clearance->entity_refs()) {
+                if (records.find(ref) == records.end()) {
+                    error(sink, Status::SemanticError,
+                          "relative clearance entity '" + ref + "' is unknown", condition_path);
+                }
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "relative clearance condition requires lane coordinates (§6.4.5); "
+                 "deterministic false until p3-s4",
                  condition_path);
         }
     }
@@ -602,6 +768,24 @@ Status Engine::init(ir::Scenario scenario) {
             continue;
         }
         it->second.mode = entity.control_mode;
+        // Geometry is copied once and is immutable at runtime. A zero-size box
+        // is a valid degenerate point, so only NaN/negative dimensions or a
+        // NaN center are content defects (per ASAM OpenSCENARIO XML 1.4.0
+        // BoundingBox; dimensions and center are the only fields freespace
+        // math consumes this phase).
+        if (entity.bounding_box.has_value()) {
+            const ir::BoundingBox& box = *entity.bounding_box;
+            const bool bad_dimensions =
+                !(box.length >= 0.0) || !(box.width >= 0.0) || !(box.height >= 0.0);
+            const bool bad_center =
+                std::isnan(box.center_x) || std::isnan(box.center_y) || std::isnan(box.center_z);
+            if (bad_dimensions || bad_center) {
+                error(diagnostics_, Status::ValidationError,
+                      "entity '" + entity.id + "' has an invalid bounding box",
+                      "entities/" + entity.id);
+            }
+            it->second.bounding_box = entity.bounding_box;
+        }
     }
     std::size_t init_action_index = 0;
     for (const std::shared_ptr<ir::Action>& action : scenario.init_actions) {

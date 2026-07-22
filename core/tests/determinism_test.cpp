@@ -9,19 +9,25 @@
 #include "scena/engine.h"
 #include "scena/entity_state.h"
 #include "scena/ir/action.h"
+#include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/entity_condition.h"
+#include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
+#include "scena/runtime/detmath.h"
+#include "scena/runtime/obb2.h"
 #include "support/fixtures.h"
+#include "support/trace_recorder.h"
 
 using scena::Engine;
 using scena::EntityState;
 using scena::Status;
+using scena::testsupport::hex_bits;
 using scena::testsupport::make_determinism_scenario;
 
 namespace {
@@ -197,6 +203,93 @@ void drive_byentity(Engine& engine, int i) {
     EntityState lead;
     lead.speed = (i % 3 == 0) ? 0.0 : 3.0; // periodically at rest for StandStill
     lead.heading = 1.0;
+    engine.report_state("lead", lead);
+}
+
+/// A box centered on the entity origin (helper for the interaction fixture).
+scena::ir::BoundingBox unit_box() {
+    scena::ir::BoundingBox box;
+    box.length = 4.0;
+    box.width = 2.0;
+    return box;
+}
+
+/// A scenario driven by the interaction metrics (Distance, RelativeDistance,
+/// TimeHeadway, TimeToCollision, Collision), each firing a distinct probe. Both
+/// observed entities carry bounding boxes and turn, so the freespace geometry
+/// exercises make_obb / det_sincos on the hot path.
+scena::ir::Scenario make_interaction_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "interaction-determinism";
+    for (const char* id : {"ego", "lead"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::HostControlled;
+        entity.bounding_box = unit_box();
+        scenario.entities.push_back(std::move(entity));
+    }
+    for (const char* id : {"p_dist", "p_rel", "p_thw", "p_ttc", "p_coll"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        scenario.entities.push_back(std::move(entity));
+    }
+
+    const auto add_event = [&](const std::string& label, std::shared_ptr<Condition> condition,
+                               std::string probe) {
+        Event event;
+        event.name = label;
+        event.start_trigger = make_trigger(std::move(condition));
+        event.actions.push_back(std::make_shared<SpeedAction>(std::move(probe), 3.0));
+        Maneuver maneuver;
+        maneuver.name = label + "-m";
+        maneuver.events.push_back(std::move(event));
+        ManeuverGroup group;
+        group.name = label + "-g";
+        group.maneuvers.push_back(std::move(maneuver));
+        Act act;
+        act.name = label + "-a";
+        act.groups.push_back(std::move(group));
+        Story story;
+        story.name = label + "-s";
+        story.acts.push_back(std::move(act));
+        scenario.storyboard.stories.push_back(std::move(story));
+    };
+    const TriggeringEntities ego{TriggeringEntitiesRule::Any, {"ego"}};
+    add_event("dist",
+              std::make_shared<DistanceCondition>(ego, WorldPosition{20.0, 0.0, 0.0}, 3.0, true,
+                                                  Rule::LessOrEqual),
+              "p_dist");
+    add_event("rel",
+              std::make_shared<RelativeDistanceCondition>(
+                  ego, "lead", 2.0, true, RelativeDistanceType::EuclidianDistance, Rule::LessThan),
+              "p_rel");
+    add_event("thw",
+              std::make_shared<TimeHeadwayCondition>(ego, "lead", 3.0, false, Rule::LessOrEqual),
+              "p_thw");
+    add_event("ttc",
+              std::make_shared<TimeToCollisionCondition>(
+                  ego, TimeToCollisionTarget{std::string{"lead"}}, 4.0, false, Rule::LessOrEqual),
+              "p_ttc");
+    add_event("coll", std::make_shared<CollisionCondition>(ego, "lead"), "p_coll");
+    return scenario;
+}
+
+/// Feeds one engine the deterministic host-input for step `i`: ego closes on a
+/// stationary boxed lead while turning (the freespace trig path).
+void drive_interaction(Engine& engine, int i) {
+    EntityState ego;
+    ego.x = 0.3 * i; // approaches lead at x = 20
+    ego.speed = 5.0;
+    ego.heading = 0.02 * i; // turns, so make_obb rotates
+    engine.report_state("ego", ego);
+    EntityState lead;
+    lead.x = 20.0;
+    lead.speed = 0.0;
+    lead.heading = 0.01 * i;
     engine.report_state("lead", lead);
 }
 
@@ -389,4 +482,54 @@ TEST(DeterminismTest, ByEntityConditionsAreBitIdenticalAcrossRuns) {
         }
     }
     expect_same_diagnostics(engine_a, engine_b);
+}
+
+TEST(DeterminismTest, InteractionMetricsAreBitIdenticalAcrossRuns) {
+    // Two engines fed the same host-input + step sequence must produce
+    // bit-identical states across all entities, including the probes the
+    // freespace distance / TTC / collision metrics drive (which run make_obb
+    // and closing_speed through det_sincos on a turning entity).
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_interaction_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_interaction_scenario()), Status::Ok);
+
+    const std::vector<std::string> ids = {"ego",   "lead",  "p_dist", "p_rel",
+                                          "p_thw", "p_ttc", "p_coll"};
+    for (int i = 0; i < 70; ++i) {
+        drive_interaction(engine_a, i);
+        drive_interaction(engine_b, i);
+        const double dt = (i % 4 == 0) ? 0.0 : (0.01 + 0.005 * (i % 3));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        SCOPED_TRACE(i);
+        for (const std::string& id : ids) {
+            expect_bit_identical(engine_a, engine_b, id);
+        }
+    }
+    expect_same_diagnostics(engine_a, engine_b);
+
+    // Guard against a dead scenario: ego closes on the boxed lead, so the
+    // freespace and collision probes must have fired.
+    const auto collided = engine_a.state("p_coll");
+    ASSERT_TRUE(collided.has_value());
+    EXPECT_NE(collided->speed, 0.0);
+}
+
+TEST(DeterminismTest, RotatedBoxFreespaceDistanceIsHexPinned) {
+    // The whole entity-state → make_obb (det_sincos) → obb_distance path
+    // produces a stable IEEE-754 bit pattern. A turning boxed entity at a
+    // reference point: the freespace distance must reproduce exactly on every
+    // platform. A drift here is a determinism regression.
+    using scena::runtime::det_sincos;
+    using scena::runtime::Obb2;
+    using scena::runtime::obb_distance;
+    using scena::runtime::SinCos;
+
+    // Two boxed entities (length 4, width 2), one turned by 0.4 rad.
+    const SinCos a = det_sincos(0.0);
+    const SinCos b = det_sincos(0.4);
+    const Obb2 ego{0.0, 0.0, a.cos, a.sin, 2.0, 1.0};
+    const Obb2 lead{8.0, 1.0, b.cos, b.sin, 2.0, 1.0};
+    EXPECT_EQ(hex_bits(obb_distance(ego, lead)), "400e2b4cc750362f");
 }

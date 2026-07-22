@@ -32,8 +32,10 @@ Event make_speed_event(std::string name, double at_time, std::string entity_id,
 Scenario make_determinism_scenario() {
     Scenario scenario;
     scenario.name = "determinism-test";
-    scenario.entities.push_back({"ego", "ego vehicle", ControlMode::EngineControlled});
-    scenario.entities.push_back({"lead", "lead vehicle", ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "ego", .name = "ego vehicle", .control_mode = ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "lead", .name = "lead vehicle", .control_mode = ControlMode::EngineControlled});
     scenario.init_actions.push_back(std::make_shared<SpeedAction>("lead", 6.0));
 
     {

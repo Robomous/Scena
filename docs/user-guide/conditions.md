@@ -285,6 +285,50 @@ runs later in the step) is unchanged. This is the same for both control modes
 and is documented on `Engine::step` and in
 [ADR-0008](../architecture/ADR-0008-entity-kinematics-observation.md).
 
+### Interaction metrics (distance, headway, collision)
+
+A second group of by-entity conditions measures **between** two entities, or an
+entity and a position (§6.4):
+
+| Condition | Holds when |
+|---|---|
+| `DistanceCondition` | the distance to a position compares to a value |
+| `RelativeDistanceCondition` | the distance to a reference entity compares to a value |
+| `TimeHeadwayCondition` | distance ÷ the entity's own speed compares to a value |
+| `TimeToCollisionCondition` | distance ÷ closing speed compares to a value |
+| `CollisionCondition` | the entity's bounding box intersects a reference entity's |
+| `EndOfRoadCondition` / `OffroadCondition` | the entity is at the road end / off-road for a `duration` |
+| `RelativeClearanceCondition` | the surrounding lanes are clear of other entities |
+
+The distance is selected by two attributes: `coordinateSystem` (`entity`
+default, or `world`) and `relativeDistanceType` (`euclidianDistance` default,
+`longitudinal`, or `lateral`). Euclidean is the coordinate-system-independent
+straight line (3D for reference points, §6.4.3); longitudinal/lateral project
+onto the effective axis (§6.4.4). `freespace` switches from the entity
+**origin** to the closest **bounding-box** points (§6.4.7): give an entity a
+`BoundingBox` and the freespace metrics and `CollisionCondition` use its
+2D footprint (a heading-rotated rectangle; touching boxes count as a
+collision).
+
+Key rules Scena implements:
+
+- **TimeHeadway** divides by the *triggering* entity's speed only (the
+  reference is assumed leading); a stopped or reversing follower is false.
+- **TimeToCollision** divides by the closing speed (no acceleration); if the
+  entities are moving apart, the closing speed is ≤ 0 and the condition is
+  false. The target is a reference entity **xor** a position.
+- A missing `BoundingBox` makes the freespace metrics and `CollisionCondition`
+  false for that entity (geometry is optional for now).
+
+> **Road-dependent modes evaluate to a deterministic false until p3-s4.**
+> `EndOfRoad`, `Offroad`, `RelativeClearance`, and any `road` / `lane` /
+> `trajectory` coordinate system need a road network (`IRoadQuery`), which is
+> not wired yet. These land as full conditions — they parse, validate, and
+> bind — but evaluate to false and emit an `UnsupportedFeature` warning at
+> `init()` citing the spec section. `CollisionCondition` matches an entity
+> reference only; a by-object-type target arrives with the entity taxonomy
+> (p2-s1).
+
 ### Building by-entity conditions in Python
 
 ```python
@@ -294,12 +338,25 @@ ego = scn.TriggeringEntities(["ego"])                       # rule defaults to A
 faster_than_lead = scn.RelativeSpeedCondition(ego, "lead", 2.0, scn.Rule.GreaterOrEqual)
 parked = scn.StandStillCondition(scn.TriggeringEntities(["parked"]), 1.0)
 reached = scn.ReachPositionCondition(ego, scn.WorldPosition(10.0, 0.0, 0.0), 0.5)
+
+# Interaction metrics: give the entities a bounding box for freespace/collision.
+boxed = scn.Entity("ego", "ego", scn.ControlMode.HostControlled,
+                   bounding_box=scn.BoundingBox(length=4.0, width=2.0))
+near = scn.DistanceCondition(ego, scn.WorldPosition(20.0, 0.0, 0.0), 5.0,
+                             False, scn.Rule.LessOrEqual)      # freespace=False
+ttc = scn.TimeToCollisionCondition(ego, 3.0, False, scn.Rule.LessOrEqual, entity_ref="lead")
+crash = scn.CollisionCondition(ego, "lead")
 ```
 
-A complete by-entity example lives in
-[`python/examples/byentity_conditions.py`](../../python/examples/byentity_conditions.py).
+Complete examples live in
+[`python/examples/byentity_conditions.py`](../../python/examples/byentity_conditions.py)
+and
+[`python/examples/interaction_conditions.py`](../../python/examples/interaction_conditions.py).
 
-> **Deferred (P4 / p3-s4):** the by-entity conditions are cartesian-only in
-> the kernel. Road-coordinate measurement and `ReachPosition` against the full
-> Position variants arrive when the PositionResolver (#18) and road plumbing
-> (#23) land; XML lowering arrives with the P4 frontend.
+> **Deferred (P4 / p3-s4 / p2-s1):** the by-entity conditions are cartesian-only
+> in the kernel. Road-coordinate measurement, the road-topology predicates, and
+> `ReachPosition`/`Distance` against the full Position variants arrive when the
+> PositionResolver (#18) and road plumbing (#23) land; the full bounding-box
+> taxonomy and by-object-type collisions arrive with p2-s1 (#15); XML lowering
+> arrives with the P4 frontend. See
+> [ADR-0009](../architecture/ADR-0009-interaction-metrics.md).

@@ -78,27 +78,35 @@ Rules of this document:
 All with `TriggeringEntities` any/all semantics (§7.6.5.1) — evaluated
 per entity then reduced, before the trigger edge/delay machinery. The
 kinematics/position set (p5-s2) landed cartesian-only under Scena's
-scalar-velocity model; road-coordinate measurement is deferred to p3-s4.
-`TriggeringEntities` holds plain entity references; `EntitySelection`
-references are out of scope until the selection IR lands (p4-s4).
+scalar-velocity model; the interaction metrics (p5-s3) added the §6.4
+distance matrix (euclidean / longitudinal / lateral, reference-point and
+bounding-box freespace via a deterministic 2D OBB kernel), TimeHeadway,
+TimeToCollision and Collision. **Road/lane/trajectory coordinate systems and
+the road-topology predicates (EndOfRoad, Offroad, RelativeClearance) evaluate
+to a deterministic false with an init-time UnsupportedFeature warning until
+`IRoadQuery` lands (p3-s4)**; Collision matches an EntityRef target only
+(ByObjectType deferred to p2-s1). Geometry is a minimal `BoundingBox`
+forward-pull from p2-s1 (ADR-0009). `TriggeringEntities` holds plain entity
+references; `EntitySelection` references are out of scope until the selection
+IR lands (p4-s4).
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
 | AccelerationCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: finite-difference acceleration, absent (⇒false) until two samples; optional direction (longitudinal signed, lateral/vertical 0 in the scalar model). XML lowering deferred (P4) |
 | AngleCondition | §7.6.5.1 | Post | — | Introduction version unconfirmed in local text *(verify)*; low demand for v0.0.1 set |
-| CollisionCondition | §7.6.5.1 | In | p5-s3 | OBB intersection over p2-s1 bounding boxes |
-| DistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | coordinateSystem × relativeDistanceType; deprecated `alongRoute` accepted and mapped |
-| EndOfRoadCondition | §7.6.5.1 | In | p5-s3 | Requires road network (rule-cited prerequisite) |
-| OffroadCondition | §7.6.5.1 | In | p5-s3 | Requires road network |
+| CollisionCondition | §7.6.5.1 | In | p5-s3 | Kernel landed: bounding-box (2D OBB) intersection, touching ⇒ collision (§6.4.7.2); absent box on either entity ⇒ false. EntityRef target only — ByObjectType deferred to p2-s1 (no category yet). XML lowering deferred (P4) |
+| DistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Kernel landed: euclidean (3D reference-point / 2D freespace) and longitudinal/lateral (entity or world axis); road/lane/trajectory CS ⇒ deterministic false + UnsupportedFeature warning (deferred p3-s4). Deprecated `alongRoute`/`cartesianDistance` warned and mapped. XML lowering deferred (P4) |
+| EndOfRoadCondition | §7.6.5.1 | In | p5-s3 | IR + validation landed: requires road-network topology (p3-s4), so it evaluates deterministic false with a rule-cited UnsupportedFeature warning until then. XML lowering deferred (P4) |
+| OffroadCondition | §7.6.5.1 | In | p5-s3 | IR + validation landed: road-deferred like EndOfRoad — deterministic false + UnsupportedFeature warning until p3-s4. XML lowering deferred (P4) |
 | ReachPositionCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: deprecated (1.2) ⇒ DeprecatedFeature warning, still evaluated; 2D horizontal tolerance circle (z ignored) against a minimal WorldPosition. Road Position variants + PositionResolver deferred (p2-s4/p3-s4); XML lowering deferred (P4) |
 | RelativeAngleCondition | §7.6.5.1 | Post | — | Same rationale as AngleCondition *(verify)* |
-| RelativeClearanceCondition | §7.6.5.1 | In | p5-s3 | Adjacent-lane/longitudinal-window freeness |
-| RelativeDistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Freespace via bounding boxes |
+| RelativeClearanceCondition | §7.6.5.1 | In | p5-s3 | IR + validation landed (freeSpace/oppositeLanes, distance window, entity refs, RelativeLaneRange): the checked area is in lane coordinates (§6.4.5), so it evaluates deterministic false + UnsupportedFeature warning until p3-s4. XML lowering deferred (P4) |
+| RelativeDistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Kernel landed: entity-to-entity distance, relativeDistanceType required, no alongRoute; freespace via bounding boxes; road/lane/trajectory CS ⇒ deterministic false + UnsupportedFeature warning (p3-s4). XML lowering deferred (P4) |
 | RelativeSpeedCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: spec formula `speed_rel = speed(trig) − speed(ref)` (signed); directional projection in the triggering frame via det_sincos; absent reference ⇒ false. XML lowering deferred (P4) |
 | SpeedCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: total = \|speed\|, optional directional projection. XML lowering deferred (P4) |
 | StandStillCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: contiguous time at speed exactly 0.0 (no invented ε), `>=` duration. XML lowering deferred (P4) |
-| TimeHeadwayCondition | §7.6.5.1, §6.4 | In | p5-s3 | Deprecated `alongRoute` accepted and mapped |
-| TimeToCollisionCondition | §7.6.5.1, §6.4 | In | p5-s3 | Closed-form (distance / closing speed, no acceleration); diverging ⇒ false |
+| TimeHeadwayCondition | §7.6.5.1, §6.4 | In | p5-s3 | Kernel landed: distance ÷ the triggering entity's speed only (reference leading); stopped/reversing follower ⇒ false. Full distance matrix incl. freespace; deprecated `alongRoute` warned and mapped; road CS deferred false (p3-s4). XML lowering deferred (P4) |
+| TimeToCollisionCondition | §7.6.5.1, §6.4 | In | p5-s3 | Kernel landed: distance ÷ closing speed (no acceleration), entity XOR position target; diverging/zero closing speed or coincident points ⇒ false. Road CS deferred false (p3-s4). XML lowering deferred (P4) |
 | TraveledDistanceCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: cumulative world-frame path length from init (not displacement), `>=` value. XML lowering deferred (P4) |
 
 ## Conditions — by value

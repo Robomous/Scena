@@ -53,7 +53,8 @@ Scenario make_scenario(std::vector<scena::ir::Event> events = {
                            make_speed_event("event-1", 0.0, "ego", 10.0)}) {
     Scenario scenario;
     scenario.name = "diagnostics-test";
-    scenario.entities.push_back({"ego", "ego vehicle", ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "ego", .name = "ego vehicle", .control_mode = ControlMode::EngineControlled});
 
     scena::ir::Maneuver maneuver;
     maneuver.name = "maneuver";
@@ -175,7 +176,8 @@ TEST(DiagnosticsTest, ClearDiagnosticsIsAvailableToHosts) {
 TEST(DiagnosticsTest, EmptyEntityId) {
     Engine engine;
     Scenario scenario = make_scenario();
-    scenario.entities.push_back({"", "empty id", ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "", .name = "empty id", .control_mode = ControlMode::EngineControlled});
     ASSERT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     const Diagnostic& d = only_diagnostic(engine);
     EXPECT_EQ(d.severity, Severity::Error);
@@ -187,7 +189,8 @@ TEST(DiagnosticsTest, EmptyEntityId) {
 TEST(DiagnosticsTest, DuplicateEntityId) {
     Engine engine;
     Scenario scenario = make_scenario();
-    scenario.entities.push_back({"ego", "duplicate", ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "ego", .name = "duplicate", .control_mode = ControlMode::EngineControlled});
     ASSERT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     const Diagnostic& d = only_diagnostic(engine);
     EXPECT_EQ(d.code, Status::ValidationError);

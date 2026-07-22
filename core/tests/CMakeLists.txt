@@ -52,11 +52,16 @@ scn_add_test(event_priority_test)
 scn_add_test(diagnostics_test)
 scn_add_test(condition_byvalue_test)
 scn_add_test(condition_byentity_kinematics_test)
+scn_add_test(bounding_box_test)
+scn_add_test(obb2_test)
+scn_add_test(condition_byentity_interaction_test)
 
 # The determinism and detmath tests share the fixture and probe list with the
 # trace runner, so they link the support library.
 target_link_libraries(determinism_test PRIVATE scena::testsupport)
 target_link_libraries(detmath_test PRIVATE scena::testsupport)
+# obb2_test hex-pins raw freespace distances, so it needs hex_bits().
+target_link_libraries(obb2_test PRIVATE scena::testsupport)
 
 if(SCN_BUILD_CAPI)
     scn_add_test(capi_test)

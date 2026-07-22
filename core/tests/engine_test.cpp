@@ -42,8 +42,10 @@ Scenario make_scenario(std::vector<scena::ir::Event> events = {
                            make_speed_event("event-1", 0.0, "ego", 10.0)}) {
     Scenario scenario;
     scenario.name = "engine-test";
-    scenario.entities.push_back({"ego", "ego vehicle", ControlMode::EngineControlled});
-    scenario.entities.push_back({"npc", "host vehicle", ControlMode::HostControlled});
+    scenario.entities.push_back(
+        {.id = "ego", .name = "ego vehicle", .control_mode = ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "npc", .name = "host vehicle", .control_mode = ControlMode::HostControlled});
 
     scena::ir::Maneuver maneuver;
     maneuver.name = "maneuver";
@@ -125,14 +127,16 @@ TEST(EngineTest, InitValidatesScenario) {
     {
         Engine engine;
         Scenario scenario = make_scenario();
-        scenario.entities.push_back({"ego", "duplicate id", ControlMode::EngineControlled});
+        scenario.entities.push_back(
+            {.id = "ego", .name = "duplicate id", .control_mode = ControlMode::EngineControlled});
         EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
         EXPECT_FALSE(engine.initialized());
     }
     {
         Engine engine;
         Scenario scenario = make_scenario();
-        scenario.entities.push_back({"", "empty id", ControlMode::EngineControlled});
+        scenario.entities.push_back(
+            {.id = "", .name = "empty id", .control_mode = ControlMode::EngineControlled});
         EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     }
     {

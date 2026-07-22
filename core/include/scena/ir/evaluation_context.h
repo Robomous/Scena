@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "scena/entity_state.h"
+#include "scena/ir/bounding_box.h"
 
 namespace scena::ir {
 
@@ -55,6 +56,10 @@ struct EntityKinematics {
     std::optional<double> acceleration; ///< m/s^2; absent until two samples exist.
     double traveled_distance = 0.0;     ///< m, cumulative world-frame path since init.
     double standstill_seconds = 0.0;    ///< s, contiguous time at speed == 0.0.
+    /// Optional geometry for the interaction conditions (p5-s3). Absent when
+    /// the entity declared no bounding box; freespace metrics then evaluate to
+    /// a deterministic false for that entity.
+    std::optional<BoundingBox> bounding_box;
 };
 
 /// Read-only runtime context a condition is evaluated against.
