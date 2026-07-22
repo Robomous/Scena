@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """Entity taxonomy (ASAM OpenSCENARIO XML 1.4.0 §7.2.2) through the bindings."""
 

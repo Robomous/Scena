@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """Fetch ASAM specifications as local Markdown references for Scena.
 

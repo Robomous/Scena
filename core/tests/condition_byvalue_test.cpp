@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // By-value conditions and their shared building blocks, per ASAM
 // OpenSCENARIO XML 1.4.0: the Rule comparator (§ enum Rule), the dateTime

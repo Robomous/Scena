@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // Event lifecycle driven directly through the scheduler: action lifetime,
 // event priority, execution counts and skip transitions, per ASAM

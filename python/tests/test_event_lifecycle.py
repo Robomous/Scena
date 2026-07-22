@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """Event priority and execution counts through the Python bindings.
 

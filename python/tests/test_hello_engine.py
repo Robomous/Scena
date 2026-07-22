@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """Pytest suite covering the hello_engine flow through the Python bindings."""
 

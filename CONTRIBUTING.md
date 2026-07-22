@@ -48,7 +48,18 @@ PYTHONPATH=build/python python python/examples/hello_engine.py
   (`.clang-format`); run `./scripts/format.sh` before committing, or
   `./scripts/format.sh --check` to verify.
 - Namespace `scena`; CMake options and macros prefixed `SCN_`.
-- Every source file starts with `// SPDX-License-Identifier: Apache-2.0`.
+- Every source file starts with a two-line SPDX header, in that order, using
+  the file's own comment syntax (`//` for C++, `/* */` for the C header, `#`
+  for Python/CMake/shell/YAML/TOML) — and nothing more:
+
+  ```
+  // SPDX-FileCopyrightText: 2026 Robomous
+  // SPDX-License-Identifier: Apache-2.0
+  ```
+
+  In files with a shebang, it goes directly below it. Do not paste the full
+  Apache boilerplate into source files; the short identifiers are the
+  convention and `LICENSE`/`NOTICE` carry the full terms.
 - Implement standard behavior exclusively from the ASAM specifications; cite
   them by section number in comments (e.g. "per ASAM OpenSCENARIO XML 1.3
   §x.y"). Never copy, translate, or paraphrase code from other scenario

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Forbids raw libm transcendentals in runtime code (core/). Transcendental
 # math must go through scena::runtime detmath (det_sin/det_cos/det_sincos),

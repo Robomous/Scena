@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 add_library(scena-frontend-xml STATIC
     src/loader.cpp

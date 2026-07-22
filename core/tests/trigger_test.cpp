@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // Trigger semantics driven directly through the scheduler: condition
 // groups, condition edges, delays and act stop triggers, per ASAM

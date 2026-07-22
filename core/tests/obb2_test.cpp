@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // The deterministic 2D OBB freespace kernel (scena/runtime/obb2.h, p5-s3).
 // Axis-aligned cases assert exact distances; a heading-rotated case hex-pins

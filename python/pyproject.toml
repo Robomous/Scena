@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 [build-system]
 requires = ["scikit-build-core>=0.10"]

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // Interaction conditions (ASAM OpenSCENARIO XML 1.4.0 §7.6.5.1, §6.4): the
 // two-entity and entity-to-position metrics. This file covers the pure-context

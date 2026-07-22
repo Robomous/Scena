@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // Engine-level storyboard semantics: init phase, element lifecycle
 // observation, stop trigger, and multi-story parallelism, per ASAM

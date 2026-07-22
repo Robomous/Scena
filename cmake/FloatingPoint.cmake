@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Pins IEEE-strict floating-point evaluation for first-party targets:
 # no FMA contraction, no fast-math. Bit-identity across ISAs (x64 vs arm64)

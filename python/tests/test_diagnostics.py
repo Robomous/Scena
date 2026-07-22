@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """Pytest suite for the structured diagnostics surface of the Python bindings."""
 

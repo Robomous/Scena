@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 // The minimal entity bounding box (ASAM OpenSCENARIO XML 1.4.0 BoundingBox,
 // p5-s3 forward-pull): default value, init-time validation, and the threading
