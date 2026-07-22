@@ -223,10 +223,8 @@ TEST(DiagnosticsTest, InvalidPerformanceLimits) {
     scena::ir::Vehicle veh;
     // Negative maxAcceleration is a content defect (§Performance range [0..inf[).
     veh.performance = scena::ir::Performance{50.0, -1.0, 9.0, std::nullopt, std::nullopt};
-    scenario.entities.push_back({.id = "veh",
-                                 .name = "veh",
-                                 .control_mode = ControlMode::HostControlled,
-                                 .object = veh});
+    scenario.entities.push_back(
+        {.id = "veh", .name = "veh", .control_mode = ControlMode::HostControlled, .object = veh});
     ASSERT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
     const Diagnostic& d = only_diagnostic(engine);
     EXPECT_EQ(d.code, Status::ValidationError);

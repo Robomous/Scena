@@ -183,11 +183,11 @@ typedef struct scn_bounding_box {
  * on a builder, and read back a negative value when the limit is absent.
  * Transparent struct; append fields only. */
 typedef struct scn_performance {
-    double max_speed;              /* m/s, Range [0..inf[ */
-    double max_acceleration;       /* m/s^2, Range [0..inf[ */
-    double max_deceleration;       /* m/s^2, Range [0..inf[ */
-    double max_acceleration_rate;  /* m/s^3; negative ⇒ unspecified (infinite) */
-    double max_deceleration_rate;  /* m/s^3; negative ⇒ unspecified (infinite) */
+    double max_speed;             /* m/s, Range [0..inf[ */
+    double max_acceleration;      /* m/s^2, Range [0..inf[ */
+    double max_deceleration;      /* m/s^2, Range [0..inf[ */
+    double max_acceleration_rate; /* m/s^3; negative ⇒ unspecified (infinite) */
+    double max_deceleration_rate; /* m/s^3; negative ⇒ unspecified (infinite) */
 } scn_performance;
 
 /* One structured diagnostic read back from the engine.

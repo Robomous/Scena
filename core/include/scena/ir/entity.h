@@ -29,7 +29,7 @@ enum class ControlMode {
 /// data — the straight-line runtime does not read it.
 struct Vehicle {
     VehicleCategory category = VehicleCategory::Car;
-    Role role = Role::None; ///< Default None when unspecified (§Vehicle).
+    Role role = Role::None;     ///< Default None when unspecified (§Vehicle).
     std::optional<double> mass; ///< kg, Range [0..inf[; absent ⇒ unspecified.
     BoundingBox bounding_box;
     Performance performance;
@@ -43,7 +43,7 @@ struct Vehicle {
 /// carried as data only.
 struct Pedestrian {
     PedestrianCategory category = PedestrianCategory::Pedestrian;
-    Role role = Role::None; ///< Default None when unspecified (§Pedestrian).
+    Role role = Role::None;     ///< Default None when unspecified (§Pedestrian).
     std::optional<double> mass; ///< kg, Range [0..inf[; absent ⇒ unspecified.
     BoundingBox bounding_box;
     std::vector<Property> properties; ///< Ordered, document order (§Properties).

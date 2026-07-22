@@ -69,12 +69,12 @@ scn_severity to_c_severity(scena::Severity severity) {
 }
 
 scena::EntityState from_c_state(const scn_entity_state& state) {
-    return scena::EntityState{state.x,     state.y,    state.z, state.heading,
+    return scena::EntityState{state.x,     state.y,     state.z,   state.heading,
                               state.speed, state.pitch, state.roll};
 }
 
 scn_entity_state to_c_state(const scena::EntityState& state) {
-    return scn_entity_state{state.x,     state.y,    state.z, state.heading,
+    return scn_entity_state{state.x,     state.y,     state.z,   state.heading,
                             state.speed, state.pitch, state.roll};
 }
 
@@ -135,8 +135,10 @@ const scena::ir::Entity* find_entity(const scn_engine* engine, const char* id) {
 // correspondence at compile time (first, a deprecated middle, and last of each).
 static_assert(static_cast<int>(scena::ir::VehicleCategory::Aircraft) == SCN_VEHICLE_AIRCRAFT);
 static_assert(static_cast<int>(scena::ir::VehicleCategory::Motorbike) == SCN_VEHICLE_MOTORBIKE);
-static_assert(static_cast<int>(scena::ir::VehicleCategory::WorkMachine) == SCN_VEHICLE_WORK_MACHINE);
-static_assert(static_cast<int>(scena::ir::PedestrianCategory::Wheelchair) == SCN_PEDESTRIAN_WHEELCHAIR);
+static_assert(static_cast<int>(scena::ir::VehicleCategory::WorkMachine) ==
+              SCN_VEHICLE_WORK_MACHINE);
+static_assert(static_cast<int>(scena::ir::PedestrianCategory::Wheelchair) ==
+              SCN_PEDESTRIAN_WHEELCHAIR);
 static_assert(static_cast<int>(scena::ir::MiscObjectCategory::Barrier) == SCN_MISC_BARRIER);
 static_assert(static_cast<int>(scena::ir::MiscObjectCategory::Wind) == SCN_MISC_WIND);
 static_assert(static_cast<int>(scena::ir::Role::None) == SCN_ROLE_NONE);
@@ -205,7 +207,8 @@ scn_status scn_engine_add_vehicle(scn_engine* engine, const char* id, const char
 }
 
 scn_status scn_engine_add_pedestrian(scn_engine* engine, const char* id, const char* name,
-                                     scn_control_mode control_mode, scn_pedestrian_category category,
+                                     scn_control_mode control_mode,
+                                     scn_pedestrian_category category,
                                      const scn_bounding_box* bounding_box) {
     if (engine == nullptr || id == nullptr || name == nullptr || bounding_box == nullptr ||
         static_cast<unsigned>(category) > static_cast<unsigned>(SCN_PEDESTRIAN_WHEELCHAIR)) {

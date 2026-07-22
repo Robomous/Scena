@@ -19,7 +19,8 @@ def _scenario(condition, entities):
     of (id, ControlMode, bounding_box | None)."""
     scenario = scn.Scenario("interaction")
     for entity_id, mode, box in entities:
-        scenario.add_entity(scn.Entity(entity_id, entity_id, mode, bounding_box=box))
+        obj = scn.MiscObject(bounding_box=box) if box is not None else None
+        scenario.add_entity(scn.Entity(entity_id, entity_id, mode, object=obj))
     scenario.add_entity(scn.Entity("probe", "probe", scn.ControlMode.EngineControlled))
 
     event = scn.Event("event", start_trigger=scn.make_trigger(condition))
@@ -70,8 +71,10 @@ def test_bounding_box_fields():
     assert box.center_y == 0.0
     assert box.length == 4.0
     assert box.width == 2.0
-    # Entity carries an optional bounding box.
-    entity = scn.Entity("ego", "ego", scn.ControlMode.HostControlled, bounding_box=box)
+    # Entity derives its bounding box from the concrete object it carries.
+    entity = scn.Entity(
+        "ego", "ego", scn.ControlMode.HostControlled, object=scn.MiscObject(bounding_box=box)
+    )
     assert entity.bounding_box is not None
     assert entity.bounding_box.length == 4.0
     assert scn.Entity("plain", "plain").bounding_box is None

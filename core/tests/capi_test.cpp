@@ -90,20 +90,21 @@ TEST(CApiTest, NullArgumentsAreRejected) {
     // Entity taxonomy builders and metadata queries reject nulls.
     const scn_bounding_box box{0.0, 0.0, 0.0, 4.0, 2.0, 1.5};
     const scn_performance perf{50.0, 3.0, 9.0, -1.0, -1.0};
-    EXPECT_EQ(scn_engine_add_vehicle(nullptr, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box,
-                                     &perf),
-              SCN_ERROR_INVALID_ARGUMENT);
-    EXPECT_EQ(scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, nullptr,
-                                     &perf),
-              SCN_ERROR_INVALID_ARGUMENT);
-    EXPECT_EQ(scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box,
-                                     nullptr),
-              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_vehicle(nullptr, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box, &perf),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, nullptr, &perf),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box, nullptr),
+        SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_add_pedestrian(engine, "p", "p", SCN_CONTROL_HOST,
                                         SCN_PEDESTRIAN_PEDESTRIAN, nullptr),
               SCN_ERROR_INVALID_ARGUMENT);
-    EXPECT_EQ(scn_engine_add_misc_object(engine, "m", "m", SCN_CONTROL_HOST, SCN_MISC_POLE, nullptr),
-              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_misc_object(engine, "m", "m", SCN_CONTROL_HOST, SCN_MISC_POLE, nullptr),
+        SCN_ERROR_INVALID_ARGUMENT);
     scn_object_type type{};
     scn_bounding_box out_box{};
     scn_performance out_perf{};

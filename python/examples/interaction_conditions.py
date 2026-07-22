@@ -41,7 +41,12 @@ def build_scenario() -> "scn.Scenario":
     box = scn.BoundingBox(length=4.0, width=2.0)
     for entity_id in ("ego", "lead"):
         scenario.add_entity(
-            scn.Entity(entity_id, entity_id, scn.ControlMode.HostControlled, bounding_box=box)
+            scn.Entity(
+                entity_id,
+                entity_id,
+                scn.ControlMode.HostControlled,
+                object=scn.MiscObject(bounding_box=box),
+            )
         )
     for probe in PROBES:
         scenario.add_entity(scn.Entity(probe, probe, scn.ControlMode.EngineControlled))

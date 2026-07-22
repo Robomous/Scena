@@ -117,9 +117,9 @@ enum class Role {
 /// at Engine::init. The default controller (p2-s2) clamps target-speed
 /// setpoints against these.
 struct Performance {
-    double max_speed = 0.0;        ///< m/s. Range [0..inf[.
-    double max_acceleration = 0.0; ///< m/s^2. Range [0..inf[.
-    double max_deceleration = 0.0; ///< m/s^2 (magnitude). Range [0..inf[.
+    double max_speed = 0.0;                      ///< m/s. Range [0..inf[.
+    double max_acceleration = 0.0;               ///< m/s^2. Range [0..inf[.
+    double max_deceleration = 0.0;               ///< m/s^2 (magnitude). Range [0..inf[.
     std::optional<double> max_acceleration_rate; ///< m/s^3; absent ⇒ infinite.
     std::optional<double> max_deceleration_rate; ///< m/s^3; absent ⇒ infinite.
 };
@@ -139,9 +139,9 @@ struct Axle {
 /// required rear axle, an optional front axle, and zero or more additional
 /// axles (order preserved as authored).
 struct Axles {
-    Axle rear;                        ///< Required (1..1).
-    std::optional<Axle> front;        ///< Optional (0..1).
-    std::vector<Axle> additional;     ///< Zero or more, in document order.
+    Axle rear;                    ///< Required (1..1).
+    std::optional<Axle> front;    ///< Optional (0..1).
+    std::vector<Axle> additional; ///< Zero or more, in document order.
 };
 
 /// A user-defined name/value property, per ASAM OpenSCENARIO XML 1.4.0
