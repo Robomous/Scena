@@ -29,13 +29,16 @@ TEST(CApiTest, FullLifecycle) {
     EXPECT_EQ(ego_state.speed, 10.0);
     EXPECT_GT(ego_state.x, 0.0);
 
-    const scn_entity_state reported{4.0, 5.0, 0.0, 1.5, 3.0};
+    const scn_entity_state reported{4.0, 5.0, 0.0, 1.5, 3.0, 0.2, -0.1};
     ASSERT_EQ(scn_engine_report_state(engine, "npc", &reported), SCN_OK);
     scn_entity_state npc_state{};
     ASSERT_EQ(scn_engine_get_state(engine, "npc", &npc_state), SCN_OK);
     EXPECT_EQ(npc_state.x, reported.x);
     EXPECT_EQ(npc_state.heading, reported.heading);
     EXPECT_EQ(npc_state.speed, reported.speed);
+    // The full pose (pitch/roll) round-trips through the C ABI.
+    EXPECT_EQ(npc_state.pitch, reported.pitch);
+    EXPECT_EQ(npc_state.roll, reported.roll);
 
     ASSERT_EQ(scn_engine_close(engine), SCN_OK);
     scn_engine_destroy(engine);
@@ -83,6 +86,34 @@ TEST(CApiTest, NullArgumentsAreRejected) {
     EXPECT_EQ(scn_engine_get_state(engine, "ego", nullptr), SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_diagnostic_count(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_diagnostic_at(engine, 0, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
+    // Entity taxonomy builders and metadata queries reject nulls.
+    const scn_bounding_box box{0.0, 0.0, 0.0, 4.0, 2.0, 1.5};
+    const scn_performance perf{50.0, 3.0, 9.0, -1.0, -1.0};
+    EXPECT_EQ(
+        scn_engine_add_vehicle(nullptr, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box, &perf),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, nullptr, &perf),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST, SCN_VEHICLE_CAR, &box, nullptr),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_pedestrian(engine, "p", "p", SCN_CONTROL_HOST,
+                                        SCN_PEDESTRIAN_PEDESTRIAN, nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_misc_object(engine, "m", "m", SCN_CONTROL_HOST, SCN_MISC_POLE, nullptr),
+        SCN_ERROR_INVALID_ARGUMENT);
+    scn_object_type type{};
+    scn_bounding_box out_box{};
+    scn_performance out_perf{};
+    EXPECT_EQ(scn_engine_entity_object_type(engine, nullptr, &type), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_object_type(engine, "v", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_bounding_box(engine, "v", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_performance(nullptr, "v", &out_perf), SCN_ERROR_INVALID_ARGUMENT);
+    (void)out_box;
+
     scn_engine_destroy(engine);
 
     scn_engine_destroy(nullptr); // must be a safe no-op
@@ -298,4 +329,84 @@ TEST(CApiTest, DeprecatedFeatureStatusHasStableAbiValue) {
     // ABI: appended after SCN_ERROR_UNKNOWN_NAME (11); never renumbered.
     EXPECT_EQ(SCN_ERROR_UNKNOWN_NAME, 11);
     EXPECT_EQ(SCN_ERROR_DEPRECATED_FEATURE, 12);
+}
+
+TEST(CApiTest, EntityTaxonomyBuildersAndQueries) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+
+    const scn_bounding_box car_box{1.4, 0.0, 0.8, 4.6, 2.0, 1.5};
+    const scn_performance car_perf{60.0, 5.0, 9.0, 2.5, -1.0};
+    ASSERT_EQ(scn_engine_add_vehicle(engine, "ego", "ego", SCN_CONTROL_HOST, SCN_VEHICLE_CAR,
+                                     &car_box, &car_perf),
+              SCN_OK);
+    const scn_bounding_box ped_box{0.0, 0.0, 0.9, 0.5, 0.6, 1.8};
+    ASSERT_EQ(scn_engine_add_pedestrian(engine, "ped", "ped", SCN_CONTROL_HOST,
+                                        SCN_PEDESTRIAN_PEDESTRIAN, &ped_box),
+              SCN_OK);
+    const scn_bounding_box pole_box{0.0, 0.0, 1.5, 0.2, 0.2, 3.0};
+    ASSERT_EQ(scn_engine_add_misc_object(engine, "pole", "pole", SCN_CONTROL_HOST, SCN_MISC_POLE,
+                                         &pole_box),
+              SCN_OK);
+
+    // Object type reflects the alternative.
+    scn_object_type type{};
+    ASSERT_EQ(scn_engine_entity_object_type(engine, "ego", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_OBJECT_VEHICLE);
+    ASSERT_EQ(scn_engine_entity_object_type(engine, "ped", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_OBJECT_PEDESTRIAN);
+    ASSERT_EQ(scn_engine_entity_object_type(engine, "pole", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_OBJECT_MISC);
+
+    // Bounding box round-trips for any object type.
+    scn_bounding_box box{};
+    ASSERT_EQ(scn_engine_entity_bounding_box(engine, "ego", &box), SCN_OK);
+    EXPECT_EQ(box.length, 4.6);
+    EXPECT_EQ(box.center_x, 1.4);
+    ASSERT_EQ(scn_engine_entity_bounding_box(engine, "pole", &box), SCN_OK);
+    EXPECT_EQ(box.height, 3.0);
+
+    // Performance is vehicle-only; the absent rate reads back as a negative
+    // sentinel while the supplied one survives.
+    scn_performance perf{};
+    ASSERT_EQ(scn_engine_entity_performance(engine, "ego", &perf), SCN_OK);
+    EXPECT_EQ(perf.max_speed, 60.0);
+    EXPECT_EQ(perf.max_acceleration_rate, 2.5);
+    EXPECT_LT(perf.max_deceleration_rate, 0.0);
+    // A pedestrian has no performance.
+    EXPECT_EQ(scn_engine_entity_performance(engine, "ped", &perf), SCN_ERROR_INVALID_ARGUMENT);
+
+    // The queries survive init (they read the authored scenario).
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_entity_object_type(engine, "ego", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_OBJECT_VEHICLE);
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, EntityTaxonomyErrorPaths) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+
+    const scn_bounding_box box{0.0, 0.0, 0.0, 4.0, 2.0, 1.5};
+    const scn_performance perf{50.0, 3.0, 9.0, -1.0, -1.0};
+
+    // A category outside its enumeration is rejected (as unsigned, so a
+    // negative value wraps above the max).
+    EXPECT_EQ(scn_engine_add_vehicle(engine, "v", "v", SCN_CONTROL_HOST,
+                                     static_cast<scn_vehicle_category>(999), &box, &perf),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_misc_object(engine, "m", "m", SCN_CONTROL_HOST,
+                                         static_cast<scn_misc_object_category>(-1), &box),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    // Unknown id vs. present-but-unclassified: a bare participant has no object.
+    ASSERT_EQ(scn_engine_add_entity(engine, "bare", "bare", SCN_CONTROL_HOST), SCN_OK);
+    scn_object_type type{};
+    scn_bounding_box out_box{};
+    EXPECT_EQ(scn_engine_entity_object_type(engine, "missing", &type), SCN_ERROR_UNKNOWN_ENTITY);
+    EXPECT_EQ(scn_engine_entity_object_type(engine, "bare", &type), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_bounding_box(engine, "bare", &out_box), SCN_ERROR_INVALID_ARGUMENT);
+
+    scn_engine_destroy(engine);
 }

@@ -58,7 +58,11 @@ ir::Scenario probe_scenario(std::optional<BoundingBox> ego_box,
     ego.id = "ego";
     ego.name = "ego";
     ego.control_mode = ir::ControlMode::HostControlled;
-    ego.bounding_box = ego_box;
+    if (ego_box.has_value()) {
+        ir::MiscObject obj;
+        obj.bounding_box = *ego_box;
+        ego.object = std::move(obj);
+    }
     scenario.entities.push_back(std::move(ego));
     ir::Entity probe;
     probe.id = "probe";

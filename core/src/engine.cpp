@@ -768,13 +768,15 @@ Status Engine::init(ir::Scenario scenario) {
             continue;
         }
         it->second.mode = entity.control_mode;
-        // Geometry is copied once and is immutable at runtime. A zero-size box
+        // Geometry is copied once and is immutable at runtime. All three
+        // concrete entity objects carry a bounding box (§Vehicle/§Pedestrian/
+        // §MiscObject); an unclassified participant has none. A zero-size box
         // is a valid degenerate point, so only NaN/negative dimensions or a
         // NaN center are content defects (per ASAM OpenSCENARIO XML 1.4.0
         // BoundingBox; dimensions and center are the only fields freespace
         // math consumes this phase).
-        if (entity.bounding_box.has_value()) {
-            const ir::BoundingBox& box = *entity.bounding_box;
+        if (const std::optional<ir::BoundingBox> box_opt = ir::bounding_box_of(entity)) {
+            const ir::BoundingBox& box = *box_opt;
             const bool bad_dimensions =
                 !(box.length >= 0.0) || !(box.width >= 0.0) || !(box.height >= 0.0);
             const bool bad_center =
@@ -784,7 +786,26 @@ Status Engine::init(ir::Scenario scenario) {
                       "entity '" + entity.id + "' has an invalid bounding box",
                       "entities/" + entity.id);
             }
-            it->second.bounding_box = entity.bounding_box;
+            it->second.bounding_box = box_opt;
+        }
+        // Performance limits, present only on a Vehicle. The standard ranges
+        // are [0..inf[ for maxSpeed / maxAcceleration / maxDeceleration and the
+        // optional rate limits, so a negative, NaN, or non-finite value is a
+        // content defect (per ASAM OpenSCENARIO XML 1.4.0 §Performance). A zero
+        // maxDeceleration is spec-permitted though degenerate; the default
+        // controller (p2-s2) handles that, so it is not rejected here.
+        if (const ir::Performance* perf = ir::performance_of(entity)) {
+            const auto invalid = [](double value) { return !std::isfinite(value) || value < 0.0; };
+            const auto invalid_opt = [&](const std::optional<double>& value) {
+                return value.has_value() && invalid(*value);
+            };
+            if (invalid(perf->max_speed) || invalid(perf->max_acceleration) ||
+                invalid(perf->max_deceleration) || invalid_opt(perf->max_acceleration_rate) ||
+                invalid_opt(perf->max_deceleration_rate)) {
+                error(diagnostics_, Status::ValidationError,
+                      "entity '" + entity.id + "' has invalid performance limits",
+                      "entities/" + entity.id);
+            }
         }
     }
     std::size_t init_action_index = 0;
@@ -902,6 +923,9 @@ Status Engine::step(double dt) {
             const runtime::SinCos hs = runtime::det_sincos(record.state.heading);
             record.state.x += record.state.speed * hs.cos * dt;
             record.state.y += record.state.speed * hs.sin * dt;
+            // z, pitch, and roll are left untouched: the ground-plane
+            // straight-line model integrates position from speed and heading
+            // only. A host-controlled entity may carry any pose via report_state.
         }
     }
 

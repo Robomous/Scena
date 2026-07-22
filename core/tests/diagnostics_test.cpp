@@ -2,6 +2,7 @@
 #include "scena/diagnostic.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -197,6 +198,40 @@ TEST(DiagnosticsTest, DuplicateEntityId) {
     EXPECT_EQ(d.path, "entities/ego");
     EXPECT_EQ(d.message, "duplicate entity id 'ego'");
     EXPECT_EQ(d.rule_id, "asam.net:xosc:1.0.0:naming.unique_element_names_on_same_level");
+}
+
+TEST(DiagnosticsTest, InvalidBoundingBoxDimensions) {
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scena::ir::MiscObject obj;
+    // Negative length is a content defect (§Dimensions range [0..inf[).
+    obj.bounding_box = scena::ir::BoundingBox{0.0, 0.0, 0.0, -1.0, 2.0, 1.5};
+    scenario.entities.push_back({.id = "boxed",
+                                 .name = "boxed",
+                                 .control_mode = ControlMode::HostControlled,
+                                 .object = obj});
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
+    const Diagnostic& d = only_diagnostic(engine);
+    EXPECT_EQ(d.code, Status::ValidationError);
+    EXPECT_EQ(d.path, "entities/boxed");
+    EXPECT_EQ(d.message, "entity 'boxed' has an invalid bounding box");
+}
+
+TEST(DiagnosticsTest, InvalidPerformanceLimits) {
+    Engine engine;
+    Scenario scenario = make_scenario();
+    scena::ir::Vehicle veh;
+    // Negative maxAcceleration is a content defect (§Performance range [0..inf[).
+    veh.performance = scena::ir::Performance{50.0, -1.0, 9.0, std::nullopt, std::nullopt};
+    scenario.entities.push_back(
+        {.id = "veh", .name = "veh", .control_mode = ControlMode::HostControlled, .object = veh});
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
+    const Diagnostic& d = only_diagnostic(engine);
+    EXPECT_EQ(d.code, Status::ValidationError);
+    EXPECT_EQ(d.path, "entities/veh");
+    EXPECT_EQ(d.message, "entity 'veh' has invalid performance limits");
+    // §Performance defines no asam.net checker rule id.
+    EXPECT_TRUE(d.rule_id.empty());
 }
 
 TEST(DiagnosticsTest, NullInitAction) {

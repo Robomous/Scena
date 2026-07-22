@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -68,12 +69,80 @@ scn_severity to_c_severity(scena::Severity severity) {
 }
 
 scena::EntityState from_c_state(const scn_entity_state& state) {
-    return scena::EntityState{state.x, state.y, state.z, state.heading, state.speed};
+    return scena::EntityState{state.x,     state.y,     state.z,   state.heading,
+                              state.speed, state.pitch, state.roll};
 }
 
 scn_entity_state to_c_state(const scena::EntityState& state) {
-    return scn_entity_state{state.x, state.y, state.z, state.heading, state.speed};
+    return scn_entity_state{state.x,     state.y,     state.z,   state.heading,
+                            state.speed, state.pitch, state.roll};
 }
+
+scena::ir::ControlMode from_c_control_mode(scn_control_mode mode) {
+    return mode == SCN_CONTROL_HOST ? scena::ir::ControlMode::HostControlled
+                                    : scena::ir::ControlMode::EngineControlled;
+}
+
+scena::ir::BoundingBox from_c_bounding_box(const scn_bounding_box& box) {
+    return scena::ir::BoundingBox{box.center_x, box.center_y, box.center_z,
+                                  box.length,   box.width,    box.height};
+}
+
+scn_bounding_box to_c_bounding_box(const scena::ir::BoundingBox& box) {
+    return scn_bounding_box{box.center_x, box.center_y, box.center_z,
+                            box.length,   box.width,    box.height};
+}
+
+scena::ir::Performance from_c_performance(const scn_performance& perf) {
+    scena::ir::Performance out;
+    out.max_speed = perf.max_speed;
+    out.max_acceleration = perf.max_acceleration;
+    out.max_deceleration = perf.max_deceleration;
+    // A negative rate on the ABI means "unspecified" (the §Performance default
+    // of infinite when the attribute is omitted).
+    if (perf.max_acceleration_rate >= 0.0) {
+        out.max_acceleration_rate = perf.max_acceleration_rate;
+    }
+    if (perf.max_deceleration_rate >= 0.0) {
+        out.max_deceleration_rate = perf.max_deceleration_rate;
+    }
+    return out;
+}
+
+scn_performance to_c_performance(const scena::ir::Performance& perf) {
+    scn_performance out{};
+    out.max_speed = perf.max_speed;
+    out.max_acceleration = perf.max_acceleration;
+    out.max_deceleration = perf.max_deceleration;
+    out.max_acceleration_rate = perf.max_acceleration_rate.value_or(-1.0);
+    out.max_deceleration_rate = perf.max_deceleration_rate.value_or(-1.0);
+    return out;
+}
+
+/* Finds an authored entity by id, or nullptr. Reads the scenario under
+ * construction, which persists in the handle across init. */
+const scena::ir::Entity* find_entity(const scn_engine* engine, const char* id) {
+    for (const scena::ir::Entity& entity : engine->scenario.entities) {
+        if (entity.id == id) {
+            return &entity;
+        }
+    }
+    return nullptr;
+}
+
+// The scn_* category enums are defined to mirror the ir enumerations 1:1 and in
+// order, so a bounds-checked static_cast is a faithful mapping. Spot-check the
+// correspondence at compile time (first, a deprecated middle, and last of each).
+static_assert(static_cast<int>(scena::ir::VehicleCategory::Aircraft) == SCN_VEHICLE_AIRCRAFT);
+static_assert(static_cast<int>(scena::ir::VehicleCategory::Motorbike) == SCN_VEHICLE_MOTORBIKE);
+static_assert(static_cast<int>(scena::ir::VehicleCategory::WorkMachine) ==
+              SCN_VEHICLE_WORK_MACHINE);
+static_assert(static_cast<int>(scena::ir::PedestrianCategory::Wheelchair) ==
+              SCN_PEDESTRIAN_WHEELCHAIR);
+static_assert(static_cast<int>(scena::ir::MiscObjectCategory::Barrier) == SCN_MISC_BARRIER);
+static_assert(static_cast<int>(scena::ir::MiscObjectCategory::Wind) == SCN_MISC_WIND);
+static_assert(static_cast<int>(scena::ir::Role::None) == SCN_ROLE_NONE);
+static_assert(static_cast<int>(scena::ir::Role::TrafficControl) == SCN_ROLE_TRAFFIC_CONTROL);
 
 } // namespace
 
@@ -102,6 +171,82 @@ scn_status scn_engine_add_entity(scn_engine* engine, const char* id, const char*
         entity.control_mode = control_mode == SCN_CONTROL_HOST
                                   ? scena::ir::ControlMode::HostControlled
                                   : scena::ir::ControlMode::EngineControlled;
+        engine->scenario.entities.push_back(std::move(entity));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_vehicle(scn_engine* engine, const char* id, const char* name,
+                                  scn_control_mode control_mode, scn_vehicle_category category,
+                                  const scn_bounding_box* bounding_box,
+                                  const scn_performance* performance) {
+    // The enum arrives across the ABI, so it is range checked (as unsigned, so a
+    // negative value wraps above the max) rather than static_cast blindly.
+    if (engine == nullptr || id == nullptr || name == nullptr || bounding_box == nullptr ||
+        performance == nullptr ||
+        static_cast<unsigned>(category) > static_cast<unsigned>(SCN_VEHICLE_WORK_MACHINE)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Vehicle vehicle;
+        vehicle.category = static_cast<scena::ir::VehicleCategory>(category);
+        vehicle.bounding_box = from_c_bounding_box(*bounding_box);
+        vehicle.performance = from_c_performance(*performance);
+        scena::ir::Entity entity;
+        entity.id = id;
+        entity.name = name;
+        entity.control_mode = from_c_control_mode(control_mode);
+        entity.object = std::move(vehicle);
+        engine->scenario.entities.push_back(std::move(entity));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_pedestrian(scn_engine* engine, const char* id, const char* name,
+                                     scn_control_mode control_mode,
+                                     scn_pedestrian_category category,
+                                     const scn_bounding_box* bounding_box) {
+    if (engine == nullptr || id == nullptr || name == nullptr || bounding_box == nullptr ||
+        static_cast<unsigned>(category) > static_cast<unsigned>(SCN_PEDESTRIAN_WHEELCHAIR)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Pedestrian pedestrian;
+        pedestrian.category = static_cast<scena::ir::PedestrianCategory>(category);
+        pedestrian.bounding_box = from_c_bounding_box(*bounding_box);
+        scena::ir::Entity entity;
+        entity.id = id;
+        entity.name = name;
+        entity.control_mode = from_c_control_mode(control_mode);
+        entity.object = std::move(pedestrian);
+        engine->scenario.entities.push_back(std::move(entity));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_misc_object(scn_engine* engine, const char* id, const char* name,
+                                      scn_control_mode control_mode,
+                                      scn_misc_object_category category,
+                                      const scn_bounding_box* bounding_box) {
+    if (engine == nullptr || id == nullptr || name == nullptr || bounding_box == nullptr ||
+        static_cast<unsigned>(category) > static_cast<unsigned>(SCN_MISC_WIND)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::MiscObject misc;
+        misc.category = static_cast<scena::ir::MiscObjectCategory>(category);
+        misc.bounding_box = from_c_bounding_box(*bounding_box);
+        scena::ir::Entity entity;
+        entity.id = id;
+        entity.name = name;
+        entity.control_mode = from_c_control_mode(control_mode);
+        entity.object = std::move(misc);
         engine->scenario.entities.push_back(std::move(entity));
         return SCN_OK;
     } catch (...) {
@@ -284,6 +429,77 @@ scn_status scn_engine_report_state(scn_engine* engine, const char* entity_id,
     }
     try {
         return to_c_status(engine->engine.report_state(entity_id, from_c_state(*state)));
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_object_type(scn_engine* engine, const char* id, scn_object_type* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::Entity* entity = find_entity(engine, id);
+        if (entity == nullptr) {
+            return SCN_ERROR_UNKNOWN_ENTITY;
+        }
+        const std::optional<scena::ir::ObjectType> type = scena::ir::object_type_of(*entity);
+        if (!type.has_value()) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+        switch (*type) {
+        case scena::ir::ObjectType::Vehicle:
+            *out = SCN_OBJECT_VEHICLE;
+            break;
+        case scena::ir::ObjectType::Pedestrian:
+            *out = SCN_OBJECT_PEDESTRIAN;
+            break;
+        case scena::ir::ObjectType::MiscObject:
+            *out = SCN_OBJECT_MISC;
+            break;
+        }
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_bounding_box(scn_engine* engine, const char* id,
+                                          scn_bounding_box* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::Entity* entity = find_entity(engine, id);
+        if (entity == nullptr) {
+            return SCN_ERROR_UNKNOWN_ENTITY;
+        }
+        const std::optional<scena::ir::BoundingBox> box = scena::ir::bounding_box_of(*entity);
+        if (!box.has_value()) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+        *out = to_c_bounding_box(*box);
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_performance(scn_engine* engine, const char* id, scn_performance* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::Entity* entity = find_entity(engine, id);
+        if (entity == nullptr) {
+            return SCN_ERROR_UNKNOWN_ENTITY;
+        }
+        const scena::ir::Performance* perf = scena::ir::performance_of(*entity);
+        if (perf == nullptr) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+        *out = to_c_performance(*perf);
+        return SCN_OK;
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }

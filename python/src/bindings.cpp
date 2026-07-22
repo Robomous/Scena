@@ -4,6 +4,7 @@
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
+#include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
 
 #include <memory>
@@ -19,7 +20,9 @@
 #include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/entity.h"
 #include "scena/ir/entity_condition.h"
+#include "scena/ir/entity_types.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
@@ -117,19 +120,222 @@ NB_MODULE(_scena, m) {
         .def_rw("width", &ir::BoundingBox::width)
         .def_rw("height", &ir::BoundingBox::height);
 
+    // Entity taxonomy (§7.2.2). The "None" role/category is exposed as "NONE"
+    // because Python forbids the keyword `None` as an attribute name.
+    nb::enum_<ir::ObjectType>(m, "ObjectType")
+        .value("Vehicle", ir::ObjectType::Vehicle)
+        .value("Pedestrian", ir::ObjectType::Pedestrian)
+        .value("MiscObject", ir::ObjectType::MiscObject);
+
+    nb::enum_<ir::VehicleCategory>(m, "VehicleCategory")
+        .value("Aircraft", ir::VehicleCategory::Aircraft)
+        .value("Bicycle", ir::VehicleCategory::Bicycle)
+        .value("Bus", ir::VehicleCategory::Bus)
+        .value("Car", ir::VehicleCategory::Car)
+        .value("HeavyTruck", ir::VehicleCategory::HeavyTruck)
+        .value("LandVehicle", ir::VehicleCategory::LandVehicle)
+        .value("MicromobilityDevice", ir::VehicleCategory::MicromobilityDevice)
+        .value("Motorbike", ir::VehicleCategory::Motorbike)
+        .value("Motorcycle", ir::VehicleCategory::Motorcycle)
+        .value("Other", ir::VehicleCategory::Other)
+        .value("Semitractor", ir::VehicleCategory::Semitractor)
+        .value("Semitrailer", ir::VehicleCategory::Semitrailer)
+        .value("StandupScooter", ir::VehicleCategory::StandupScooter)
+        .value("Trailer", ir::VehicleCategory::Trailer)
+        .value("Train", ir::VehicleCategory::Train)
+        .value("Tram", ir::VehicleCategory::Tram)
+        .value("Truck", ir::VehicleCategory::Truck)
+        .value("Van", ir::VehicleCategory::Van)
+        .value("Watercraft", ir::VehicleCategory::Watercraft)
+        .value("Wheelchair", ir::VehicleCategory::Wheelchair)
+        .value("WorkMachine", ir::VehicleCategory::WorkMachine);
+
+    nb::enum_<ir::PedestrianCategory>(m, "PedestrianCategory")
+        .value("Animal", ir::PedestrianCategory::Animal)
+        .value("Pedestrian", ir::PedestrianCategory::Pedestrian)
+        .value("Wheelchair", ir::PedestrianCategory::Wheelchair);
+
+    nb::enum_<ir::MiscObjectCategory>(m, "MiscObjectCategory")
+        .value("Barrier", ir::MiscObjectCategory::Barrier)
+        .value("Building", ir::MiscObjectCategory::Building)
+        .value("Crosswalk", ir::MiscObjectCategory::Crosswalk)
+        .value("Gantry", ir::MiscObjectCategory::Gantry)
+        .value("NONE", ir::MiscObjectCategory::None)
+        .value("Obstacle", ir::MiscObjectCategory::Obstacle)
+        .value("ParkingSpace", ir::MiscObjectCategory::ParkingSpace)
+        .value("Patch", ir::MiscObjectCategory::Patch)
+        .value("Pole", ir::MiscObjectCategory::Pole)
+        .value("Railing", ir::MiscObjectCategory::Railing)
+        .value("RoadMark", ir::MiscObjectCategory::RoadMark)
+        .value("SoundBarrier", ir::MiscObjectCategory::SoundBarrier)
+        .value("StreetLamp", ir::MiscObjectCategory::StreetLamp)
+        .value("TrafficIsland", ir::MiscObjectCategory::TrafficIsland)
+        .value("Tree", ir::MiscObjectCategory::Tree)
+        .value("Vegetation", ir::MiscObjectCategory::Vegetation)
+        .value("Wind", ir::MiscObjectCategory::Wind);
+
+    nb::enum_<ir::Role>(m, "Role")
+        .value("NONE", ir::Role::None)
+        .value("Agriculture", ir::Role::Agriculture)
+        .value("Ambulance", ir::Role::Ambulance)
+        .value("Civil", ir::Role::Civil)
+        .value("Construction", ir::Role::Construction)
+        .value("DangerousGoodsTransport", ir::Role::DangerousGoodsTransport)
+        .value("Fire", ir::Role::Fire)
+        .value("FireBrigade", ir::Role::FireBrigade)
+        .value("FreightTransport", ir::Role::FreightTransport)
+        .value("GarbageCollection", ir::Role::GarbageCollection)
+        .value("Military", ir::Role::Military)
+        .value("Other", ir::Role::Other)
+        .value("Police", ir::Role::Police)
+        .value("PublicTransport", ir::Role::PublicTransport)
+        .value("RoadAssistance", ir::Role::RoadAssistance)
+        .value("RoadsideAssistance", ir::Role::RoadsideAssistance)
+        .value("SpecialTransport", ir::Role::SpecialTransport)
+        .value("TrafficControl", ir::Role::TrafficControl);
+
+    nb::class_<ir::Performance>(m, "Performance")
+        .def(
+            "__init__",
+            [](ir::Performance* self, double max_speed, double max_acceleration,
+               double max_deceleration, std::optional<double> max_acceleration_rate,
+               std::optional<double> max_deceleration_rate) {
+                new (self) ir::Performance{max_speed, max_acceleration, max_deceleration,
+                                           max_acceleration_rate, max_deceleration_rate};
+            },
+            "max_speed"_a = 0.0, "max_acceleration"_a = 0.0, "max_deceleration"_a = 0.0,
+            "max_acceleration_rate"_a = nb::none(), "max_deceleration_rate"_a = nb::none())
+        .def_rw("max_speed", &ir::Performance::max_speed)
+        .def_rw("max_acceleration", &ir::Performance::max_acceleration)
+        .def_rw("max_deceleration", &ir::Performance::max_deceleration)
+        .def_rw("max_acceleration_rate", &ir::Performance::max_acceleration_rate)
+        .def_rw("max_deceleration_rate", &ir::Performance::max_deceleration_rate);
+
+    nb::class_<ir::Axle>(m, "Axle")
+        .def(
+            "__init__",
+            [](ir::Axle* self, double max_steering, double position_x, double position_z,
+               double track_width, double wheel_diameter) {
+                new (self)
+                    ir::Axle{max_steering, position_x, position_z, track_width, wheel_diameter};
+            },
+            "max_steering"_a = 0.0, "position_x"_a = 0.0, "position_z"_a = 0.0,
+            "track_width"_a = 0.0, "wheel_diameter"_a = 0.0)
+        .def_rw("max_steering", &ir::Axle::max_steering)
+        .def_rw("position_x", &ir::Axle::position_x)
+        .def_rw("position_z", &ir::Axle::position_z)
+        .def_rw("track_width", &ir::Axle::track_width)
+        .def_rw("wheel_diameter", &ir::Axle::wheel_diameter);
+
+    nb::class_<ir::Axles>(m, "Axles")
+        .def(
+            "__init__",
+            [](ir::Axles* self, ir::Axle rear, std::optional<ir::Axle> front,
+               std::vector<ir::Axle> additional) {
+                new (self) ir::Axles{std::move(rear), std::move(front), std::move(additional)};
+            },
+            "rear"_a = ir::Axle{}, "front"_a = nb::none(), "additional"_a = std::vector<ir::Axle>{})
+        .def_rw("rear", &ir::Axles::rear)
+        .def_rw("front", &ir::Axles::front)
+        .def_rw("additional", &ir::Axles::additional);
+
+    nb::class_<ir::Property>(m, "Property")
+        .def(
+            "__init__",
+            [](ir::Property* self, std::string name, std::string value) {
+                new (self) ir::Property{std::move(name), std::move(value)};
+            },
+            "name"_a, "value"_a)
+        .def_rw("name", &ir::Property::name)
+        .def_rw("value", &ir::Property::value);
+
+    nb::class_<ir::Vehicle>(m, "Vehicle")
+        .def(
+            "__init__",
+            [](ir::Vehicle* self, ir::VehicleCategory category, ir::Role role,
+               std::optional<double> mass, ir::BoundingBox bounding_box,
+               ir::Performance performance, ir::Axles axles, std::vector<ir::Property> properties) {
+                new (self) ir::Vehicle{category,
+                                       role,
+                                       mass,
+                                       bounding_box,
+                                       performance,
+                                       std::move(axles),
+                                       std::move(properties)};
+            },
+            "category"_a = ir::VehicleCategory::Car, "role"_a = ir::Role::None,
+            "mass"_a = nb::none(), "bounding_box"_a = ir::BoundingBox{},
+            "performance"_a = ir::Performance{}, "axles"_a = ir::Axles{},
+            "properties"_a = std::vector<ir::Property>{})
+        .def_rw("category", &ir::Vehicle::category)
+        .def_rw("role", &ir::Vehicle::role)
+        .def_rw("mass", &ir::Vehicle::mass)
+        .def_rw("bounding_box", &ir::Vehicle::bounding_box)
+        .def_rw("performance", &ir::Vehicle::performance)
+        .def_rw("axles", &ir::Vehicle::axles)
+        .def_rw("properties", &ir::Vehicle::properties);
+
+    nb::class_<ir::Pedestrian>(m, "Pedestrian")
+        .def(
+            "__init__",
+            [](ir::Pedestrian* self, ir::PedestrianCategory category, ir::Role role,
+               std::optional<double> mass, ir::BoundingBox bounding_box,
+               std::vector<ir::Property> properties) {
+                new (self)
+                    ir::Pedestrian{category, role, mass, bounding_box, std::move(properties)};
+            },
+            "category"_a = ir::PedestrianCategory::Pedestrian, "role"_a = ir::Role::None,
+            "mass"_a = nb::none(), "bounding_box"_a = ir::BoundingBox{},
+            "properties"_a = std::vector<ir::Property>{})
+        .def_rw("category", &ir::Pedestrian::category)
+        .def_rw("role", &ir::Pedestrian::role)
+        .def_rw("mass", &ir::Pedestrian::mass)
+        .def_rw("bounding_box", &ir::Pedestrian::bounding_box)
+        .def_rw("properties", &ir::Pedestrian::properties);
+
+    nb::class_<ir::MiscObject>(m, "MiscObject")
+        .def(
+            "__init__",
+            [](ir::MiscObject* self, ir::MiscObjectCategory category, std::optional<double> mass,
+               ir::BoundingBox bounding_box, std::vector<ir::Property> properties) {
+                new (self) ir::MiscObject{category, mass, bounding_box, std::move(properties)};
+            },
+            "category"_a = ir::MiscObjectCategory::Obstacle, "mass"_a = nb::none(),
+            "bounding_box"_a = ir::BoundingBox{}, "properties"_a = std::vector<ir::Property>{})
+        .def_rw("category", &ir::MiscObject::category)
+        .def_rw("mass", &ir::MiscObject::mass)
+        .def_rw("bounding_box", &ir::MiscObject::bounding_box)
+        .def_rw("properties", &ir::MiscObject::properties);
+
+    // A ScenarioObject: identity + control mode + an optional concrete object
+    // (Vehicle/Pedestrian/MiscObject). object_type/bounding_box/performance are
+    // read-only views derived from the object via the ir helpers.
     nb::class_<ir::Entity>(m, "Entity")
         .def(
             "__init__",
             [](ir::Entity* self, std::string id, std::string name, ir::ControlMode control_mode,
-               std::optional<ir::BoundingBox> bounding_box) {
-                new (self) ir::Entity{std::move(id), std::move(name), control_mode, bounding_box};
+               std::optional<ir::EntityObject> object) {
+                new (self)
+                    ir::Entity{std::move(id), std::move(name), control_mode, std::move(object)};
             },
             "id"_a, "name"_a, "control_mode"_a = ir::ControlMode::EngineControlled,
-            "bounding_box"_a = nb::none())
+            "object"_a = nb::none())
         .def_rw("id", &ir::Entity::id)
         .def_rw("name", &ir::Entity::name)
         .def_rw("control_mode", &ir::Entity::control_mode)
-        .def_rw("bounding_box", &ir::Entity::bounding_box)
+        .def_rw("object", &ir::Entity::object)
+        .def_prop_ro("object_type",
+                     [](const ir::Entity& entity) { return ir::object_type_of(entity); })
+        .def_prop_ro("bounding_box",
+                     [](const ir::Entity& entity) { return ir::bounding_box_of(entity); })
+        .def_prop_ro("performance",
+                     [](const ir::Entity& entity) -> std::optional<ir::Performance> {
+                         const ir::Performance* perf = ir::performance_of(entity);
+                         if (perf == nullptr) {
+                             return std::nullopt;
+                         }
+                         return *perf;
+                     })
         .def("__repr__", [](const ir::Entity& entity) {
             return "Entity(id='" + entity.id + "', name='" + entity.name + "')";
         });
@@ -691,18 +897,25 @@ NB_MODULE(_scena, m) {
     nb::class_<scena::EntityState>(m, "EntityState")
         .def(
             "__init__",
-            [](scena::EntityState* self, double x, double y, double z, double heading,
-               double speed) { new (self) scena::EntityState{x, y, z, heading, speed}; },
-            "x"_a = 0.0, "y"_a = 0.0, "z"_a = 0.0, "heading"_a = 0.0, "speed"_a = 0.0)
+            [](scena::EntityState* self, double x, double y, double z, double heading, double speed,
+               double pitch, double roll) {
+                new (self) scena::EntityState{x, y, z, heading, speed, pitch, roll};
+            },
+            "x"_a = 0.0, "y"_a = 0.0, "z"_a = 0.0, "heading"_a = 0.0, "speed"_a = 0.0,
+            "pitch"_a = 0.0, "roll"_a = 0.0)
         .def_rw("x", &scena::EntityState::x)
         .def_rw("y", &scena::EntityState::y)
         .def_rw("z", &scena::EntityState::z)
         .def_rw("heading", &scena::EntityState::heading)
         .def_rw("speed", &scena::EntityState::speed)
+        .def_rw("pitch", &scena::EntityState::pitch)
+        .def_rw("roll", &scena::EntityState::roll)
         .def("__repr__", [](const scena::EntityState& state) {
             return "EntityState(x=" + std::to_string(state.x) + ", y=" + std::to_string(state.y) +
                    ", z=" + std::to_string(state.z) + ", heading=" + std::to_string(state.heading) +
-                   ", speed=" + std::to_string(state.speed) + ")";
+                   ", speed=" + std::to_string(state.speed) +
+                   ", pitch=" + std::to_string(state.pitch) +
+                   ", roll=" + std::to_string(state.roll) + ")";
         });
 
     nb::class_<scena::Engine>(m, "Engine")

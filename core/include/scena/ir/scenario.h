@@ -9,32 +9,10 @@
 #include <vector>
 
 #include "scena/ir/action.h"
-#include "scena/ir/bounding_box.h"
+#include "scena/ir/entity.h"
 #include "scena/ir/storyboard.h"
 
 namespace scena::ir {
-
-/// Who drives an entity each step.
-enum class ControlMode {
-    EngineControlled, ///< The engine integrates the entity's motion (default behavior).
-    HostControlled,   ///< The host simulator reports the entity's state each step.
-};
-
-/// A scenario participant (vehicle, pedestrian, ...). Identity, control
-/// ownership, and an optional bounding box exist in this phase; categories,
-/// Performance, axles, and the rest of the OpenSCENARIO entity model follow
-/// with p2-s1 (#15). The bounding box is the minimal geometry the interaction
-/// conditions need for freespace math (ADR-0009); when absent, freespace
-/// metrics on this entity are a deterministic false at runtime.
-struct Entity {
-    std::string id;
-    std::string name;
-    ControlMode control_mode = ControlMode::EngineControlled;
-    // Default member initializer so an aggregate/designated init that omits the
-    // box does not trip GCC's -Werror=missing-field-initializers (clang is
-    // quiet either way).
-    std::optional<BoundingBox> bounding_box = std::nullopt;
-};
 
 /// Root of the Scenario IR: the common representation both frontends
 /// (OpenSCENARIO XML and OpenSCENARIO DSL) compile into, and the only input
