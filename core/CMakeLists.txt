@@ -11,6 +11,7 @@ add_library(scena-core STATIC
     src/runtime/clock.cpp
     src/runtime/detmath.cpp
     src/runtime/element_ref.cpp
+    src/runtime/obb2.cpp
     src/runtime/scheduler.cpp
 )
 add_library(scena::core ALIAS scena-core)
