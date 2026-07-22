@@ -57,4 +57,19 @@ struct SinCos {
 /// `det_sincos(x).sin` is bit-identical to `det_sin(x)`, likewise for cos.
 [[nodiscard]] SinCos det_sincos(double x) noexcept;
 
+/// Deterministic two-argument arctangent: the angle in radians from the +X
+/// axis to the vector (x, y), in [-pi, pi]. This is the inverse direction of
+/// det_sincos and the trig the trajectory follower needs — a polyline segment
+/// heading is det_atan2(dy, dx), and headings reach EntityState, so the
+/// bit-identity contract covers it (ADR-0014).
+///
+/// Unlike det_sin/det_cos there is no magnitude domain: the reduction is exact
+/// for every finite pair. The quadrant and signed-zero behavior follows IEEE
+/// 754 / C99 atan2 for finite inputs — `det_atan2(+/-0, +x)` is `+/-0`,
+/// `det_atan2(+/-0, -x)` is `+/-pi`, `det_atan2(+/-y, 0)` is `+/-pi/2`, and the
+/// sign of a zero `x` distinguishes `+/-0` from `+/-pi`. A NaN or infinite
+/// argument yields a quiet NaN rather than libm's infinity special cases: the
+/// runtime never produces one, and inventing an answer for it would hide a bug.
+[[nodiscard]] double det_atan2(double y, double x) noexcept;
+
 } // namespace scena::runtime

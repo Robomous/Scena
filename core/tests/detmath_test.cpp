@@ -12,11 +12,14 @@
 #include "support/detmath_probe.h"
 #include "support/trace_recorder.h"
 
+using scena::runtime::det_atan2;
 using scena::runtime::det_cos;
 using scena::runtime::det_sin;
 using scena::runtime::det_sincos;
 using scena::runtime::kDetTrigMaxAbsInput;
 using scena::runtime::SinCos;
+using scena::testsupport::Atan2Input;
+using scena::testsupport::detmath_atan2_probe_inputs;
 using scena::testsupport::detmath_probe_inputs;
 using scena::testsupport::hex_bits;
 
@@ -108,6 +111,99 @@ TEST(DetMathTest, AccuracyAgainstLibm) {
         SCOPED_TRACE(testing::Message() << "probe=" << x);
         EXPECT_NEAR(det_sin(x), std::sin(x), 1e-12);
         EXPECT_NEAR(det_cos(x), std::cos(x), 1e-12);
+    }
+}
+
+// Expected bit patterns for each detmath_atan2_probe_inputs() pair, in the
+// same order and captured the same way as kExpected above.
+constexpr const char* kExpectedAtan2[] = {
+    "3fe921fb54442d18", // atan2(1, 1)
+    "4002d97c7f3321d2", // atan2(1, -1)
+    "bfe921fb54442d18", // atan2(-1, 1)
+    "c002d97c7f3321d2", // atan2(-1, -1)
+    "0000000000000000", // atan2(0, 1)
+    "8000000000000000", // atan2(-0, 1)
+    "400921fb54442d18", // atan2(0, -1)
+    "c00921fb54442d18", // atan2(-0, -1)
+    "3ff921fb54442d18", // atan2(1, 0)
+    "bff921fb54442d18", // atan2(-1, 0)
+    "0000000000000000", // atan2(0, 0)
+    "c00921fb54442d18", // atan2(-0, -0)
+    "3fcf5b75f92c80dd", // atan2(0.5, 2)
+    "3ff5368c951e9cfc", // atan2(2, 0.5)
+    "bfcf5b75f92c80dd", // atan2(-0.5, 2)
+    "40072c43f4b1650a", // atan2(0.5, -2)
+    "3fe4978fa3269ee2", // atan2(3, 4)
+    "bff30243abab7cf6", // atan2(-7.7, 3.1)
+    "3fd0c1517765ae7d", // atan2(0.267949, 1)
+    "3ff4f1a6f66ac179", // atan2(1, 0.267949)
+    "3e45798ee2308c3a", // atan2(1e-8, 1)
+    "3ff921fb5194fb3c", // atan2(1, 1e-8)
+    "3ff921fb54442d18", // atan2(1e300, 1e-300)
+    "40068aea78723686", // atan2(12.5, -37.25)
+    "bffd0d6a1369bd34", // atan2(-0.125, -0.03125)
+};
+
+TEST(DetMathTest, PinnedAtan2BitPatterns) {
+    const std::vector<Atan2Input>& inputs = detmath_atan2_probe_inputs();
+    ASSERT_EQ(inputs.size(), std::size(kExpectedAtan2));
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        SCOPED_TRACE(testing::Message() << "atan2(" << inputs[i].y << ", " << inputs[i].x << ")");
+        EXPECT_EQ(hex_bits(det_atan2(inputs[i].y, inputs[i].x)), kExpectedAtan2[i]);
+    }
+}
+
+TEST(DetMathTest, Atan2QuadrantAndSignedZeroAnchors) {
+    // The IEEE 754 / C99 atan2 special cases for finite arguments.
+    EXPECT_EQ(hex_bits(det_atan2(0.0, 1.0)), "0000000000000000");  // +0
+    EXPECT_EQ(hex_bits(det_atan2(-0.0, 1.0)), "8000000000000000"); // -0
+    EXPECT_EQ(det_atan2(0.0, -1.0), det_atan2(0.0, -2.0));         // +pi either way
+    EXPECT_GT(det_atan2(0.0, -1.0), 3.14);
+    EXPECT_LT(det_atan2(-0.0, -1.0), -3.14);
+    // A zero x is still an axis, and its own sign decides 0 versus pi.
+    EXPECT_EQ(hex_bits(det_atan2(0.0, 0.0)), "0000000000000000");
+    EXPECT_LT(det_atan2(-0.0, -0.0), -3.14);
+    EXPECT_NEAR(det_atan2(1.0, 0.0), 1.5707963267948966, 1e-15);
+    EXPECT_NEAR(det_atan2(-1.0, 0.0), -1.5707963267948966, 1e-15);
+}
+
+TEST(DetMathTest, Atan2DomainPolicy) {
+    const double qnan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    // Non-finite arguments are out of contract -> quiet NaN (unlike libm,
+    // which defines infinity cases); see detmath.h.
+    for (const double bad : {qnan, inf, -inf}) {
+        SCOPED_TRACE(testing::Message() << "bad=" << bad);
+        EXPECT_TRUE(std::isnan(det_atan2(bad, 1.0)));
+        EXPECT_TRUE(std::isnan(det_atan2(1.0, bad)));
+    }
+}
+
+TEST(DetMathTest, Atan2AccuracyAgainstLibm) {
+    // Sweep every quadrant on a circle plus a wide range of ratios; libm is
+    // the independent reference (the detmath guard scans only core/).
+    constexpr int kSamples = 720;
+    for (int i = 0; i < kSamples; ++i) {
+        const double angle = -3.14159 + 6.28318 * (static_cast<double>(i) / kSamples);
+        const double y = 7.5 * std::sin(angle);
+        const double x = 7.5 * std::cos(angle);
+        SCOPED_TRACE(testing::Message() << "angle=" << angle);
+        EXPECT_NEAR(det_atan2(y, x), std::atan2(y, x), 1e-12);
+    }
+    for (const Atan2Input& probe : detmath_atan2_probe_inputs()) {
+        SCOPED_TRACE(testing::Message() << "atan2(" << probe.y << ", " << probe.x << ")");
+        EXPECT_NEAR(det_atan2(probe.y, probe.x), std::atan2(probe.y, probe.x), 1e-12);
+    }
+}
+
+TEST(DetMathTest, Atan2InvertsDetSincos) {
+    // The follower composes the two: a segment heading goes through det_atan2
+    // and comes back out of det_sincos when the position is integrated.
+    for (int i = -180; i < 180; ++i) {
+        const double angle = static_cast<double>(i) * 3.14159265358979 / 180.0;
+        const SinCos sc = det_sincos(angle);
+        SCOPED_TRACE(testing::Message() << "angle=" << angle);
+        EXPECT_NEAR(det_atan2(sc.sin, sc.cos), angle, 1e-12);
     }
 }
 

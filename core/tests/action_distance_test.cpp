@@ -88,8 +88,8 @@ Entity vehicle_entity(const std::string& id, double length,
     Entity entity = plain_entity(id);
     Vehicle vehicle;
     vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, length, 2.0, 1.5};
-    vehicle.performance = performance.value_or(Performance{60.0, 5.0, 5.0, std::nullopt,
-                                                           std::nullopt});
+    vehicle.performance =
+        performance.value_or(Performance{60.0, 5.0, 5.0, std::nullopt, std::nullopt});
     entity.object = vehicle;
     return entity;
 }
@@ -212,10 +212,10 @@ TEST(DistanceKeepingTest, FreespaceGapIsMeasuredBumperToBumper) {
                                      "ego", "lead", 10.0, std::nullopt, /*freespace=*/true,
                                      /*continuous=*/false)));
     Engine engine;
-    ASSERT_EQ(engine.init(make_following_scenario(vehicle_entity("ego", 4.0),
-                                                  vehicle_entity("lead", 6.0), 60.0, 10.0, 10.0,
-                                                  std::move(events))),
-              Status::Ok);
+    ASSERT_EQ(
+        engine.init(make_following_scenario(vehicle_entity("ego", 4.0), vehicle_entity("lead", 6.0),
+                                            60.0, 10.0, 10.0, std::move(events))),
+        Status::Ok);
     // Both vehicles carry a Performance envelope, so the approach is
     // acceleration-limited and the glide law brings the gap in over ~7.5 s.
     for (int i = 0; i < 15; ++i) {
@@ -237,11 +237,11 @@ TEST(DistanceKeepingTest, LeadingDisplacementHoldsTheActorAheadOfTheReference) {
     // displacement=leadingReferencedEntity ⇒ the actor stays ahead, so the
     // signed gap converges to -25 m (the reference is behind).
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "keep", 0.0,
-        std::make_shared<LongitudinalDistanceAction>(
-            "ego", "lead", 25.0, std::nullopt, /*freespace=*/false, /*continuous=*/true,
-            CoordinateSystem::Entity, LongitudinalDisplacement::LeadingReferencedEntity)));
+    events.push_back(timed_event("keep", 0.0,
+                                 std::make_shared<LongitudinalDistanceAction>(
+                                     "ego", "lead", 25.0, std::nullopt, /*freespace=*/false,
+                                     /*continuous=*/true, CoordinateSystem::Entity,
+                                     LongitudinalDisplacement::LeadingReferencedEntity)));
     Engine engine;
     // The ego starts 10 m ahead of the lead (lead_x is negative).
     ASSERT_EQ(engine.init(make_following_scenario(plain_entity("ego"), plain_entity("lead"), -10.0,
@@ -264,12 +264,12 @@ TEST(DistanceKeepingTest, DynamicConstraintsLimitTheApproach) {
     constraints.max_acceleration = 2.0;
     constraints.max_deceleration = 3.0;
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "keep", 0.0,
-        std::make_shared<LongitudinalDistanceAction>(
-            "ego", "lead", 20.0, std::nullopt, /*freespace=*/false, /*continuous=*/true,
-            CoordinateSystem::Entity, LongitudinalDisplacement::TrailingReferencedEntity,
-            constraints)));
+    events.push_back(
+        timed_event("keep", 0.0,
+                    std::make_shared<LongitudinalDistanceAction>(
+                        "ego", "lead", 20.0, std::nullopt, /*freespace=*/false, /*continuous=*/true,
+                        CoordinateSystem::Entity,
+                        LongitudinalDisplacement::TrailingReferencedEntity, constraints)));
     Engine engine;
     ASSERT_EQ(engine.init(make_following_scenario(plain_entity("ego"), plain_entity("lead"), 200.0,
                                                   10.0, 10.0, std::move(events))),
@@ -350,10 +350,11 @@ TEST(DistanceKeepingTest, ContinuousNeverCompletesAndTracksAChangingReference) {
 
 TEST(DistanceKeepingTest, SupersedesARunningSpeedRampAndIsSupersededInTurn) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "ramp", 0.0,
-        std::make_shared<SpeedAction>(
-            "ego", 30.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 10.0})));
+    events.push_back(
+        timed_event("ramp", 0.0,
+                    std::make_shared<SpeedAction>(
+                        "ego", 30.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 10.0})));
     events.push_back(timed_event("keep", 2.0,
                                  std::make_shared<LongitudinalDistanceAction>(
                                      "ego", "lead", 25.0, std::nullopt, /*freespace=*/false,

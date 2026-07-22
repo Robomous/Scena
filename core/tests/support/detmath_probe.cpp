@@ -31,4 +31,18 @@ const std::vector<double>& detmath_probe_inputs() {
     return kInputs;
 }
 
+const std::vector<Atan2Input>& detmath_atan2_probe_inputs() {
+    // Quadrant diagonals, both axes with both zero signs, the two reduction
+    // fold points (|y/x| = 1 and |y/x| = tan(pi/12)), a quotient that
+    // overflows to infinity, and a few off-axis pairs.
+    static const std::vector<Atan2Input> kInputs = {
+        {1.0, 1.0},    {1.0, -1.0},   {-1.0, 1.0},         {-1.0, -1.0},    {0.0, 1.0},
+        {-0.0, 1.0},   {0.0, -1.0},   {-0.0, -1.0},        {1.0, 0.0},      {-1.0, 0.0},
+        {0.0, 0.0},    {-0.0, -0.0},  {0.5, 2.0},          {2.0, 0.5},      {-0.5, 2.0},
+        {0.5, -2.0},   {3.0, 4.0},    {-7.7, 3.1},         {0.267949, 1.0}, {1.0, 0.267949},
+        {1.0e-8, 1.0}, {1.0, 1.0e-8}, {1.0e300, 1.0e-300}, {12.5, -37.25},  {-0.125, -0.03125},
+    };
+    return kInputs;
+}
+
 } // namespace scena::testsupport

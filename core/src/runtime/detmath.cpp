@@ -47,6 +47,31 @@ inline constexpr double kC5 = 0x1.1eed8eff8d898p-29;  // (-1)^6/12!
 inline constexpr double kC6 = -0x1.93974a8c07c9dp-37; // (-1)^7/14!
 inline constexpr double kC7 = 0x1.ae7f3e733b81fp-45;  // (-1)^8/16!
 
+// atan argument reduction: pi/2, pi/6, sqrt(3) and the fold
+// threshold tan(pi/12) = 2 - sqrt(3).
+inline constexpr double kPi = 0x1.921fb54442d18p+1;
+inline constexpr double kPiOver2 = 0x1.921fb54442d18p+0;
+inline constexpr double kPiOver6 = 0x1.0c152382d7366p-1;
+inline constexpr double kSqrt3 = 0x1.bb67ae8584caap+0;
+inline constexpr double kTanPiOver12 = 0x1.126145e9ecd56p-2;
+
+// atan: u + u^3 * horner(u^2), coeffs (-1)^j/(2j+1) for j = 1..15.
+inline constexpr double kA1 = -0x1.5555555555555p-2;  // (-1)^1/3
+inline constexpr double kA2 = 0x1.999999999999ap-3;   // (-1)^2/5
+inline constexpr double kA3 = -0x1.2492492492492p-3;  // (-1)^3/7
+inline constexpr double kA4 = 0x1.c71c71c71c71cp-4;   // (-1)^4/9
+inline constexpr double kA5 = -0x1.745d1745d1746p-4;  // (-1)^5/11
+inline constexpr double kA6 = 0x1.3b13b13b13b14p-4;   // (-1)^6/13
+inline constexpr double kA7 = -0x1.1111111111111p-4;  // (-1)^7/15
+inline constexpr double kA8 = 0x1.e1e1e1e1e1e1ep-5;   // (-1)^8/17
+inline constexpr double kA9 = -0x1.af286bca1af28p-5;  // (-1)^9/19
+inline constexpr double kA10 = 0x1.8618618618618p-5;  // (-1)^10/21
+inline constexpr double kA11 = -0x1.642c8590b2164p-5; // (-1)^11/23
+inline constexpr double kA12 = 0x1.47ae147ae147bp-5;  // (-1)^12/25
+inline constexpr double kA13 = -0x1.2f684bda12f68p-5; // (-1)^13/27
+inline constexpr double kA14 = 0x1.1a7b9611a7b96p-5;  // (-1)^14/29
+inline constexpr double kA15 = -0x1.0842108421084p-5; // (-1)^15/31
+
 // Sine on the reduced argument r in [-pi/4, pi/4], Horner in r^2.
 double sin_kernel(double r) noexcept {
     const double r2 = r * r;
@@ -74,6 +99,48 @@ double cos_kernel(double r) noexcept {
     pc = kC2 + r2 * pc;
     pc = kC1 + r2 * pc;
     return (1.0 - 0.5 * r2) + r4 * pc;
+}
+
+// Arctangent on the folded argument u in [-tan(pi/12), tan(pi/12)], Horner in
+// u^2. The series converges fast enough there that the first neglected term is
+// ~1e-20 relative — far below one ulp.
+double atan_kernel(double u) noexcept {
+    const double u2 = u * u;
+    const double u3 = u2 * u;
+    double p = kA15;
+    p = kA14 + u2 * p;
+    p = kA13 + u2 * p;
+    p = kA12 + u2 * p;
+    p = kA11 + u2 * p;
+    p = kA10 + u2 * p;
+    p = kA9 + u2 * p;
+    p = kA8 + u2 * p;
+    p = kA7 + u2 * p;
+    p = kA6 + u2 * p;
+    p = kA5 + u2 * p;
+    p = kA4 + u2 * p;
+    p = kA3 + u2 * p;
+    p = kA2 + u2 * p;
+    p = kA1 + u2 * p;
+    return u + u3 * p;
+}
+
+// Arctangent of a non-negative argument, in [0, pi/2]. Two exact identities
+// fold the whole range onto the kernel's interval:
+//   atan(t) = pi/2 - atan(1/t)                          for t > 1
+//   atan(t) = pi/6 + atan((t*sqrt3 - 1)/(t + sqrt3))    for t > tan(pi/12)
+// The second is the subtraction formula with atan(1/sqrt3) = pi/6.
+double atan_nonnegative(double t) noexcept {
+    if (!(t <= 0x1.fffffffffffffp+1023)) {
+        return kPiOver2; // an overflowed quotient: the vector is on the y axis
+    }
+    if (t > 1.0) {
+        return kPiOver2 - atan_nonnegative(1.0 / t);
+    }
+    if (t > kTanPiOver12) {
+        return kPiOver6 + atan_kernel((t * kSqrt3 - 1.0) / (t + kSqrt3));
+    }
+    return atan_kernel(t);
 }
 
 } // namespace
@@ -120,6 +187,31 @@ double det_sin(double x) noexcept {
 
 double det_cos(double x) noexcept {
     return det_sincos(x).cos;
+}
+
+double det_atan2(double y, double x) noexcept {
+    // NaN and +/-inf are out of domain (see the header): the runtime never
+    // feeds them in, and answering would mask the defect that produced them.
+    if (!(std::fabs(x) <= std::numeric_limits<double>::max()) ||
+        !(std::fabs(y) <= std::numeric_limits<double>::max())) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if (x == 0.0) {
+        if (y == 0.0) {
+            // IEEE: atan2(+/-0, +0) = +/-0 and atan2(+/-0, -0) = +/-pi. The
+            // sign bit of the zero x is what distinguishes the two.
+            return std::signbit(x) ? std::copysign(kPi, y) : std::copysign(0.0, y);
+        }
+        return std::copysign(kPiOver2, y); // straight up or straight down
+    }
+    // Magnitude first, quadrant afterwards: the kernel only ever sees a
+    // non-negative argument, so the sign handling is a single copysign and
+    // signed zeros survive (y = -0 with x > 0 gives -0).
+    const double magnitude = atan_nonnegative(std::fabs(y / x));
+    if (x > 0.0) {
+        return std::copysign(magnitude, y);
+    }
+    return std::copysign(kPi - magnitude, y);
 }
 
 } // namespace scena::runtime
