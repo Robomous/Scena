@@ -7,9 +7,12 @@
 #include <gtest/gtest.h>
 
 #include "scena/engine.h"
+#include "scena/entity_state.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/entity_condition.h"
+#include "scena/ir/position.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
@@ -17,6 +20,7 @@
 #include "support/fixtures.h"
 
 using scena::Engine;
+using scena::EntityState;
 using scena::Status;
 using scena::testsupport::make_determinism_scenario;
 
@@ -118,6 +122,82 @@ void apply_setters(Engine& engine, int step) {
     if (step == 7) {
         engine.set_date_time(scena::ir::DateTime{2000, 1, 1, 12, 0, 4, 0, 0});
     }
+}
+
+/// A scenario whose probes are driven by the by-entity conditions, including
+/// the RelativeSpeed directional path (the only trigonometry) and the
+/// accumulators. Each event drives a distinct engine-controlled probe.
+scena::ir::Scenario make_byentity_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "byentity-determinism";
+    for (const char* id : {"ego", "lead"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::HostControlled;
+        scenario.entities.push_back(std::move(entity));
+    }
+    for (const char* id : {"auto", "p_speed", "p_rel", "p_dist", "p_still"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        scenario.entities.push_back(std::move(entity));
+    }
+    // The engine-controlled "auto" cruises, driving its odometer.
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("auto", 6.0));
+
+    const auto add_event = [&](const std::string& label, std::shared_ptr<Condition> condition,
+                               std::string probe) {
+        Event event;
+        event.name = label;
+        event.start_trigger = make_trigger(std::move(condition));
+        event.actions.push_back(std::make_shared<SpeedAction>(std::move(probe), 3.0));
+        Maneuver maneuver;
+        maneuver.name = label + "-m";
+        maneuver.events.push_back(std::move(event));
+        ManeuverGroup group;
+        group.name = label + "-g";
+        group.maneuvers.push_back(std::move(maneuver));
+        Act act;
+        act.name = label + "-a";
+        act.groups.push_back(std::move(group));
+        Story story;
+        story.name = label + "-s";
+        story.acts.push_back(std::move(act));
+        scenario.storyboard.stories.push_back(std::move(story));
+    };
+    const TriggeringEntities ego{TriggeringEntitiesRule::Any, {"ego"}};
+    add_event("speed", std::make_shared<SpeedCondition>(ego, 5.0, Rule::GreaterOrEqual), "p_speed");
+    // Directional relative speed exercises det_sincos with differing headings.
+    add_event("rel",
+              std::make_shared<RelativeSpeedCondition>(ego, "lead", 0.5, Rule::GreaterThan,
+                                                       DirectionalDimension::Lateral),
+              "p_rel");
+    add_event("dist",
+              std::make_shared<TraveledDistanceCondition>(
+                  TriggeringEntities{TriggeringEntitiesRule::Any, {"auto"}}, 2.0),
+              "p_dist");
+    add_event("still",
+              std::make_shared<StandStillCondition>(
+                  TriggeringEntities{TriggeringEntitiesRule::Any, {"lead"}}, 0.3),
+              "p_still");
+    return scenario;
+}
+
+/// Feeds one engine the deterministic host-input for step `i`: ego accelerates
+/// with a turning heading (the trig path), lead alternates rest and motion.
+void drive_byentity(Engine& engine, int i) {
+    EntityState ego;
+    ego.speed = 4.0 + 0.2 * i;
+    ego.heading = 0.05 * i;
+    ego.x = 0.3 * i;
+    engine.report_state("ego", ego);
+    EntityState lead;
+    lead.speed = (i % 3 == 0) ? 0.0 : 3.0; // periodically at rest for StandStill
+    lead.heading = 1.0;
+    engine.report_state("lead", lead);
 }
 
 } // namespace
@@ -283,5 +363,30 @@ TEST(DeterminismTest, IdenticalHostSetterSequencesStayBitIdentical) {
     const auto ego = engine_a.state("ego");
     ASSERT_TRUE(ego.has_value());
     EXPECT_NE(ego->speed, 0.0);
+    expect_same_diagnostics(engine_a, engine_b);
+}
+
+TEST(DeterminismTest, ByEntityConditionsAreBitIdenticalAcrossRuns) {
+    // Two engines, identical scenario and identical host-input + step
+    // sequence (including a zero-dt step and the RelativeSpeed trig path),
+    // must produce bit-identical entity states and firing pattern.
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_byentity_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_byentity_scenario()), Status::Ok);
+
+    const std::vector<std::string> probes = {"ego",   "lead",   "auto",   "p_speed",
+                                             "p_rel", "p_dist", "p_still"};
+    for (int i = 0; i < 60; ++i) {
+        drive_byentity(engine_a, i);
+        drive_byentity(engine_b, i);
+        const double dt = (i % 5 == 0) ? 0.0 : (0.01 + 0.005 * (i % 4));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        SCOPED_TRACE(i);
+        for (const std::string& id : probes) {
+            expect_bit_identical(engine_a, engine_b, id);
+        }
+    }
     expect_same_diagnostics(engine_a, engine_b);
 }
