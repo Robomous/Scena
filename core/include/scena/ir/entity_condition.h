@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "scena/ir/condition.h"
+#include "scena/ir/position.h"
 
 namespace scena::ir {
 
@@ -135,6 +136,64 @@ private:
     double value_;
     Rule rule_;
     std::optional<DirectionalDimension> direction_;
+};
+
+/// Holds once a triggering entity has stood still for `duration` seconds, per
+/// StandStillCondition. "Still" is speed exactly 0.0; the engine accumulates
+/// contiguous time at rest. There is no `rule` attribute — the condition holds
+/// when `standstill_seconds >= duration`, so duration 0 holds the instant the
+/// entity is at rest.
+class StandStillCondition final : public ByEntityCondition {
+public:
+    StandStillCondition(TriggeringEntities triggering, double duration);
+
+    [[nodiscard]] double duration() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double duration_;
+};
+
+/// Holds once a triggering entity has traveled `value` meters of world-frame
+/// path since scenario init, per TraveledDistanceCondition. No `rule`
+/// attribute: it holds when `traveled_distance >= value` (value 0 holds
+/// immediately).
+class TraveledDistanceCondition final : public ByEntityCondition {
+public:
+    TraveledDistanceCondition(TriggeringEntities triggering, double value);
+
+    [[nodiscard]] double value() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double value_;
+};
+
+/// Holds once a triggering entity is within `tolerance` meters of `position`,
+/// per ReachPositionCondition (deprecated in 1.2, superseded by
+/// DistanceCondition). No `rule` attribute: it holds when the horizontal
+/// distance <= tolerance. The distance is the 2D horizontal (x/y) distance —
+/// the spec calls tolerance the "radius of tolerance circle"; z is ignored.
+class ReachPositionCondition final : public ByEntityCondition {
+public:
+    ReachPositionCondition(TriggeringEntities triggering, WorldPosition position, double tolerance);
+
+    [[nodiscard]] const WorldPosition& position() const;
+    [[nodiscard]] double tolerance() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    WorldPosition position_;
+    double tolerance_;
 };
 
 } // namespace scena::ir

@@ -188,4 +188,73 @@ const std::optional<DirectionalDimension>& AccelerationCondition::direction() co
     return direction_;
 }
 
+// --- StandStillCondition ----------------------------------------------------
+
+StandStillCondition::StandStillCondition(TriggeringEntities triggering, double duration)
+    : ByEntityCondition(std::move(triggering)), duration_(duration) {}
+
+bool StandStillCondition::evaluate_for_entity(const EvaluationContext& context,
+                                              std::string_view entity_id) const {
+    const std::optional<EntityKinematics> kinematics = context.entity_kinematics(entity_id);
+    if (!kinematics.has_value()) {
+        return false;
+    }
+    // No `rule`: holds once at-rest time reaches the duration. Exact >= so a
+    // duration of 0 holds the instant the entity is at rest.
+    return kinematics->standstill_seconds >= duration_;
+}
+
+double StandStillCondition::duration() const {
+    return duration_;
+}
+
+// --- TraveledDistanceCondition ----------------------------------------------
+
+TraveledDistanceCondition::TraveledDistanceCondition(TriggeringEntities triggering, double value)
+    : ByEntityCondition(std::move(triggering)), value_(value) {}
+
+bool TraveledDistanceCondition::evaluate_for_entity(const EvaluationContext& context,
+                                                    std::string_view entity_id) const {
+    const std::optional<EntityKinematics> kinematics = context.entity_kinematics(entity_id);
+    if (!kinematics.has_value()) {
+        return false;
+    }
+    // No `rule`: holds once the odometer reaches the value (value 0 holds
+    // immediately). Exact >=, no tolerance.
+    return kinematics->traveled_distance >= value_;
+}
+
+double TraveledDistanceCondition::value() const {
+    return value_;
+}
+
+// --- ReachPositionCondition -------------------------------------------------
+
+ReachPositionCondition::ReachPositionCondition(TriggeringEntities triggering,
+                                               WorldPosition position, double tolerance)
+    : ByEntityCondition(std::move(triggering)), position_(position), tolerance_(tolerance) {}
+
+bool ReachPositionCondition::evaluate_for_entity(const EvaluationContext& context,
+                                                 std::string_view entity_id) const {
+    const std::optional<EntityKinematics> kinematics = context.entity_kinematics(entity_id);
+    if (!kinematics.has_value()) {
+        return false;
+    }
+    // 2D horizontal distance: the spec calls `tolerance` the "radius of
+    // tolerance circle", so z is ignored (documented spec silence, ADR-0008).
+    // std::sqrt is IEEE-exact (unlike std::hypot), fixed operand order.
+    const double dx = kinematics->state.x - position_.x;
+    const double dy = kinematics->state.y - position_.y;
+    const double distance = std::sqrt(dx * dx + dy * dy);
+    return distance <= tolerance_;
+}
+
+const WorldPosition& ReachPositionCondition::position() const {
+    return position_;
+}
+
+double ReachPositionCondition::tolerance() const {
+    return tolerance_;
+}
+
 } // namespace scena::ir

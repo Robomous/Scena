@@ -321,3 +321,87 @@ TEST(AccelerationConditionTest, PresentAccelerationCompares) {
         ir::AccelerationCondition{ego_only(), 0.0, Rule::EqualTo, DirectionalDimension::Lateral},
         context));
 }
+
+// ---------------------------------------------------------------------------
+// StandStillCondition (§ StandStillCondition)
+// ---------------------------------------------------------------------------
+
+TEST(StandStillConditionTest, HoldsOnceRestTimeReachesDuration) {
+    EntityKinematics almost = with_speed(0.0);
+    almost.standstill_seconds = 1.5;
+    EntityKinematics enough = with_speed(0.0);
+    enough.standstill_seconds = 2.0;
+    const KinematicsContext before{{{"ego", almost}}};
+    const KinematicsContext after{{{"ego", enough}}};
+
+    EXPECT_FALSE(holds(ir::StandStillCondition{ego_only(), 2.0}, before));
+    EXPECT_TRUE(holds(ir::StandStillCondition{ego_only(), 2.0}, after)); // exact boundary >=
+}
+
+TEST(StandStillConditionTest, DurationZeroHoldsImmediatelyAtRest) {
+    const KinematicsContext at_rest{{{"ego", with_speed(0.0)}}}; // standstill_seconds == 0
+    EXPECT_TRUE(holds(ir::StandStillCondition{ego_only(), 0.0}, at_rest));
+}
+
+// ---------------------------------------------------------------------------
+// TraveledDistanceCondition (§ TraveledDistanceCondition)
+// ---------------------------------------------------------------------------
+
+TEST(TraveledDistanceConditionTest, HoldsOnceOdometerReachesValue) {
+    EntityKinematics near = with_speed(5.0);
+    near.traveled_distance = 9.0;
+    EntityKinematics reached = with_speed(5.0);
+    reached.traveled_distance = 10.0;
+    EXPECT_FALSE(
+        holds(ir::TraveledDistanceCondition{ego_only(), 10.0}, KinematicsContext{{{"ego", near}}}));
+    EXPECT_TRUE(holds(ir::TraveledDistanceCondition{ego_only(), 10.0},
+                      KinematicsContext{{{"ego", reached}}}));
+}
+
+TEST(TraveledDistanceConditionTest, ValueZeroHoldsImmediately) {
+    const KinematicsContext fresh{{{"ego", with_speed(0.0)}}}; // odometer 0
+    EXPECT_TRUE(holds(ir::TraveledDistanceCondition{ego_only(), 0.0}, fresh));
+}
+
+// ---------------------------------------------------------------------------
+// ReachPositionCondition (§ ReachPositionCondition, deprecated 1.2)
+// ---------------------------------------------------------------------------
+
+namespace {
+EntityKinematics at_xy(double x, double y, double z = 0.0) {
+    EntityKinematics k;
+    k.state.x = x;
+    k.state.y = y;
+    k.state.z = z;
+    return k;
+}
+} // namespace
+
+TEST(ReachPositionConditionTest, InsideOutsideAndExactBoundary) {
+    const ir::WorldPosition target{10.0, 0.0, 0.0};
+    // Inside the 2 m circle (distance 1.5).
+    EXPECT_TRUE(holds(ir::ReachPositionCondition{ego_only(), target, 2.0},
+                      KinematicsContext{{{"ego", at_xy(11.5, 0.0)}}}));
+    // Outside (distance 3).
+    EXPECT_FALSE(holds(ir::ReachPositionCondition{ego_only(), target, 2.0},
+                       KinematicsContext{{{"ego", at_xy(13.0, 0.0)}}}));
+    // Exactly on the boundary: distance == tolerance ⇒ true (3-4-5 triangle,
+    // distance exactly 5).
+    EXPECT_TRUE(holds(ir::ReachPositionCondition{ego_only(), target, 5.0},
+                      KinematicsContext{{{"ego", at_xy(13.0, 4.0)}}}));
+}
+
+TEST(ReachPositionConditionTest, DistanceIs2DAndIgnoresZ) {
+    const ir::WorldPosition target{0.0, 0.0, 0.0};
+    // A large z offset must not matter — the tolerance is a horizontal circle.
+    EXPECT_TRUE(holds(ir::ReachPositionCondition{ego_only(), target, 0.5},
+                      KinematicsContext{{{"ego", at_xy(0.0, 0.0, 100.0)}}}));
+}
+
+TEST(ReachPositionConditionTest, ToleranceZeroNeedsExactXy) {
+    const ir::WorldPosition target{5.0, 5.0, 0.0};
+    EXPECT_TRUE(holds(ir::ReachPositionCondition{ego_only(), target, 0.0},
+                      KinematicsContext{{{"ego", at_xy(5.0, 5.0)}}}));
+    EXPECT_FALSE(holds(ir::ReachPositionCondition{ego_only(), target, 0.0},
+                       KinematicsContext{{{"ego", at_xy(5.0, 5.001)}}}));
+}
