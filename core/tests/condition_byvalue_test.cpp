@@ -122,6 +122,10 @@ std::shared_ptr<Condition> user_value(std::string name, Rule rule, std::string v
                                                                   std::move(value));
 }
 
+std::shared_ptr<Condition> time_of_day(DateTime date_time, Rule rule) {
+    return std::make_shared<scena::ir::TimeOfDayCondition>(date_time, rule);
+}
+
 /// Number of Warning diagnostics anchored to `path`.
 int warning_count(const Engine& engine, const std::string& path) {
     int count = 0;
@@ -534,4 +538,86 @@ TEST(UserDefinedValueConditionTest, UserValueNumericComparison) {
     ASSERT_EQ(engine.set_user_defined_value("count", "5"), Status::Ok);
     ASSERT_EQ(engine.step(1.0), Status::Ok);
     EXPECT_TRUE(ego_fired(engine)); // 5 > 3 holds
+}
+
+// ---------------------------------------------------------------------------
+// TimeOfDayCondition (§ TimeOfDayCondition, dateTime data type)
+// ---------------------------------------------------------------------------
+
+TEST(TimeOfDayConditionTest, UnsetTimeOfDayIsFalseAndWarnsOnce) {
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(
+                  time_of_day(DateTime{2000, 1, 1, 12, 0, 0, 0, 0}, Rule::GreaterOrEqual))),
+              Status::Ok);
+    EXPECT_FALSE(ego_fired(engine)); // no anchor set
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    ASSERT_EQ(engine.step(2.0), Status::Ok);
+    EXPECT_EQ(warning_count(engine, "timeOfDay"), 1);
+}
+
+TEST(TimeOfDayConditionTest, TimeOfDayAdvancesWithSimulationTime) {
+    Engine engine;
+    // Anchor noon UTC at t = 0; the reference is five seconds later.
+    ASSERT_EQ(engine.set_date_time(DateTime{2000, 1, 1, 12, 0, 0, 0, 0}), Status::Ok);
+    ASSERT_EQ(engine.init(make_scenario(
+                  time_of_day(DateTime{2000, 1, 1, 12, 0, 5, 0, 0}, Rule::GreaterOrEqual))),
+              Status::Ok);
+    EXPECT_FALSE(ego_fired(engine)); // t = 0
+    ASSERT_EQ(engine.step(3.0), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine)); // t = 3, still before the reference
+    ASSERT_EQ(engine.step(2.0), Status::Ok);
+    EXPECT_TRUE(ego_fired(engine)); // t = 5, simulated time reaches the reference
+    // The getter reflects the advanced simulated instant.
+    ASSERT_TRUE(engine.date_time().has_value());
+    EXPECT_DOUBLE_EQ(*engine.date_time(),
+                     DateTime({2000, 1, 1, 12, 0, 5, 0, 0}).to_epoch_seconds());
+}
+
+TEST(TimeOfDayConditionTest, TimeOfDayRuleFamilyAtBoundary) {
+    // now == reference exactly at t = 0 (anchor equals the reference).
+    const auto fires_at_zero = [](Rule rule) {
+        Engine engine;
+        engine.set_date_time(DateTime{2000, 1, 1, 12, 0, 0, 0, 0});
+        engine.init(make_scenario(time_of_day(DateTime{2000, 1, 1, 12, 0, 0, 0, 0}, rule)));
+        return ego_fired(engine);
+    };
+    EXPECT_TRUE(fires_at_zero(Rule::EqualTo));
+    EXPECT_TRUE(fires_at_zero(Rule::GreaterOrEqual));
+    EXPECT_TRUE(fires_at_zero(Rule::LessOrEqual));
+    EXPECT_FALSE(fires_at_zero(Rule::GreaterThan)); // strictly later only
+    EXPECT_FALSE(fires_at_zero(Rule::LessThan));    // time never runs backwards
+
+    // greaterThan holds once simulation time carries past the reference.
+    Engine later;
+    later.set_date_time(DateTime{2000, 1, 1, 12, 0, 0, 0, 0});
+    later.init(make_scenario(time_of_day(DateTime{2000, 1, 1, 12, 0, 0, 0, 0}, Rule::GreaterThan)));
+    ASSERT_FALSE(ego_fired(later));
+    ASSERT_EQ(later.step(1.0), Status::Ok);
+    EXPECT_TRUE(ego_fired(later));
+}
+
+TEST(TimeOfDayConditionTest, TimezoneOffsetNormalizesToUtc) {
+    // 13:00+01:00 is the same instant as 12:00 UTC, so an equalTo against the
+    // noon-UTC anchor holds — the offset is folded into the epoch comparison.
+    Engine engine;
+    ASSERT_EQ(engine.set_date_time(DateTime{2000, 1, 1, 12, 0, 0, 0, 0}), Status::Ok);
+    ASSERT_EQ(engine.init(
+                  make_scenario(time_of_day(DateTime{2000, 1, 1, 13, 0, 0, 0, 60}, Rule::EqualTo))),
+              Status::Ok);
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(TimeOfDayConditionTest, InvalidTimeOfDayDateTimeFailsInit) {
+    // April has 30 days, so the fields do not name a real instant.
+    Engine engine;
+    EXPECT_EQ(engine.init(
+                  make_scenario(time_of_day(DateTime{2000, 4, 31, 0, 0, 0, 0, 0}, Rule::EqualTo))),
+              Status::ValidationError);
+}
+
+TEST(TimeOfDayConditionTest, SetDateTimeRejectsInvalidDateTime) {
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(sim_time(100.0))), Status::Ok);
+    EXPECT_EQ(engine.set_date_time(DateTime{2001, 2, 29, 0, 0, 0, 0, 0}), Status::InvalidArgument);
+    EXPECT_FALSE(engine.date_time().has_value());
 }

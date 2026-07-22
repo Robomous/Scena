@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "scena/diagnostic.h"
+#include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
 #include "scena/runtime/scheduler.h"
@@ -129,6 +130,18 @@ public:
     /// been set.
     [[nodiscard]] std::optional<std::string> user_defined_value(const std::string& name) const;
 
+    /// Anchors the simulated time of day: `date_time` is taken to hold at the
+    /// current simulation instant and advances one-for-one with simulation
+    /// time thereafter (TimeOfDayCondition). Rejected with InvalidArgument
+    /// when the DateTime is out of range. May be set before or after init and
+    /// persists across init(); close() clears it. p5-s6's EnvironmentAction
+    /// will feed the same anchor.
+    Status set_date_time(const ir::DateTime& date_time);
+
+    /// The current simulated instant as seconds since the Unix epoch, or
+    /// std::nullopt when no time-of-day anchor has been set.
+    [[nodiscard]] std::optional<double> date_time() const;
+
     /// Lifecycle state of a storyboard element, addressed by its name path
     /// from the story down, joined with '/'
     /// (e.g. "story/act/group/maneuver/event"); the empty path addresses the
@@ -178,6 +191,10 @@ private:
 
     runtime::ActionOutcome apply(const ir::Action& action);
 
+    /// The simulated instant (epoch seconds) at `simulation_time`, or nullopt
+    /// when no time-of-day anchor has been set.
+    [[nodiscard]] std::optional<double> current_date_time_seconds(double simulation_time) const;
+
     gateway::ISimulatorGateway* gateway_ = nullptr;
     ir::Scenario scenario_;
     runtime::Clock clock_;
@@ -191,9 +208,16 @@ private:
     // Host-supplied external values (UserDefinedValueCondition). Persist across
     // init() so a host can stage them before the run; cleared only by close().
     std::map<std::string, std::string, std::less<>> user_defined_values_;
-    // Names already warned about during evaluation (unknown user value), so
-    // each warns at most once. Keyed by diagnostic path; cleared at init().
+    // Names already warned about during evaluation (unknown user value, unset
+    // time of day), so each warns at most once. Keyed by diagnostic path;
+    // cleared at init().
     std::set<std::string> warned_values_;
+    // Time-of-day anchor: the simulated instant `anchor_epoch` (epoch seconds)
+    // holds at simulation time `anchor_sim`, advancing one-for-one after that.
+    // Persists across init(); cleared by close().
+    bool date_time_set_ = false;
+    double date_time_anchor_epoch_ = 0.0;
+    double date_time_anchor_sim_ = 0.0;
     DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };

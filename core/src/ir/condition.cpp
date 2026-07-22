@@ -104,4 +104,26 @@ const std::string& UserDefinedValueCondition::value() const {
     return value_;
 }
 
+TimeOfDayCondition::TimeOfDayCondition(DateTime date_time, Rule rule)
+    : date_time_(date_time), rule_(rule) {}
+
+bool TimeOfDayCondition::evaluate(const EvaluationContext& context) const {
+    // Left operand is the simulated instant, right operand the reference
+    // date-time — both epoch seconds, so the reference's UTC offset is
+    // already folded in. Absent anchor ⇒ false (the engine warns once).
+    const std::optional<double> now = context.date_time_seconds();
+    if (!now.has_value()) {
+        return false;
+    }
+    return compare(*now, rule_, date_time_.to_epoch_seconds());
+}
+
+const DateTime& TimeOfDayCondition::date_time() const {
+    return date_time_;
+}
+
+Rule TimeOfDayCondition::rule() const {
+    return rule_;
+}
+
 } // namespace scena::ir

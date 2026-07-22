@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "scena/ir/date_time.h"
 #include "scena/ir/rule.h"
 
 namespace scena::ir {
@@ -112,6 +113,25 @@ private:
     std::string name_;
     Rule rule_;
     std::string value_;
+};
+
+/// Compares the simulated date-time to a reference date-time under `rule`, per
+/// TimeOfDayCondition. The simulated date-time advances with simulation time
+/// from a host-set anchor; until an anchor is set the condition is a
+/// deterministic false and the engine warns once. The comparison is over
+/// epoch seconds, so it honors the reference's UTC offset.
+class TimeOfDayCondition final : public Condition {
+public:
+    TimeOfDayCondition(DateTime date_time, Rule rule);
+
+    [[nodiscard]] bool evaluate(const EvaluationContext& context) const override;
+
+    [[nodiscard]] const DateTime& date_time() const;
+    [[nodiscard]] Rule rule() const;
+
+private:
+    DateTime date_time_;
+    Rule rule_;
 };
 
 } // namespace scena::ir

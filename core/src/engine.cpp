@@ -42,11 +42,20 @@ class RuntimeContext final : public ir::EvaluationContext {
 public:
     RuntimeContext(double simulation_time, const NamedValueStore& parameters,
                    const NamedValueStore& variables, const NamedValueStore& user_defined_values,
-                   DiagnosticSink& sink, std::set<std::string>& warned)
+                   std::optional<double> date_time_seconds, DiagnosticSink& sink,
+                   std::set<std::string>& warned)
         : simulation_time_(simulation_time), parameters_(&parameters), variables_(&variables),
-          user_defined_values_(&user_defined_values), sink_(&sink), warned_(&warned) {}
+          user_defined_values_(&user_defined_values), date_time_seconds_(date_time_seconds),
+          sink_(&sink), warned_(&warned) {}
 
     [[nodiscard]] double simulation_time() const override { return simulation_time_; }
+
+    [[nodiscard]] std::optional<double> date_time_seconds() const override {
+        if (!date_time_seconds_.has_value()) {
+            warn_once("timeOfDay", "time of day is not set; condition false");
+        }
+        return date_time_seconds_;
+    }
 
     [[nodiscard]] std::optional<std::string_view>
     named_value(ir::NamedValueKind kind, std::string_view name) const override {
@@ -93,6 +102,7 @@ private:
     const NamedValueStore* parameters_;
     const NamedValueStore* variables_;
     const NamedValueStore* user_defined_values_;
+    std::optional<double> date_time_seconds_;
     DiagnosticSink* sink_;
     std::set<std::string>* warned_;
 };
@@ -201,6 +211,14 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
         // is double, so this is a content defect.
         if (std::isnan(sim->value())) {
             error(sink, Status::ValidationError, "simulation time condition value is NaN",
+                  condition_path);
+        }
+    } else if (const auto* tod = dynamic_cast<const ir::TimeOfDayCondition*>(expression)) {
+        // An out-of-range date-time (Feb 30, hour 24, ...) has no instant to
+        // compare against. The string-format rule (data_type.time_format) is a
+        // frontend concern; at the IR level the fields are already parsed.
+        if (!tod->date_time().valid()) {
+            error(sink, Status::ValidationError, "time of day condition has an invalid date-time",
                   condition_path);
         }
     }
@@ -458,8 +476,13 @@ Status Engine::init(ir::Scenario scenario) {
     // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
     // conditions that already hold fire before the first host step.
     scheduler_.bind(scenario_.storyboard);
-    RuntimeContext context{0.0,          scenario_.parameters, variables_, user_defined_values_,
-                           diagnostics_, warned_values_};
+    RuntimeContext context{0.0,
+                           scenario_.parameters,
+                           variables_,
+                           user_defined_values_,
+                           current_date_time_seconds(0.0),
+                           diagnostics_,
+                           warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     return Status::Ok;
@@ -486,8 +509,13 @@ Status Engine::step(double dt) {
         }
     }
 
-    RuntimeContext context{clock_.now(),         scenario_.parameters, variables_,
-                           user_defined_values_, diagnostics_,         warned_values_};
+    RuntimeContext context{clock_.now(),
+                           scenario_.parameters,
+                           variables_,
+                           user_defined_values_,
+                           current_date_time_seconds(clock_.now()),
+                           diagnostics_,
+                           warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
@@ -578,6 +606,32 @@ std::optional<std::string> Engine::user_defined_value(const std::string& name) c
     return it->second;
 }
 
+Status Engine::set_date_time(const ir::DateTime& date_time) {
+    if (!date_time.valid()) {
+        return Status::InvalidArgument;
+    }
+    // Anchor the given instant to the current simulation time; it advances
+    // one-for-one from there. Settable before init (anchor_sim = 0) so a
+    // pre-staged time of day is visible at the t = 0 evaluation.
+    date_time_anchor_epoch_ = date_time.to_epoch_seconds();
+    date_time_anchor_sim_ = clock_.now();
+    date_time_set_ = true;
+    return Status::Ok;
+}
+
+std::optional<double> Engine::date_time() const {
+    return current_date_time_seconds(clock_.now());
+}
+
+std::optional<double> Engine::current_date_time_seconds(double simulation_time) const {
+    if (!date_time_set_) {
+        return std::nullopt;
+    }
+    // Fixed IEEE expression, no wall clock: the simulated instant is the
+    // anchor plus the simulation time elapsed since the anchor was set.
+    return date_time_anchor_epoch_ + (simulation_time - date_time_anchor_sim_);
+}
+
 std::optional<runtime::ElementState>
 Engine::storyboard_element_state(const std::string& path) const {
     if (!initialized_) {
@@ -618,9 +672,11 @@ Status Engine::close() {
     clock_.reset();
     entities_.clear();
     variables_.clear();
-    // User-defined values persist across init() but not across close(): a
-    // closed engine forgets everything the host staged.
+    // User-defined values and the time-of-day anchor persist across init()
+    // but not across close(): a closed engine forgets everything the host
+    // staged.
     user_defined_values_.clear();
+    date_time_set_ = false;
     warned_values_.clear();
     scenario_ = ir::Scenario{};
     initialized_ = false;
