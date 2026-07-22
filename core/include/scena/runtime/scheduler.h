@@ -39,25 +39,26 @@ enum class TransitionKind {
     Skip,
 };
 
-/// What applying one action means for the element state machine (§8.4.1):
-/// an event "ends regularly when every nested Action is completed"
-/// (§8.4.2), so the applier is what tells the scheduler whether that
-/// already happened.
-///
-/// These are the two cases the standard describes completely. Actions whose
-/// end is governed by transition dynamics — the middle case — are
-/// deliberately not modelled yet and arrive as an additional enumerator
-/// with p2-s2/p5-s4; see ADR-0005.
+/// What applying (or re-polling) one action means for the element state
+/// machine (§8.4.1): an event "ends regularly when every nested Action is
+/// completed" (§8.4.2), so the applier is what tells the scheduler whether
+/// that already happened.
 enum class ActionOutcome {
     /// Reached its goal in the evaluation it was applied in. §7.4.1.2: a
     /// LaneChangeAction, SpeedAction or LaneOffsetAction used with the step
     /// dynamic option assigns no control strategy because "the changes are
-    /// enacted instantaneously". Every action in the Scenario IR today is
-    /// exactly this case.
+    /// enacted instantaneously".
     Complete,
     /// Ongoing and unable to end by itself; only a stopTransition ends it
-    /// (§7.5.3, never-ending actions). Its event stays in runningState.
+    /// (§7.5.3, never-ending actions). Its event stays in runningState and the
+    /// action is not re-polled.
     Ongoing,
+    /// In progress and governed by transition dynamics (§7.4.1.2): the action
+    /// has not reached its goal yet but will on its own. Its event stays in
+    /// runningState and the scheduler re-polls the action each step through the
+    /// same fire callback until it reports Complete. Added with p2-s2 (ADR-0005
+    /// foresaw this "additional enumerator"; ADR-0011 specifies the drive).
+    Running,
 };
 
 /// Storyboard executor: walks the Story/Act/ManeuverGroup/Maneuver/Event
@@ -70,8 +71,11 @@ enum class ActionOutcome {
 ///   runningState immediately.
 /// - Events fire their actions on their startTransition; the event ends
 ///   regularly in that same evaluation when every action reported
-///   ActionOutcome::Complete, and otherwise stays in runningState until a
-///   stopTransition ends it (§8.4.1–8.4.2).
+///   ActionOutcome::Complete (§8.4.1–8.4.2). An action reporting Running
+///   (transition dynamics) is re-polled through the fire callback every step
+///   and the event ends regularly once the last such action completes; an
+///   action reporting Ongoing (never-ending) keeps the event in runningState
+///   until a stopTransition ends it.
 /// - Event priority is resolved in the scope of the Maneuver (§7.3.3,
 ///   §8.4.2.2): `override` stops every *running* sibling of the same
 ///   Maneuver — standby siblings are untouched — `skip` does not start
@@ -240,6 +244,17 @@ private:
         int max_executions = 1;
         int executions = 0;
 
+        /// Events only: actions still in progress under transition dynamics
+        /// (they reported ActionOutcome::Running at their fire). Re-polled every
+        /// step until they complete; document order, populated at
+        /// enter_running and drained by progress_event. Borrowed pointers into
+        /// the immutable storyboard IR.
+        std::vector<const ir::Action*> running_actions;
+        /// Events only: at least one action reported Ongoing (never-ending),
+        /// which keeps the event in runningState regardless of running_actions
+        /// until a stopTransition ends it.
+        bool has_ongoing = false;
+
         std::vector<Node> children;
     };
 
@@ -294,6 +309,11 @@ private:
     /// all the siblings a starting event has to interact with.
     void update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
                          const FireCallback& fire);
+    /// Re-polls the transition-dynamics actions of a running event (§8.4.2):
+    /// each still-running action is fired again; those reporting Complete drop
+    /// out, and once none remain and no never-ending action is present the
+    /// event ends regularly with an endTransition.
+    void progress_event(Node& event, const FireCallback& fire);
     /// Resolves the priority of the event at `index` and starts it, skips
     /// it or overrides its running siblings accordingly (§8.4.2.2).
     void start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
