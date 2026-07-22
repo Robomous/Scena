@@ -25,8 +25,8 @@ Rules of this document:
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| SpeedAction | §7.4.1.4 | In | p5-s4 | Absolute + relative targets, `continuous` relative tracking, all TransitionDynamics shapes |
-| SpeedProfileAction | §7.4.1.4 | In | p5-s4 | ≥1.2; entry series with accel/jerk limits |
+| SpeedAction | §7.4.1.4 | In | p2-s2 | Kernel landed: all TransitionDynamics shapes (linear/cubic/sinusoidal/step) × dimensions (time/rate/distance), default longitudinal controller, position-mode + hard Performance clamp (max speed + per-shape peak accel). Absolute target only — relative target deferred; `followingMode=follow` jerk deferred (ADR-0011). XML lowering deferred (P4/p5-s4) |
+| SpeedProfileAction | §7.4.1.4 | In | p2-s2 | Kernel landed (≥1.2): position-mode piecewise-linear entry series, omitted entry time ⇒ performance-limited. entityRef-relative profile + DynamicConstraints/jerk (`followingMode=follow`) deferred (ADR-0011). XML lowering deferred (P4/p5-s4) |
 | LongitudinalDistanceAction | §7.4.1.4 | In | p5-s5 | distance/timeGap modes, freespace, `continuous` keeping |
 | LaneChangeAction | §7.4.1.4 | In | p5-s4 | Absolute/relative target lane, offset carryover; 1.4 lane-layer awareness excluded |
 | LaneOffsetAction | §7.4.1.4 | In | p5-s4 | Incl. `continuous` variant |
