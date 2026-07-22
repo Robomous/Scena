@@ -159,6 +159,55 @@ SCN_API scn_status scn_engine_get_state(scn_engine* engine, const char* entity_i
 SCN_API scn_status scn_engine_report_state(scn_engine* engine, const char* entity_id,
                                            const scn_entity_state* state);
 
+/* Named values (by-value conditions).
+ *
+ * Deliberately no C builder for conditions themselves: the route from C to a
+ * scenario's storyboard is the XML frontend (P4), as with the trigger model.
+ * These functions cover only the host-value interface those conditions read. */
+
+/* Declares a global parameter (§9.1) on the scenario under construction. Takes
+ * effect at the next scn_engine_init; parameters are immutable at runtime. */
+SCN_API scn_status scn_engine_set_parameter(scn_engine* engine, const char* name,
+                                            const char* value);
+
+/* Declares a global variable (§6.12) with its initialization value on the
+ * scenario under construction. Takes effect at the next scn_engine_init, which
+ * seeds it into the runtime store. */
+SCN_API scn_status scn_engine_declare_variable(scn_engine* engine, const char* name,
+                                               const char* value);
+
+/* Sets a declared variable's current value at runtime. Requires init; a name
+ * with no declaration returns SCN_ERROR_UNKNOWN_NAME and changes nothing. */
+SCN_API scn_status scn_engine_set_variable(scn_engine* engine, const char* name, const char* value);
+
+/* Writes the current value of a variable into *out as a borrowed string. An
+ * undeclared name (or before init) returns SCN_ERROR_UNKNOWN_NAME with *out
+ * left untouched. The borrowed string is owned by the engine and stays valid
+ * until the next scn_engine_get_variable / scn_engine_get_user_defined_value
+ * on this engine, or any mutating call (step/init/close/destroy); copy it out
+ * before then. */
+SCN_API scn_status scn_engine_get_variable(scn_engine* engine, const char* name, const char** out);
+
+/* Creates or updates an external user-defined value. Any name is accepted;
+ * values may be staged before init and persist across init until close. */
+SCN_API scn_status scn_engine_set_user_defined_value(scn_engine* engine, const char* name,
+                                                     const char* value);
+
+/* Writes the current value of a user-defined value into *out as a borrowed
+ * string (same lifetime as scn_engine_get_variable). An unset name returns
+ * SCN_ERROR_UNKNOWN_NAME with *out left untouched. */
+SCN_API scn_status scn_engine_get_user_defined_value(scn_engine* engine, const char* name,
+                                                     const char** out);
+
+/* Anchors the simulated time of day (TimeOfDayCondition): the given date-time
+ * holds at the current simulation instant and advances with simulation time.
+ * The fields are ISO-8601 components (year, 1-based month/day, hour, minute,
+ * second, millisecond) plus the RFC-822 zone as minutes east of UTC. An
+ * out-of-range date-time returns SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_set_date_time(scn_engine* engine, int year, int month, int day,
+                                            int hour, int minute, int second, int millisecond,
+                                            int utc_offset_minutes);
+
 #ifdef __cplusplus
 }
 #endif
