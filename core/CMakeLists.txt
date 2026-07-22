@@ -9,6 +9,7 @@ add_library(scena-core STATIC
     src/ir/trigger.cpp
     src/runtime/clock.cpp
     src/runtime/detmath.cpp
+    src/runtime/element_ref.cpp
     src/runtime/scheduler.cpp
 )
 add_library(scena::core ALIAS scena-core)

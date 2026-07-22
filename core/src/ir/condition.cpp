@@ -126,4 +126,28 @@ Rule TimeOfDayCondition::rule() const {
     return rule_;
 }
 
+StoryboardElementStateCondition::StoryboardElementStateCondition(StoryboardElementType element_type,
+                                                                 std::string element_ref,
+                                                                 StoryboardElementState state)
+    : element_type_(element_type), element_ref_(std::move(element_ref)), state_(state) {}
+
+bool StoryboardElementStateCondition::evaluate(const EvaluationContext& context) const {
+    // The context resolves the reference against the storyboard it is bound to
+    // and reports whether the state or transition holds; an unresolved
+    // reference (or a context without a storyboard) yields false.
+    return context.storyboard_element_state(element_type_, element_ref_, state_).value_or(false);
+}
+
+StoryboardElementType StoryboardElementStateCondition::element_type() const {
+    return element_type_;
+}
+
+const std::string& StoryboardElementStateCondition::element_ref() const {
+    return element_ref_;
+}
+
+StoryboardElementState StoryboardElementStateCondition::state() const {
+    return state_;
+}
+
 } // namespace scena::ir

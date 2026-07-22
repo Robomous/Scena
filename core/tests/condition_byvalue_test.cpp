@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +35,8 @@ using scena::ir::DateTime;
 using scena::ir::parse_scalar;
 using scena::ir::Rule;
 using scena::ir::SimulationTimeCondition;
+using scena::ir::StoryboardElementState;
+using scena::ir::StoryboardElementType;
 using scena::ir::TriggerCondition;
 using scena::runtime::ActionOutcome;
 using scena::runtime::ElementState;
@@ -126,6 +129,97 @@ std::shared_ptr<Condition> time_of_day(DateTime date_time, Rule rule) {
     return std::make_shared<scena::ir::TimeOfDayCondition>(date_time, rule);
 }
 
+std::shared_ptr<Condition> element_state(StoryboardElementType type, std::string ref,
+                                         StoryboardElementState state) {
+    return std::make_shared<scena::ir::StoryboardElementStateCondition>(type, std::move(ref),
+                                                                        state);
+}
+
+/// An event whose single action targets an entity of its own name, so a firing
+/// transcript reads as a list of event names. Optional priority/count for the
+/// skip cases.
+scena::ir::Event named_event(std::string name, std::optional<scena::ir::Trigger> trigger,
+                             scena::ir::EventPriority priority = scena::ir::EventPriority::Parallel,
+                             int maximum_execution_count = 1) {
+    scena::ir::Event event;
+    event.name = name;
+    event.start_trigger = std::move(trigger);
+    event.priority = priority;
+    event.maximum_execution_count = maximum_execution_count;
+    event.actions.push_back(std::make_shared<scena::ir::SpeedAction>(std::move(name), 10.0));
+    return event;
+}
+
+/// Fire callback that records firings and reports Ongoing for a chosen set of
+/// entity ids (§7.5.3 never-ending actions) so an event stays in runningState
+/// long enough to be observed. The set is ordered — no fixture-introduced
+/// nondeterminism.
+class Recorder {
+public:
+    explicit Recorder(std::set<std::string> ongoing = {}) : ongoing_(std::move(ongoing)) {}
+
+    ActionOutcome operator()(const scena::ir::Action& action) {
+        fired_.push_back(action.entity_id());
+        return ongoing_.count(action.entity_id()) != 0 ? ActionOutcome::Ongoing
+                                                       : ActionOutcome::Complete;
+    }
+
+    [[nodiscard]] const std::vector<std::string>& fired() const { return fired_; }
+    void clear() { fired_.clear(); }
+
+private:
+    std::set<std::string> ongoing_;
+    std::vector<std::string> fired_;
+};
+
+/// One step; returns the event names that fired during it.
+std::vector<std::string> step_events(Scheduler& scheduler, Recorder& recorder, double t) {
+    recorder.clear();
+    scheduler.step(t, [&recorder](const scena::ir::Action& action) { return recorder(action); });
+    return recorder.fired();
+}
+
+/// The times at which `event` fired while stepping over `times`.
+std::vector<double> observer_firings(Scheduler& scheduler, Recorder& recorder,
+                                     const std::string& event, const std::vector<double>& times) {
+    std::vector<double> fires;
+    for (const double t : times) {
+        for (const std::string& fired : step_events(scheduler, recorder, t)) {
+            if (fired == event) {
+                fires.push_back(t);
+            }
+        }
+    }
+    return fires;
+}
+
+/// Two maneuvers under one group (the scope boundary priority must not cross,
+/// §7.3.3) — also two distinct enclosing scopes for name resolution.
+scena::ir::Storyboard make_two_maneuver_storyboard(std::string first_name,
+                                                   std::vector<scena::ir::Event> first,
+                                                   std::string second_name,
+                                                   std::vector<scena::ir::Event> second) {
+    scena::ir::Maneuver maneuver_a;
+    maneuver_a.name = std::move(first_name);
+    maneuver_a.events = std::move(first);
+    scena::ir::Maneuver maneuver_b;
+    maneuver_b.name = std::move(second_name);
+    maneuver_b.events = std::move(second);
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver_a));
+    group.maneuvers.push_back(std::move(maneuver_b));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scena::ir::Storyboard storyboard;
+    storyboard.stories.push_back(std::move(story));
+    return storyboard;
+}
+
 /// Number of Warning diagnostics anchored to `path`.
 int warning_count(const Engine& engine, const std::string& path) {
     int count = 0;
@@ -172,6 +266,22 @@ scena::ir::Scenario make_scenario(std::shared_ptr<Condition> expression,
 bool ego_fired(const Engine& engine) {
     const auto state = engine.state("ego");
     return state.has_value() && state->speed != 0.0;
+}
+
+/// Wraps `storyboard` in a scenario declaring one entity per id, so the engine
+/// accepts the named_event action targets.
+scena::ir::Scenario engine_scenario(scena::ir::Storyboard storyboard,
+                                    std::vector<std::string> entity_ids) {
+    scena::ir::Scenario scenario;
+    scenario.name = "element-state";
+    for (std::string& id : entity_ids) {
+        scena::ir::Entity entity;
+        entity.id = id;
+        entity.name = id;
+        scenario.entities.push_back(std::move(entity));
+    }
+    scenario.storyboard = std::move(storyboard);
+    return scenario;
 }
 
 } // namespace
@@ -620,4 +730,241 @@ TEST(TimeOfDayConditionTest, SetDateTimeRejectsInvalidDateTime) {
     ASSERT_EQ(engine.init(make_scenario(sim_time(100.0))), Status::Ok);
     EXPECT_EQ(engine.set_date_time(DateTime{2001, 2, 29, 0, 0, 0, 0, 0}), Status::InvalidArgument);
     EXPECT_FALSE(engine.date_time().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// StoryboardElementStateCondition (§ StoryboardElementStateCondition, §8.1-8.2)
+// ---------------------------------------------------------------------------
+
+TEST(StoryboardElementStateConditionTest, StateLiteralsObserveStandbyRunningComplete) {
+    // Standby: a not-yet-triggered element is observed in standbyState.
+    {
+        Scheduler scheduler;
+        const scena::ir::Storyboard storyboard =
+            make_storyboard({named_event("source", trigger_of({{cond(sim_time(100.0))}})),
+                             named_event("obs", trigger_of({{cond(element_state(
+                                                    StoryboardElementType::Event, "source",
+                                                    StoryboardElementState::StandbyState))}}))});
+        scheduler.bind(storyboard);
+        Recorder recorder;
+        EXPECT_EQ(step_events(scheduler, recorder, 0.0), (std::vector<std::string>{"obs"}));
+    }
+    // Running: an event kept running by an ongoing action is observed running.
+    {
+        Scheduler scheduler;
+        const scena::ir::Storyboard storyboard =
+            make_storyboard({named_event("source", trigger_of({{cond(sim_time(1.0))}})),
+                             named_event("obs", trigger_of({{cond(element_state(
+                                                    StoryboardElementType::Event, "source",
+                                                    StoryboardElementState::RunningState))}}))});
+        scheduler.bind(storyboard);
+        Recorder recorder({"source"}); // source stays running
+        EXPECT_TRUE(step_events(scheduler, recorder, 0.0).empty());
+        EXPECT_EQ(step_events(scheduler, recorder, 1.0),
+                  (std::vector<std::string>{"source", "obs"}));
+    }
+    // Complete: an instantaneously-finishing event is observed complete.
+    {
+        Scheduler scheduler;
+        const scena::ir::Storyboard storyboard =
+            make_storyboard({named_event("source", trigger_of({{cond(sim_time(1.0))}})),
+                             named_event("obs", trigger_of({{cond(element_state(
+                                                    StoryboardElementType::Event, "source",
+                                                    StoryboardElementState::CompleteState))}}))});
+        scheduler.bind(storyboard);
+        Recorder recorder;
+        EXPECT_TRUE(step_events(scheduler, recorder, 0.0).empty());
+        EXPECT_EQ(step_events(scheduler, recorder, 1.0),
+                  (std::vector<std::string>{"source", "obs"}));
+    }
+}
+
+TEST(StoryboardElementStateConditionTest, StartTransitionHoldsOnlyInItsEvaluation) {
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_storyboard(
+        {named_event("source", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("observer",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "source",
+                                                     StoryboardElementState::StartTransition))}}),
+                     scena::ir::EventPriority::Parallel, /*max=*/3)});
+    scheduler.bind(storyboard);
+    Recorder recorder({"source"}); // source stays running, so it is not re-started
+    // Even though the observer re-arms (max 3) and the source stays running,
+    // the startTransition is a one-evaluation pulse: observed only at t = 1.
+    EXPECT_EQ(observer_firings(scheduler, recorder, "observer", {0.0, 1.0, 2.0, 3.0}),
+              (std::vector<double>{1.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, EndTransitionObservedOnEventCompletion) {
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_storyboard(
+        {named_event("source", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("observer",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "source",
+                                                     StoryboardElementState::EndTransition))}}))});
+    scheduler.bind(storyboard);
+    Recorder recorder;
+    EXPECT_EQ(observer_firings(scheduler, recorder, "observer", {0.0, 1.0, 2.0}),
+              (std::vector<double>{1.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, StopTransitionObservedUnderStopBeforeStartOrdering) {
+    // Two acts in document order: act1 hosts the stopped source, act2 the
+    // observer. Stop is processed before act2's start triggers in the same
+    // evaluation, so the stopTransition is visible to the later observer.
+    scena::ir::Maneuver source_maneuver;
+    source_maneuver.name = "sm";
+    source_maneuver.events.push_back(named_event("source", trigger_of({{cond(sim_time(1.0))}})));
+    scena::ir::ManeuverGroup source_group;
+    source_group.name = "sg";
+    source_group.maneuvers.push_back(std::move(source_maneuver));
+    scena::ir::Act act1;
+    act1.name = "act1";
+    act1.stop_trigger = trigger_of({{cond(sim_time(2.0))}});
+    act1.groups.push_back(std::move(source_group));
+
+    scena::ir::Maneuver obs_maneuver;
+    obs_maneuver.name = "om";
+    obs_maneuver.events.push_back(named_event(
+        "observer", trigger_of({{cond(element_state(StoryboardElementType::Event, "source",
+                                                    StoryboardElementState::StopTransition))}})));
+    scena::ir::ManeuverGroup obs_group;
+    obs_group.name = "og";
+    obs_group.maneuvers.push_back(std::move(obs_maneuver));
+    scena::ir::Act act2;
+    act2.name = "act2";
+    act2.groups.push_back(std::move(obs_group));
+
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act1));
+    story.acts.push_back(std::move(act2));
+    scena::ir::Storyboard storyboard;
+    storyboard.stories.push_back(std::move(story));
+
+    Scheduler scheduler;
+    scheduler.bind(storyboard);
+    Recorder recorder({"source"}); // source runs until stopped at t = 2
+    EXPECT_EQ(observer_firings(scheduler, recorder, "observer", {0.0, 1.0, 2.0, 3.0}),
+              (std::vector<double>{2.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, SkipTransitionObservedOnSkippedEvent) {
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_storyboard(
+        {named_event("runner", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("skipper", trigger_of({{cond(sim_time(2.0))}}),
+                     scena::ir::EventPriority::Skip),
+         named_event("observer",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "skipper",
+                                                     StoryboardElementState::SkipTransition))}}))});
+    scheduler.bind(storyboard);
+    Recorder recorder({"runner"}); // runner keeps running, so skipper is skipped at t = 2
+    EXPECT_EQ(observer_firings(scheduler, recorder, "observer", {0.0, 1.0, 2.0, 3.0}),
+              (std::vector<double>{2.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, UniqueNameResolvesAcrossHierarchy) {
+    // A globally-unique name is used bare and resolves though it lives in a
+    // different maneuver from the referencing element.
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_two_maneuver_storyboard(
+        "first", {named_event("src", trigger_of({{cond(sim_time(1.0))}}))}, "second",
+        {named_event("watcher",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "src",
+                                                     StoryboardElementState::CompleteState))}}))});
+    scheduler.bind(storyboard);
+    Recorder recorder;
+    EXPECT_EQ(observer_firings(scheduler, recorder, "watcher", {0.0, 1.0, 2.0}),
+              (std::vector<double>{1.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, DoubleColonPrefixDisambiguates) {
+    // Two events named "leg"; "first::leg" selects the one in maneuver "first"
+    // (completes at t = 1), not the one in "second" (t = 5).
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_two_maneuver_storyboard(
+        "first",
+        {named_event("leg", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("watch",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "first::leg",
+                                                     StoryboardElementState::CompleteState))}}))},
+        "second", {named_event("leg", trigger_of({{cond(sim_time(5.0))}}))});
+    scheduler.bind(storyboard);
+    Recorder recorder;
+    EXPECT_EQ(observer_firings(scheduler, recorder, "watch", {0.0, 1.0, 2.0, 5.0}),
+              (std::vector<double>{1.0}));
+}
+
+TEST(StoryboardElementStateConditionTest, TransitionPulseWithDelayReplaysShifted) {
+    // The endTransition pulse at t = 1 is one evaluation wide; a 0.5 s delay
+    // replays it shifted, firing exactly once at t = 1.5.
+    Scheduler scheduler;
+    const scena::ir::Storyboard storyboard = make_storyboard(
+        {named_event("source", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("observer",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "source",
+                                                     StoryboardElementState::EndTransition),
+                                       ConditionEdge::None, 0.5)}}))});
+    scheduler.bind(storyboard);
+    Recorder recorder;
+    EXPECT_EQ(observer_firings(scheduler, recorder, "observer", {0.0, 1.0, 1.5, 2.0}),
+              (std::vector<double>{1.5}));
+}
+
+TEST(StoryboardElementStateConditionTest, AmbiguousRefFailsInitWithRuleC720) {
+    scena::ir::Storyboard storyboard = make_two_maneuver_storyboard(
+        "first",
+        {named_event("leg", trigger_of({{cond(sim_time(1.0))}})),
+         named_event("observer",
+                     trigger_of({{cond(element_state(StoryboardElementType::Event, "leg",
+                                                     StoryboardElementState::CompleteState))}}))},
+        "second", {named_event("leg", trigger_of({{cond(sim_time(5.0))}}))});
+    Engine engine;
+    EXPECT_EQ(engine.init(engine_scenario(std::move(storyboard), {"leg", "observer"})),
+              Status::SemanticError);
+    EXPECT_TRUE(
+        has_error(engine, Status::SemanticError,
+                  "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref"));
+}
+
+TEST(StoryboardElementStateConditionTest, DanglingOrTypeMismatchedRefFailsInit) {
+    {
+        // Dangling: no element named "ghost".
+        scena::ir::Storyboard storyboard = make_storyboard({named_event(
+            "observer",
+            trigger_of({{cond(element_state(StoryboardElementType::Event, "ghost",
+                                            StoryboardElementState::CompleteState))}}))});
+        Engine engine;
+        EXPECT_EQ(engine.init(engine_scenario(std::move(storyboard), {"observer"})),
+                  Status::SemanticError);
+        EXPECT_TRUE(
+            has_error(engine, Status::SemanticError,
+                      "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref"));
+    }
+    {
+        // Type mismatch: "src" is an Event, referenced here as a Maneuver.
+        scena::ir::Storyboard storyboard = make_storyboard(
+            {named_event("src", trigger_of({{cond(sim_time(1.0))}})),
+             named_event(
+                 "observer",
+                 trigger_of({{cond(element_state(StoryboardElementType::Maneuver, "src",
+                                                 StoryboardElementState::CompleteState))}}))});
+        Engine engine;
+        EXPECT_EQ(engine.init(engine_scenario(std::move(storyboard), {"src", "observer"})),
+                  Status::SemanticError);
+    }
+}
+
+TEST(StoryboardElementStateConditionTest, ActionTypeEmitsUnsupportedFeatureWarning) {
+    // Per-action nodes do not exist yet: an action reference warns and the
+    // condition is always false, but init succeeds.
+    scena::ir::Storyboard storyboard = make_storyboard({named_event(
+        "observer", trigger_of({{cond(element_state(StoryboardElementType::Action, "whatever",
+                                                    StoryboardElementState::CompleteState))}}))});
+    Engine engine;
+    ASSERT_EQ(engine.init(engine_scenario(std::move(storyboard), {"observer"})), Status::Ok);
+    EXPECT_GE(warning_count(engine, "story/act/group/maneuver/observer/startTrigger/group[0]/"
+                                    "condition[0]"),
+              1);
 }

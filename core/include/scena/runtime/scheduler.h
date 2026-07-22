@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "scena/ir/evaluation_context.h"
@@ -223,6 +226,12 @@ private:
         const ir::Event* event = nullptr; ///< Events only.
         ElementState state = ElementState::Standby;
         TransitionKind transition = TransitionKind::None;
+        /// The evaluation counter value at which `transition` was last set.
+        /// A transition is a one-evaluation pulse: a StoryboardElementState
+        /// transition literal holds only when this equals the scheduler's
+        /// current evaluation counter, so it stops being observable on the
+        /// next step even though `transition` itself is not cleared.
+        std::uint64_t transition_evaluation = 0;
 
         /// Events only (§8.4.2.2).
         ir::EventPriority priority = ir::EventPriority::Parallel;
@@ -234,38 +243,90 @@ private:
         std::vector<Node> children;
     };
 
+    /// Read-only context that answers a StoryboardElementStateCondition from
+    /// this scheduler's bound tree while forwarding every other facet
+    /// (simulation time, named values, time of day) to the host context. It
+    /// is constructed per step; the current evaluation counter it captures is
+    /// what makes a transition literal a one-evaluation pulse.
+    class BoundContext final : public ir::EvaluationContext {
+    public:
+        BoundContext(const ir::EvaluationContext& host,
+                     const std::map<std::string, const Node*>& element_refs,
+                     std::uint64_t evaluation)
+            : host_(&host), element_refs_(&element_refs), evaluation_(evaluation) {}
+
+        [[nodiscard]] double simulation_time() const override { return host_->simulation_time(); }
+        [[nodiscard]] std::optional<std::string_view>
+        named_value(ir::NamedValueKind kind, std::string_view name) const override {
+            return host_->named_value(kind, name);
+        }
+        [[nodiscard]] std::optional<double> date_time_seconds() const override {
+            return host_->date_time_seconds();
+        }
+        [[nodiscard]] std::optional<bool>
+        storyboard_element_state(ir::StoryboardElementType type, std::string_view ref,
+                                 ir::StoryboardElementState state) const override;
+
+    private:
+        const ir::EvaluationContext* host_;
+        const std::map<std::string, const Node*>* element_refs_;
+        std::uint64_t evaluation_;
+    };
+
     static TriggerState make_trigger_state(const std::optional<ir::Trigger>& trigger);
     static bool evaluate_condition(ConditionState& state, const ir::EvaluationContext& context);
     static bool evaluate_trigger(TriggerState& state, const ir::EvaluationContext& context);
     static Node build(const ir::Storyboard& storyboard);
-    static void enter_running(Node& node, const ir::EvaluationContext& context,
-                              const FireCallback& fire);
-    static void update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
+
+    /// Sets `node.transition` and stamps it with the current evaluation, so
+    /// the transition is observable only within the evaluation it occurred.
+    void mark_transition(Node& node, TransitionKind transition);
+
+    void enter_running(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
+    void update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
 
     /// Advances the events of a running Maneuver — the scope event priority
     /// is defined over (§7.3.3) and therefore the only place that can see
     /// all the siblings a starting event has to interact with.
-    static void update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
-                                const FireCallback& fire);
+    void update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
+                         const FireCallback& fire);
     /// Resolves the priority of the event at `index` and starts it, skips
     /// it or overrides its running siblings accordingly (§8.4.2.2).
-    static void start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
-                            const FireCallback& fire);
+    void start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
+                     const FireCallback& fire);
     [[nodiscard]] static bool has_running_sibling(const Node& maneuver, std::size_t index);
     /// Takes an event out of runningState with an endTransition (§8.4.2.1):
     /// back to standbyState while executions remain, complete once they are
     /// exhausted.
-    static void end_execution(Node& event);
+    void end_execution(Node& event);
     /// Completes a standby event whose executions already reached its
     /// maximum, with a skipTransition (§8.4.2.1).
-    static void apply_standby_exhaustion(Node& event);
+    void apply_standby_exhaustion(Node& event);
 
-    static void stop_cascade(Node& node);
+    void stop_cascade(Node& node);
     static bool all_children_complete(const Node& node);
     [[nodiscard]] const Node* find(const std::string& path) const;
 
+    /// Resolves every StoryboardElementStateCondition reference in the bound
+    /// storyboard to a unique element node (or nullptr when zero or several
+    /// match), keyed "<type>|<ref>". Built at bind(); read on the hot path.
+    void build_element_ref_cache(const ir::Storyboard& storyboard);
+    void cache_trigger_refs(const std::optional<ir::Trigger>& trigger);
+    [[nodiscard]] const Node* resolve_element_ref(ir::StoryboardElementType type,
+                                                  std::string_view ref) const;
+    /// Cache key for a StoryboardElementStateCondition reference.
+    [[nodiscard]] static std::string element_ref_key(ir::StoryboardElementType type,
+                                                     std::string_view ref);
+
     bool bound_ = false;
     Node root_;
+    /// Incremented at the top of every evaluated step; the init evaluation is
+    /// 1. Reset by bind()/reset(). Names the discrete time a transition pulse
+    /// belongs to.
+    std::uint64_t evaluation_ = 0;
+    /// Pre-resolved StoryboardElementStateCondition references (see
+    /// build_element_ref_cache).
+    std::map<std::string, const Node*> element_refs_;
 };
 
 } // namespace scena::runtime

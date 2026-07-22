@@ -15,6 +15,7 @@
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
+#include "scena/runtime/element_ref.h"
 
 namespace scena {
 
@@ -29,6 +30,8 @@ constexpr const char* kRuleConditionDelay =
     "asam.net:xosc:1.0.0:data_type.condition_delay_not_negative";
 constexpr const char* kRuleResolvableVariable =
     "asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference";
+constexpr const char* kRuleResolvableStoryboardElement =
+    "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -165,13 +168,60 @@ void warn_if_ordering_non_numeric(DiagnosticSink& sink, const std::string& path,
          "ordering rule on a non-scalar value; condition is always false", path);
 }
 
+/// Counts the storyboard elements of `type` whose name reference matches
+/// `segments`, walking the tree in document order. The path carries a leading
+/// empty root name so the self-to-root chains match the scheduler's tree (its
+/// storyboard root has an empty name), keeping validation and evaluation in
+/// exact agreement about what resolves.
+int count_element_matches(const ir::Storyboard& storyboard, ir::StoryboardElementType type,
+                          const std::vector<std::string>& segments) {
+    int matches = 0;
+    std::vector<std::string> path{""};
+    const auto consider = [&](ir::StoryboardElementType candidate) {
+        if (candidate != type) {
+            return;
+        }
+        const std::vector<std::string> chain(path.rbegin(), path.rend());
+        if (runtime::element_ref_matches(segments, chain)) {
+            ++matches;
+        }
+    };
+    for (const ir::Story& story : storyboard.stories) {
+        path.push_back(story.name);
+        consider(ir::StoryboardElementType::Story);
+        for (const ir::Act& act : story.acts) {
+            path.push_back(act.name);
+            consider(ir::StoryboardElementType::Act);
+            for (const ir::ManeuverGroup& group : act.groups) {
+                path.push_back(group.name);
+                consider(ir::StoryboardElementType::ManeuverGroup);
+                for (const ir::Maneuver& maneuver : group.maneuvers) {
+                    path.push_back(maneuver.name);
+                    consider(ir::StoryboardElementType::Maneuver);
+                    for (const ir::Event& event : maneuver.events) {
+                        path.push_back(event.name);
+                        consider(ir::StoryboardElementType::Event);
+                        path.pop_back();
+                    }
+                    path.pop_back();
+                }
+                path.pop_back();
+            }
+            path.pop_back();
+        }
+        path.pop_back();
+    }
+    return matches;
+}
+
 /// Validates one trigger condition's logical expression against the scenario's
-/// named-value declarations. dynamic_cast selects the concrete by-value
-/// condition; the expression may also be a plain time/entity condition, which
-/// carries no named reference and needs no check here. A null expression is
-/// reported by the caller.
+/// named-value declarations and storyboard hierarchy. dynamic_cast selects the
+/// concrete by-value condition; the expression may also be a plain time/entity
+/// condition, which carries no named reference and needs no check here. A null
+/// expression is reported by the caller.
 void validate_condition_expression(const ir::TriggerCondition& condition,
                                    const std::string& condition_path,
+                                   const ir::Storyboard& storyboard,
                                    const NamedValueStore& parameters,
                                    const NamedValueStore& variables, DiagnosticSink& sink) {
     const ir::Condition* expression = condition.expression.get();
@@ -221,6 +271,40 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
             error(sink, Status::ValidationError, "time of day condition has an invalid date-time",
                   condition_path);
         }
+    } else if (const auto* element =
+                   dynamic_cast<const ir::StoryboardElementStateCondition*>(expression)) {
+        const ir::StoryboardElementType type = element->element_type();
+        const ir::StoryboardElementState state = element->state();
+        if (type == ir::StoryboardElementType::Action) {
+            // Per-action nodes arrive with p5-s4; until then an action
+            // reference is unobservable and the condition is constant false.
+            warn(sink, Status::UnsupportedFeature,
+                 "storyboardElementType 'action' is not supported yet; condition is always false",
+                 condition_path);
+            return;
+        }
+        // skipTransition is defined only for Event instances
+        // (§ StoryboardElementState); on any other type it can never occur.
+        if (state == ir::StoryboardElementState::SkipTransition &&
+            type != ir::StoryboardElementType::Event) {
+            warn(sink, Status::UnsupportedFeature,
+                 "skipTransition is only defined for events; condition is always false",
+                 condition_path);
+        }
+        const std::vector<std::string> segments =
+            runtime::split_element_ref(element->element_ref());
+        const int matches = count_element_matches(storyboard, type, segments);
+        if (matches == 0) {
+            // Zero matches covers both a dangling reference and a reference to
+            // an element of a different type (no node of this kind matches).
+            error(sink, Status::SemanticError,
+                  "storyboard element '" + element->element_ref() + "' is not found",
+                  condition_path, kRuleResolvableStoryboardElement);
+        } else if (matches > 1) {
+            error(sink, Status::SemanticError,
+                  "storyboard element reference '" + element->element_ref() + "' is ambiguous",
+                  condition_path, kRuleResolvableStoryboardElement);
+        }
     }
 }
 
@@ -257,8 +341,9 @@ void check_sibling_names(const Range& range, NameOf name_of, const char* label,
 /// hosts the trigger (empty for the storyboard); `trigger_kind` is
 /// "startTrigger" or "stopTrigger".
 void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::string& owner_path,
-                      const char* trigger_kind, const NamedValueStore& parameters,
-                      const NamedValueStore& variables, DiagnosticSink& sink) {
+                      const char* trigger_kind, const ir::Storyboard& storyboard,
+                      const NamedValueStore& parameters, const NamedValueStore& variables,
+                      DiagnosticSink& sink) {
     if (!trigger.has_value()) {
         return;
     }
@@ -295,7 +380,8 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
             }
             // By-value conditions carry named references and rule/value pairs
             // whose resolvability and scalar-convertibility are checked here.
-            validate_condition_expression(condition, condition_path, parameters, variables, sink);
+            validate_condition_expression(condition, condition_path, storyboard, parameters,
+                                          variables, sink);
         }
     }
 }
@@ -309,7 +395,8 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                          DiagnosticSink& sink) {
     check_sibling_names(
         storyboard.stories, [](const ir::Story& s) { return s.name; }, "story", "", sink);
-    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", parameters, variables, sink);
+    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", storyboard, parameters, variables,
+                     sink);
     for (const ir::Story& story : storyboard.stories) {
         const std::string story_path = story.name;
         check_sibling_names(
@@ -319,10 +406,10 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
             check_sibling_names(
                 act.groups, [](const ir::ManeuverGroup& g) { return g.name; }, "maneuver group",
                 act_path, sink);
-            validate_trigger(act.start_trigger, act_path, "startTrigger", parameters, variables,
-                             sink);
-            validate_trigger(act.stop_trigger, act_path, "stopTrigger", parameters, variables,
-                             sink);
+            validate_trigger(act.start_trigger, act_path, "startTrigger", storyboard, parameters,
+                             variables, sink);
+            validate_trigger(act.stop_trigger, act_path, "stopTrigger", storyboard, parameters,
+                             variables, sink);
             for (const ir::ManeuverGroup& group : act.groups) {
                 const std::string group_path = join_path(act_path, group.name);
                 check_sibling_names(
@@ -346,7 +433,7 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                     for (const ir::Event& event : maneuver.events) {
                         const std::string event_path = join_path(maneuver_path, event.name);
                         validate_trigger(event.start_trigger, event_path, "startTrigger",
-                                         parameters, variables, sink);
+                                         storyboard, parameters, variables, sink);
                         // §8.3.3.2/§8.4.2.1: the XSD type of
                         // maximumExecutionCount is unsignedInt, so a negative
                         // budget has no meaning at all. Zero is schema-valid

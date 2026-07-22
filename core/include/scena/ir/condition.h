@@ -4,11 +4,10 @@
 #include <string>
 
 #include "scena/ir/date_time.h"
+#include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
 
 namespace scena::ir {
-
-class EvaluationContext;
 
 /// Base class for all storyboard trigger conditions in the Scenario IR — the
 /// logical-expression layer the ASAM OpenSCENARIO condition catalog subclasses
@@ -132,6 +131,30 @@ public:
 private:
     DateTime date_time_;
     Rule rule_;
+};
+
+/// Holds when the referenced storyboard element is in the given runtime state,
+/// or performs the given transition at this discrete time, per
+/// StoryboardElementStateCondition. `element_ref` is a nameRef resolved
+/// against the storyboard hierarchy (unique or "::"-disambiguated); the
+/// referenced element must exist, which is checked at Engine::init. The
+/// context answers the state/transition query; an unresolved reference is a
+/// deterministic false.
+class StoryboardElementStateCondition final : public Condition {
+public:
+    StoryboardElementStateCondition(StoryboardElementType element_type, std::string element_ref,
+                                    StoryboardElementState state);
+
+    [[nodiscard]] bool evaluate(const EvaluationContext& context) const override;
+
+    [[nodiscard]] StoryboardElementType element_type() const;
+    [[nodiscard]] const std::string& element_ref() const;
+    [[nodiscard]] StoryboardElementState state() const;
+
+private:
+    StoryboardElementType element_type_;
+    std::string element_ref_;
+    StoryboardElementState state_;
 };
 
 } // namespace scena::ir
