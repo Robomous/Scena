@@ -7,15 +7,19 @@
 #include <nanobind/stl/vector.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
+#include "scena/ir/position.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
@@ -201,6 +205,84 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("element_type", &ir::StoryboardElementStateCondition::element_type)
         .def_prop_ro("element_ref", &ir::StoryboardElementStateCondition::element_ref)
         .def_prop_ro("state", &ir::StoryboardElementStateCondition::state);
+
+    // By-entity conditions (§7.6.5.1): triggering-entities frame + kinematics.
+    nb::enum_<ir::TriggeringEntitiesRule>(m, "TriggeringEntitiesRule")
+        .value("Any", ir::TriggeringEntitiesRule::Any)
+        .value("All", ir::TriggeringEntitiesRule::All);
+
+    nb::enum_<ir::DirectionalDimension>(m, "DirectionalDimension")
+        .value("Longitudinal", ir::DirectionalDimension::Longitudinal)
+        .value("Lateral", ir::DirectionalDimension::Lateral)
+        .value("Vertical", ir::DirectionalDimension::Vertical);
+
+    nb::class_<ir::TriggeringEntities>(m, "TriggeringEntities")
+        .def(
+            "__init__",
+            [](ir::TriggeringEntities* self, std::vector<std::string> entity_refs,
+               ir::TriggeringEntitiesRule rule) {
+                new (self) ir::TriggeringEntities{rule, std::move(entity_refs)};
+            },
+            "entity_refs"_a, "rule"_a = ir::TriggeringEntitiesRule::Any)
+        .def_rw("rule", &ir::TriggeringEntities::rule)
+        .def_rw("entity_refs", &ir::TriggeringEntities::entity_refs);
+
+    nb::class_<ir::WorldPosition>(m, "WorldPosition")
+        .def(
+            "__init__",
+            [](ir::WorldPosition* self, double x, double y, double z) {
+                new (self) ir::WorldPosition{x, y, z};
+            },
+            "x"_a = 0.0, "y"_a = 0.0, "z"_a = 0.0)
+        .def_rw("x", &ir::WorldPosition::x)
+        .def_rw("y", &ir::WorldPosition::y)
+        .def_rw("z", &ir::WorldPosition::z);
+
+    nb::class_<ir::SpeedCondition, ir::Condition>(m, "SpeedCondition")
+        .def(nb::init<ir::TriggeringEntities, double, ir::Rule,
+                      std::optional<ir::DirectionalDimension>>(),
+             "triggering_entities"_a, "value"_a, "rule"_a, "direction"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::SpeedCondition::triggering_entities)
+        .def_prop_ro("value", &ir::SpeedCondition::value)
+        .def_prop_ro("rule", &ir::SpeedCondition::rule)
+        .def_prop_ro("direction", &ir::SpeedCondition::direction);
+
+    nb::class_<ir::RelativeSpeedCondition, ir::Condition>(m, "RelativeSpeedCondition")
+        .def(nb::init<ir::TriggeringEntities, std::string, double, ir::Rule,
+                      std::optional<ir::DirectionalDimension>>(),
+             "triggering_entities"_a, "entity_ref"_a, "value"_a, "rule"_a,
+             "direction"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::RelativeSpeedCondition::triggering_entities)
+        .def_prop_ro("entity_ref", &ir::RelativeSpeedCondition::entity_ref)
+        .def_prop_ro("value", &ir::RelativeSpeedCondition::value)
+        .def_prop_ro("rule", &ir::RelativeSpeedCondition::rule)
+        .def_prop_ro("direction", &ir::RelativeSpeedCondition::direction);
+
+    nb::class_<ir::AccelerationCondition, ir::Condition>(m, "AccelerationCondition")
+        .def(nb::init<ir::TriggeringEntities, double, ir::Rule,
+                      std::optional<ir::DirectionalDimension>>(),
+             "triggering_entities"_a, "value"_a, "rule"_a, "direction"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::AccelerationCondition::triggering_entities)
+        .def_prop_ro("value", &ir::AccelerationCondition::value)
+        .def_prop_ro("rule", &ir::AccelerationCondition::rule)
+        .def_prop_ro("direction", &ir::AccelerationCondition::direction);
+
+    nb::class_<ir::StandStillCondition, ir::Condition>(m, "StandStillCondition")
+        .def(nb::init<ir::TriggeringEntities, double>(), "triggering_entities"_a, "duration"_a)
+        .def_prop_ro("triggering_entities", &ir::StandStillCondition::triggering_entities)
+        .def_prop_ro("duration", &ir::StandStillCondition::duration);
+
+    nb::class_<ir::TraveledDistanceCondition, ir::Condition>(m, "TraveledDistanceCondition")
+        .def(nb::init<ir::TriggeringEntities, double>(), "triggering_entities"_a, "value"_a)
+        .def_prop_ro("triggering_entities", &ir::TraveledDistanceCondition::triggering_entities)
+        .def_prop_ro("value", &ir::TraveledDistanceCondition::value);
+
+    nb::class_<ir::ReachPositionCondition, ir::Condition>(m, "ReachPositionCondition")
+        .def(nb::init<ir::TriggeringEntities, ir::WorldPosition, double>(), "triggering_entities"_a,
+             "position"_a, "tolerance"_a)
+        .def_prop_ro("triggering_entities", &ir::ReachPositionCondition::triggering_entities)
+        .def_prop_ro("position", &ir::ReachPositionCondition::position)
+        .def_prop_ro("tolerance", &ir::ReachPositionCondition::tolerance);
 
     // Trigger model (§7.6.1): a Trigger is an OR over ConditionGroups,
     // each an AND over TriggerConditions.
