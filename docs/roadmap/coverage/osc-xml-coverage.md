@@ -25,13 +25,13 @@ Rules of this document:
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| SpeedAction | §7.4.1.4 | In | p2-s2 | Kernel landed: all TransitionDynamics shapes (linear/cubic/sinusoidal/step) × dimensions (time/rate/distance), default longitudinal controller, position-mode + hard Performance clamp (max speed + per-shape peak accel). Absolute target only — relative target deferred; `followingMode=follow` jerk deferred (ADR-0011). XML lowering deferred (P4/p5-s4) |
-| SpeedProfileAction | §7.4.1.4 | In | p2-s2 | Kernel landed (≥1.2): position-mode piecewise-linear entry series, omitted entry time ⇒ performance-limited. entityRef-relative profile + DynamicConstraints/jerk (`followingMode=follow`) deferred (ADR-0011). XML lowering deferred (P4/p5-s4) |
+| SpeedAction | §7.4.1.4 | In | p2-s2, p5-s4 | Kernel landed: all TransitionDynamics shapes (linear/cubic/sinusoidal/step) × dimensions (time/rate/distance), default longitudinal controller, position-mode + hard Performance clamp (max speed + per-shape peak accel) (p2-s2). Relative target (§RelativeTargetSpeed): delta/factor, one-shot + continuous tracking that never ends (§7.5.3); minimal single-domain supersession (p5-s4, ADR-0013). `followingMode=follow` jerk deferred (ADR-0011, #62). XML lowering deferred (P4/p5-s4) |
+| SpeedProfileAction | §7.4.1.4 | In | p2-s2 | Kernel landed (≥1.2): position-mode piecewise-linear entry series, omitted entry time ⇒ performance-limited. entityRef-relative profile + DynamicConstraints/jerk (`followingMode=follow`) deferred (ADR-0011, #62). XML lowering deferred (P4/p5-s4) |
 | LongitudinalDistanceAction | §7.4.1.4 | In | p5-s5 | distance/timeGap modes, freespace, `continuous` keeping |
-| LaneChangeAction | §7.4.1.4 | In | p5-s4 | Absolute/relative target lane, offset carryover; 1.4 lane-layer awareness excluded |
-| LaneOffsetAction | §7.4.1.4 | In | p5-s4 | Incl. `continuous` variant |
-| LateralDistanceAction | §7.4.1.4 | In | p5-s4 | Shares p2-s3 lateral machinery |
-| TeleportAction | §7.4.1.4 | In | p5-s4 | All In-scope position variants (see Positions) |
+| LaneChangeAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up: needs p2-s3 lateral machinery + p3-s4 lane resolution, neither of which exists yet (ADR-0013). Absolute/relative target lane, offset carryover; 1.4 lane-layer awareness excluded |
+| LaneOffsetAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up (needs p2-s3 lateral machinery, ADR-0013). Incl. `continuous` variant |
+| LateralDistanceAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up (needs p2-s3 lateral machinery + 2D lateral positioning, ADR-0013). Shares p2-s3 lateral machinery |
+| TeleportAction | §7.4.1.4 | In | p5-s4 | Kernel landed for the world-frame target (§WorldPosition): step (instantaneous) write of the entity position, init and mid-run (ADR-0013). Other §6.3.8 position variants + orientation via the PositionResolver (p2-s4/p3-s4). XML lowering deferred (P4) |
 | SynchronizeAction | §7.4.1.4 | Post | — | Requires master-relative speed synthesis (steady-state solve); deferred to keep v0.0.1 honest |
 | VisibilityAction | §7.4.1.4 | In | p5-s5 | State flags surfaced via state/gateway; no sensor semantics in engine |
 | ControllerAction (wrapper) | §7.4.1.4, §6.6 | In | p5-s5 | Wrapper for the three below |

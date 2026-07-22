@@ -630,7 +630,73 @@ scena::ir::Scenario make_dynamics_scenario() {
     return scenario;
 }
 
+/// GS-1, the Cruise-baseline golden scenario (docs/roadmap/golden-scenarios.md):
+/// a single engine-controlled vehicle, an init teleport + init speed, and a
+/// SimulationTimeCondition at t=5 s that fires an absolute linear SpeedAction.
+/// This is the determinism anchor for the p5-s4 private actions — teleport plus
+/// a relative-free longitudinal ramp integrated through detmath.
+scena::ir::Scenario make_gs1_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "gs1-cruise-baseline";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    Vehicle vehicle;
+    vehicle.performance = Performance{60.0, 5.0, 5.0, std::nullopt, std::nullopt};
+    ego.object = vehicle;
+    scenario.entities.push_back(std::move(ego));
+
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 10.0));
+
+    Event accelerate;
+    accelerate.name = "accelerate";
+    accelerate.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(5.0));
+    accelerate.actions.push_back(std::make_shared<SpeedAction>(
+        "ego", 20.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 4.0}));
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(accelerate));
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
 } // namespace
+
+TEST(DeterminismTest, GoldenScenario1CruiseBaselineIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_gs1_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_gs1_scenario()), Status::Ok);
+
+    // A deterministic, non-uniform step sequence spanning the cruise, the ramp
+    // and past its completion (~12 s).
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 120; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+    }
+    // The ramp completed: speed settled exactly on its target, heading constant.
+    ASSERT_TRUE(engine_a.state("ego").has_value());
+    EXPECT_EQ(engine_a.state("ego")->speed, 20.0);
+    EXPECT_EQ(engine_a.state("ego")->heading, 0.0);
+}
 
 TEST(DeterminismTest, LongitudinalDynamicsAreBitIdenticalAcrossRuns) {
     Engine engine_a;

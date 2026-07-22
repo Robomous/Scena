@@ -761,6 +761,26 @@ NB_MODULE(_scena, m) {
         .def_rw("value", &ir::TransitionDynamics::value)
         .def_rw("following_mode", &ir::TransitionDynamics::following_mode);
 
+    nb::enum_<ir::SpeedTargetValueType>(
+        m, "SpeedTargetValueType",
+        "How a relative speed target combines with the reference (§SpeedTargetValueType).")
+        .value("Delta", ir::SpeedTargetValueType::Delta)
+        .value("Factor", ir::SpeedTargetValueType::Factor);
+    nb::class_<ir::RelativeTargetSpeed>(m, "RelativeTargetSpeed")
+        .def(
+            "__init__",
+            [](ir::RelativeTargetSpeed* self, std::string entity_ref, double value,
+               ir::SpeedTargetValueType value_type, bool continuous) {
+                new (self)
+                    ir::RelativeTargetSpeed{std::move(entity_ref), value, value_type, continuous};
+            },
+            "entity_ref"_a, "value"_a, "value_type"_a = ir::SpeedTargetValueType::Delta,
+            "continuous"_a = false)
+        .def_rw("entity_ref", &ir::RelativeTargetSpeed::entity_ref)
+        .def_rw("value", &ir::RelativeTargetSpeed::value)
+        .def_rw("value_type", &ir::RelativeTargetSpeed::value_type)
+        .def_rw("continuous", &ir::RelativeTargetSpeed::continuous);
+
     nb::class_<ir::Action>(m, "Action")
         .def_prop_ro("kind", &ir::Action::kind,
                      "Stable ASAM element name of the action kind (e.g. 'SpeedAction').");
@@ -768,8 +788,12 @@ NB_MODULE(_scena, m) {
         .def(nb::init<std::string, double>(), "entity_id"_a, "target_speed"_a)
         .def(nb::init<std::string, double, ir::TransitionDynamics>(), "entity_id"_a,
              "target_speed"_a, "dynamics"_a)
+        .def(nb::init<std::string, ir::RelativeTargetSpeed, ir::TransitionDynamics>(),
+             "entity_id"_a, "target"_a, "dynamics"_a)
         .def_prop_ro("entity_id", &ir::SpeedAction::entity_id)
+        .def_prop_ro("is_relative", &ir::SpeedAction::is_relative)
         .def_prop_ro("target_speed", &ir::SpeedAction::target_speed)
+        .def_prop_ro("relative_target", &ir::SpeedAction::relative_target)
         .def_prop_ro("dynamics", &ir::SpeedAction::dynamics);
 
     nb::class_<ir::SpeedProfileEntry>(m, "SpeedProfileEntry")
@@ -787,6 +811,10 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("entity_id", &ir::SpeedProfileAction::entity_id)
         .def_prop_ro("entries", &ir::SpeedProfileAction::entries)
         .def_prop_ro("following_mode", &ir::SpeedProfileAction::following_mode);
+    nb::class_<ir::TeleportAction, ir::Action>(m, "TeleportAction")
+        .def(nb::init<std::string, ir::WorldPosition>(), "entity_id"_a, "position"_a)
+        .def_prop_ro("entity_id", &ir::TeleportAction::entity_id)
+        .def_prop_ro("position", &ir::TeleportAction::position);
 
     // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
     nb::enum_<ir::EventPriority>(m, "EventPriority",

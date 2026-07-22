@@ -75,6 +75,11 @@ linear transition dynamics.
   duration ±1 step; heading constant.
 - **Role:** smoke test and determinism anchor; first scenario ported to
   every new platform.
+- **Status:** the scenario body runs via the C++ API as of p5-s4 —
+  `action_longitudinal_test` (functional: target reached, heading constant,
+  forward motion) and `determinism_test` (bit-identity anchor across a
+  non-uniform step sequence). Full `scena-run` execution with a committed
+  reference trace is p6-s4.
 
 ### GS-2 — Cut-in
 

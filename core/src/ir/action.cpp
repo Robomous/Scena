@@ -14,6 +14,11 @@ SpeedAction::SpeedAction(std::string entity_id, double target_speed)
 SpeedAction::SpeedAction(std::string entity_id, double target_speed, TransitionDynamics dynamics)
     : entity_id_(std::move(entity_id)), target_speed_(target_speed), dynamics_(dynamics) {}
 
+SpeedAction::SpeedAction(std::string entity_id, RelativeTargetSpeed target,
+                         TransitionDynamics dynamics)
+    : entity_id_(std::move(entity_id)), target_speed_(0.0), relative_target_(std::move(target)),
+      dynamics_(dynamics) {}
+
 const std::string& SpeedAction::entity_id() const {
     return entity_id_;
 }
@@ -22,8 +27,16 @@ std::string_view SpeedAction::kind() const noexcept {
     return "SpeedAction";
 }
 
+bool SpeedAction::is_relative() const noexcept {
+    return relative_target_.has_value();
+}
+
 double SpeedAction::target_speed() const {
     return target_speed_;
+}
+
+const std::optional<RelativeTargetSpeed>& SpeedAction::relative_target() const {
+    return relative_target_;
 }
 
 const TransitionDynamics& SpeedAction::dynamics() const {
@@ -50,6 +63,21 @@ const std::vector<SpeedProfileEntry>& SpeedProfileAction::entries() const {
 
 FollowingMode SpeedProfileAction::following_mode() const {
     return following_mode_;
+}
+
+TeleportAction::TeleportAction(std::string entity_id, WorldPosition position)
+    : entity_id_(std::move(entity_id)), position_(position) {}
+
+const std::string& TeleportAction::entity_id() const {
+    return entity_id_;
+}
+
+std::string_view TeleportAction::kind() const noexcept {
+    return "TeleportAction";
+}
+
+const WorldPosition& TeleportAction::position() const {
+    return position_;
 }
 
 } // namespace scena::ir
