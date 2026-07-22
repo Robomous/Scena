@@ -227,7 +227,9 @@ scena::ir::Scenario make_interaction_scenario() {
         entity.id = id;
         entity.name = id;
         entity.control_mode = ControlMode::HostControlled;
-        entity.bounding_box = unit_box();
+        MiscObject obj;
+        obj.bounding_box = unit_box();
+        entity.object = std::move(obj);
         scenario.entities.push_back(std::move(entity));
     }
     for (const char* id : {"p_dist", "p_rel", "p_thw", "p_ttc", "p_coll"}) {

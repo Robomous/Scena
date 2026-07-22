@@ -768,13 +768,15 @@ Status Engine::init(ir::Scenario scenario) {
             continue;
         }
         it->second.mode = entity.control_mode;
-        // Geometry is copied once and is immutable at runtime. A zero-size box
+        // Geometry is copied once and is immutable at runtime. All three
+        // concrete entity objects carry a bounding box (§Vehicle/§Pedestrian/
+        // §MiscObject); an unclassified participant has none. A zero-size box
         // is a valid degenerate point, so only NaN/negative dimensions or a
         // NaN center are content defects (per ASAM OpenSCENARIO XML 1.4.0
         // BoundingBox; dimensions and center are the only fields freespace
         // math consumes this phase).
-        if (entity.bounding_box.has_value()) {
-            const ir::BoundingBox& box = *entity.bounding_box;
+        if (const std::optional<ir::BoundingBox> box_opt = ir::bounding_box_of(entity)) {
+            const ir::BoundingBox& box = *box_opt;
             const bool bad_dimensions =
                 !(box.length >= 0.0) || !(box.width >= 0.0) || !(box.height >= 0.0);
             const bool bad_center =
@@ -784,7 +786,7 @@ Status Engine::init(ir::Scenario scenario) {
                       "entity '" + entity.id + "' has an invalid bounding box",
                       "entities/" + entity.id);
             }
-            it->second.bounding_box = entity.bounding_box;
+            it->second.bounding_box = box_opt;
         }
     }
     std::size_t init_action_index = 0;
