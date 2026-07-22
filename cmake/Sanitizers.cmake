@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Sanitizer support, controlled by the SCN_SANITIZE cache variable.
 # Accepts a comma-separated list of: address, undefined, thread.

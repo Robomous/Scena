@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 """By-entity conditions through the Python bindings (ASAM OpenSCENARIO XML 1.4.0 §7.6.5.1)."""
 

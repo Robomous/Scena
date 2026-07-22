@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 //
 // scena-trace-runner: emits a "scena-trace v1" image of a fixed detmath +

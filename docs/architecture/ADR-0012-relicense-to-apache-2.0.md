@@ -39,10 +39,13 @@ Scena is licensed under **Apache License, Version 2.0**.
   the canonical text and are deliberately left intact).
 - A top-level `NOTICE` file carries the project's copyright attribution, as
   contemplated by Apache-2.0 §4(d). Redistributions must carry it forward.
-- Every source file starts with `// SPDX-License-Identifier: Apache-2.0`
-  (comment syntax per file format). The short SPDX identifier remains the
-  per-file convention — Scena does not use the full Apache boilerplate header
-  in every file.
+- Every source file starts with a two-line SPDX header — a
+  `SPDX-FileCopyrightText` attribution followed by `SPDX-License-Identifier:
+  Apache-2.0`, in the file's own comment syntax. Short SPDX identifiers remain
+  the per-file convention: Scena does not paste the full Apache boilerplate
+  into source files, since `LICENSE` and `NOTICE` carry the full terms. The
+  header is deliberately exactly these two lines — copyright and licence are
+  what a header must state, and nothing else belongs there.
 - The Python distribution metadata declares `Apache-2.0` and the
   `License :: OSI Approved :: Apache Software License` classifier.
 

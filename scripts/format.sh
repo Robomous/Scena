@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Formats all first-party C/C++ sources with clang-format.
 # Usage: scripts/format.sh [--check]

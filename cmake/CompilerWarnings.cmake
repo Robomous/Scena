@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Strict warnings for first-party targets. Third-party targets keep their own flags.
 

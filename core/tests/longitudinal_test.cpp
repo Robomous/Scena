@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
 //
 // Longitudinal-dynamics evaluator and controller (p2-s2). The transition math

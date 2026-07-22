@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
 # Convenience wrapper: configure + build + test.
 # Usage: scripts/build.sh [extra cmake configure args...]
