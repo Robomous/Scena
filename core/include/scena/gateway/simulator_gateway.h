@@ -5,6 +5,8 @@
 #include <string>
 
 #include "scena/entity_state.h"
+#include "scena/entity_visibility.h"
+#include "scena/ir/controller.h"
 
 namespace scena::gateway {
 
@@ -37,6 +39,30 @@ public:
     /// Road-network access provided by the host, or nullptr when no road data
     /// is available. Ownership stays with the gateway implementation.
     virtual IRoadQuery* road_query() = 0;
+
+    /// Called when an AssignControllerAction assigns a controller model to an
+    /// entity (ASAM OpenSCENARIO XML 1.4.0 §AssignControllerAction). Scena does
+    /// not implement controller models — the name, type and properties are a
+    /// contract between the scenario author and the host, so the engine hands
+    /// them over verbatim and in document order.
+    ///
+    /// Called synchronously while the action is applied, inside the storyboard
+    /// evaluation phase of step() — a fixed point in the step, so the order of
+    /// these calls is part of the deterministic run. The reference is borrowed
+    /// for the duration of the call.
+    ///
+    /// Defaulted to a no-op: gateways written before p5-s5 keep compiling and
+    /// simply ignore the hand-off (an amendment to ADR-0003, see ADR-0014).
+    virtual void on_controller_assigned(const std::string& /*entity_id*/,
+                                        const ir::Controller& /*controller*/) {}
+
+    /// Called when a VisibilityAction changes an entity's detectability
+    /// (§VisibilityAction). Same timing, borrowing and default-no-op rules as
+    /// on_controller_assigned. The engine has no image generator, sensors, or
+    /// traffic participants of its own, so acting on this is the host's job;
+    /// Engine::visibility_of reports the current flags either way.
+    virtual void on_visibility_changed(const std::string& /*entity_id*/,
+                                       const EntityVisibility& /*visibility*/) {}
 };
 
 } // namespace scena::gateway

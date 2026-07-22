@@ -236,6 +236,111 @@ typedef struct scn_speed_profile_entry {
     double time;  /* s; negative ⇒ unspecified (reach as fast as performance allows) */
 } scn_speed_profile_entry;
 
+/* The referential a distance is measured in (§CoordinateSystem, §6.4). Values
+ * mirror the IR enum. The road-based systems need a road network and are not
+ * implemented yet: an action using one reports UnsupportedFeature and ends. */
+typedef enum scn_coordinate_system {
+    SCN_COORDINATE_SYSTEM_ENTITY = 0,
+    SCN_COORDINATE_SYSTEM_LANE = 1,
+    SCN_COORDINATE_SYSTEM_ROAD = 2,
+    SCN_COORDINATE_SYSTEM_TRAJECTORY = 3,
+    SCN_COORDINATE_SYSTEM_WORLD = 4
+} scn_coordinate_system;
+
+/* Which side of the reference entity a longitudinal distance applies to
+ * (§LongitudinalDisplacement). Values mirror the IR enum. */
+typedef enum scn_longitudinal_displacement {
+    SCN_LONGITUDINAL_DISPLACEMENT_ANY = 0,
+    SCN_LONGITUDINAL_DISPLACEMENT_TRAILING = 1, /* the actor stays behind (default) */
+    SCN_LONGITUDINAL_DISPLACEMENT_LEADING = 2   /* the actor stays ahead */
+} scn_longitudinal_displacement;
+
+/* Strategy for path selection between route waypoints (§RouteStrategy). Values
+ * mirror the IR enum. Stored but not interpreted: choosing a path needs a road
+ * network, and SCN_ROUTE_STRATEGY_RANDOM never reaches a random generator. */
+typedef enum scn_route_strategy {
+    SCN_ROUTE_STRATEGY_FASTEST = 0,
+    SCN_ROUTE_STRATEGY_LEAST_INTERSECTIONS = 1,
+    SCN_ROUTE_STRATEGY_RANDOM = 2,
+    SCN_ROUTE_STRATEGY_SHORTEST = 3
+} scn_route_strategy;
+
+/* Whether trajectory vertex times are absolute or relative to the action's
+ * start (§ReferenceContext). Values mirror the IR enum. */
+typedef enum scn_reference_context {
+    SCN_REFERENCE_CONTEXT_ABSOLUTE = 0,
+    SCN_REFERENCE_CONTEXT_RELATIVE = 1
+} scn_reference_context;
+
+/* The operational domains a controller acts on (§ControllerType). Values
+ * mirror the IR enum; the default when unspecified is
+ * SCN_CONTROLLER_TYPE_MOVEMENT. */
+typedef enum scn_controller_type {
+    SCN_CONTROLLER_TYPE_LATERAL = 0,
+    SCN_CONTROLLER_TYPE_LONGITUDINAL = 1,
+    SCN_CONTROLLER_TYPE_LIGHTING = 2,
+    SCN_CONTROLLER_TYPE_ANIMATION = 3,
+    SCN_CONTROLLER_TYPE_MOVEMENT = 4,
+    SCN_CONTROLLER_TYPE_APPEARANCE = 5,
+    SCN_CONTROLLER_TYPE_ALL = 6
+} scn_controller_type;
+
+/* Limits a distance controller may use (§DynamicConstraints). Every field is
+ * optional in the standard, where a missing value means infinite; on the ABI a
+ * negative value means "unspecified", the same convention scn_performance uses
+ * for its rate limits. Transparent struct; append fields only. */
+typedef struct scn_dynamic_constraints {
+    double max_acceleration;      /* m/s^2; negative ⇒ unspecified (infinite) */
+    double max_acceleration_rate; /* m/s^3; negative ⇒ unspecified (infinite) */
+    double max_deceleration;      /* m/s^2; negative ⇒ unspecified (infinite) */
+    double max_deceleration_rate; /* m/s^3; negative ⇒ unspecified (infinite) */
+    double max_speed;             /* m/s;   negative ⇒ unspecified (infinite) */
+} scn_dynamic_constraints;
+
+/* One waypoint of a route (§Waypoint): a world position plus the strategy for
+ * reaching it. Transparent struct; append fields only. */
+typedef struct scn_waypoint {
+    double x; /* m */
+    double y; /* m */
+    double z; /* m */
+    scn_route_strategy strategy;
+} scn_waypoint;
+
+/* One vertex of a polyline trajectory (§Vertex). `time` is meaningful only
+ * when `has_time` is non-zero. Transparent struct; append fields only. */
+typedef struct scn_trajectory_vertex {
+    double x;     /* m */
+    double y;     /* m */
+    double z;     /* m */
+    double time;  /* s; read only when has_time != 0 */
+    int has_time; /* 0 ⇒ the vertex carries no time */
+} scn_trajectory_vertex;
+
+/* Timing adjustment applied to trajectory vertex times (§Timing): the
+ * effective time of a vertex is time * scale + offset, read in `domain`.
+ * Transparent struct; append fields only. */
+typedef struct scn_timing {
+    scn_reference_context domain;
+    double scale;  /* Range ]0..inf[; 1.0 means no scaling */
+    double offset; /* s */
+} scn_timing;
+
+/* Detectability of an entity (§VisibilityAction); non-zero means visible.
+ * Transparent struct; append fields only. */
+typedef struct scn_entity_visibility {
+    int graphics; /* visible in the host's image generator(s) */
+    int sensors;  /* visible to the host's sensor model(s) */
+    int traffic;  /* visible to other traffic participants */
+} scn_entity_visibility;
+
+/* Which movement domains the engine currently controls for an entity
+ * (§ActivateControllerAction); non-zero means the engine drives that domain.
+ * Transparent struct; append fields only. */
+typedef struct scn_controller_activation {
+    int lateral;
+    int longitudinal;
+} scn_controller_activation;
+
 /* One structured diagnostic read back from the engine.
  *
  * The string members are borrowed from the engine and are never NULL — an
@@ -364,6 +469,96 @@ SCN_API scn_status scn_engine_add_teleport_action(scn_engine* engine, const char
                                                   scn_event_priority priority,
                                                   int maximum_execution_count);
 
+/* Adds a LongitudinalDistanceAction (§LongitudinalDistanceAction): the actor
+ * keeps a distance [m] or a headway time gap [s] to `reference_entity_id`.
+ * Exactly one of `distance` and `time_gap` must be non-negative; the other must
+ * be negative, meaning "not used" (the two attributes are mutually exclusive).
+ * `freespace` non-zero measures between the closest bounding-box points, zero
+ * between reference points. `continuous` non-zero makes the action never end by
+ * itself (§7.5.3). `constraints` may be NULL for unlimited dynamics.
+ *
+ * A NULL engine or id, both or neither of distance/time_gap, an out-of-range
+ * enum, or a negative maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_longitudinal_distance_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double distance,
+    double time_gap, int freespace, int continuous, scn_coordinate_system coordinate_system,
+    scn_longitudinal_displacement displacement, const scn_dynamic_constraints* constraints,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds an AssignRouteAction (§AssignRouteAction) assigning a route of
+ * `waypoint_count` waypoints (at least 2) to `entity_id`. `closed` non-zero
+ * closes the route (§Route). `name` may be NULL for an unnamed route. The
+ * action completes immediately (Annex A Table 10). A NULL engine/id/waypoints,
+ * fewer than two waypoints, an out-of-range strategy, or a negative
+ * maximum_execution_count is rejected with SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_assign_route_action(scn_engine* engine, const char* entity_id,
+                                                      const char* name,
+                                                      const scn_waypoint* waypoints,
+                                                      size_t waypoint_count, int closed,
+                                                      double at_time, scn_event_priority priority,
+                                                      int maximum_execution_count);
+
+/* Adds an AcquirePositionAction (§AcquirePositionAction): a route from the
+ * entity's position at apply time to (`x`, `y`, `z`) is created and the action
+ * completes immediately (§7.4.1.4, Table 10). */
+SCN_API scn_status scn_engine_add_acquire_position_action(scn_engine* engine, const char* entity_id,
+                                                          double x, double y, double z,
+                                                          double at_time,
+                                                          scn_event_priority priority,
+                                                          int maximum_execution_count);
+
+/* Adds a FollowTrajectoryAction (§FollowTrajectoryAction) over a polyline of
+ * `vertex_count` vertices (at least 2). `timing` may be NULL for
+ * §TimeReference "None" — the vertex times are then ignored and the entity's
+ * own longitudinal control sets the pace; with a timing, every vertex must
+ * carry a time and the action drives the speed as well.
+ * `initial_distance_offset` truncates the trajectory to start at that arc
+ * length [m]. Only the Polyline shape is modeled; the clothoid and NURBS
+ * shapes arrive with a later phase. A NULL engine/id/vertices, fewer than two
+ * vertices, an out-of-range following_mode/domain, or a negative
+ * maximum_execution_count is rejected with SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_follow_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name,
+    const scn_trajectory_vertex* vertices, size_t vertex_count, int closed,
+    scn_following_mode following_mode, const scn_timing* timing, double initial_distance_offset,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds an AssignControllerAction (§AssignControllerAction) assigning a
+ * controller named `name` of `controller_type` to `entity_id`, with
+ * `property_count` properties given as parallel key/value arrays (either array
+ * may be NULL when the count is zero). The activation flags are tri-state:
+ * negative leaves the domain unchanged, zero deactivates it, positive
+ * activates it. Activating a domain the controller type does not define is
+ * rejected at scn_engine_init, not here. The action completes immediately
+ * (Table 10). */
+SCN_API scn_status scn_engine_add_assign_controller_action(
+    scn_engine* engine, const char* entity_id, const char* name,
+    scn_controller_type controller_type, const char* const* property_names,
+    const char* const* property_values, size_t property_count, int activate_lateral,
+    int activate_longitudinal, double at_time, scn_event_priority priority,
+    int maximum_execution_count);
+
+/* Adds an ActivateControllerAction (§ActivateControllerAction) toggling the
+ * engine's control of a movement domain. Both flags are tri-state: negative
+ * leaves the domain unchanged, zero deactivates it, positive activates it.
+ * Deactivating a domain releases the engine's control of it and suppresses
+ * actions targeting it until it is activated again. Completes immediately
+ * (Table 10). */
+SCN_API scn_status scn_engine_add_activate_controller_action(scn_engine* engine,
+                                                             const char* entity_id, int lateral,
+                                                             int longitudinal, double at_time,
+                                                             scn_event_priority priority,
+                                                             int maximum_execution_count);
+
+/* Adds a VisibilityAction (§VisibilityAction) setting an entity's
+ * detectability; each flag is non-zero for visible. Completes immediately
+ * (Table 10). */
+SCN_API scn_status scn_engine_add_visibility_action(scn_engine* engine, const char* entity_id,
+                                                    int graphics, int sensors, int traffic,
+                                                    double at_time, scn_event_priority priority,
+                                                    int maximum_execution_count);
+
 /* Lifecycle. */
 SCN_API scn_status scn_engine_init(scn_engine* engine);
 SCN_API scn_status scn_engine_step(scn_engine* engine, double dt);
@@ -400,6 +595,45 @@ SCN_API scn_status scn_engine_entity_bounding_box(scn_engine* engine, const char
                                                   scn_bounding_box* out);
 SCN_API scn_status scn_engine_entity_performance(scn_engine* engine, const char* id,
                                                  scn_performance* out);
+
+/* Runtime entity state installed by the p5-s5 private actions. Unlike the
+ * entity metadata queries above, these read the running engine, so they need a
+ * successful scn_engine_init; an unknown id returns SCN_ERROR_UNKNOWN_ENTITY
+ * and an entity that has nothing to report returns SCN_ERROR_INVALID_ARGUMENT.
+ * On any error *out is left untouched. */
+
+/* Current detectability of an entity (§VisibilityAction); every flag is 1
+ * until a VisibilityAction changes it. */
+SCN_API scn_status scn_engine_entity_visibility(scn_engine* engine, const char* id,
+                                                scn_entity_visibility* out);
+
+/* Which movement domains the engine currently controls for an entity
+ * (§ActivateControllerAction); both are 1 until a controller action says
+ * otherwise. */
+SCN_API scn_status scn_engine_entity_controller_activation(scn_engine* engine, const char* id,
+                                                           scn_controller_activation* out);
+
+/* The type of the controller assigned to an entity, or
+ * SCN_ERROR_INVALID_ARGUMENT when it has none. */
+SCN_API scn_status scn_engine_entity_controller_type(scn_engine* engine, const char* id,
+                                                     scn_controller_type* out);
+
+/* The name of the controller assigned to an entity, as a borrowed string with
+ * the same lifetime as scn_engine_get_variable's. The controller's properties
+ * are reachable from C++ and Python. */
+SCN_API scn_status scn_engine_entity_controller_name(scn_engine* engine, const char* id,
+                                                     const char** out);
+
+/* The assigned route's waypoint count and closed flag (§6.8.2). Either out
+ * pointer may be NULL when that half is not wanted; an entity with no route
+ * returns SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_entity_route_info(scn_engine* engine, const char* id,
+                                                size_t* out_waypoint_count, int* out_closed);
+
+/* One waypoint of the assigned route, by index. An index at or past the
+ * waypoint count returns SCN_ERROR_INVALID_ARGUMENT with *out untouched. */
+SCN_API scn_status scn_engine_entity_route_waypoint_at(scn_engine* engine, const char* id,
+                                                       size_t index, scn_waypoint* out);
 
 /* Named values (by-value conditions).
  *

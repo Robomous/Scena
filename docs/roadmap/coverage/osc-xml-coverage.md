@@ -27,20 +27,20 @@ Rules of this document:
 |---|---|---|---|---|
 | SpeedAction | §7.4.1.4 | In | p2-s2, p5-s4 | Kernel landed: all TransitionDynamics shapes (linear/cubic/sinusoidal/step) × dimensions (time/rate/distance), default longitudinal controller, position-mode + hard Performance clamp (max speed + per-shape peak accel) (p2-s2). Relative target (§RelativeTargetSpeed): delta/factor, one-shot + continuous tracking that never ends (§7.5.3); minimal single-domain supersession (p5-s4, ADR-0013). `followingMode=follow` jerk deferred (ADR-0011, #62). XML lowering deferred (P4/p5-s4) |
 | SpeedProfileAction | §7.4.1.4 | In | p2-s2 | Kernel landed (≥1.2): position-mode piecewise-linear entry series, omitted entry time ⇒ performance-limited. entityRef-relative profile + DynamicConstraints/jerk (`followingMode=follow`) deferred (ADR-0011, #62). XML lowering deferred (P4/p5-s4) |
-| LongitudinalDistanceAction | §7.4.1.4 | In | p5-s5 | distance/timeGap modes, freespace, `continuous` keeping |
+| LongitudinalDistanceAction | §7.4.1.4 | In | p5-s5 | Kernel landed: distance and timeGap targets, freespace (OBB) and reference-point gaps, `displacement` (any/leading/trailing), DynamicConstraints + Performance clamping, `continuous` keeping that never ends (§7.5.3); longitudinal-domain owner, so it supersedes and is superseded by SpeedAction/SpeedProfileAction (ADR-0014). Road-based coordinateSystem → p3-s4 (UnsupportedFeature warning + immediate completion); DynamicConstraints jerk rates stored but not clamped (#62). XML lowering deferred (P4) |
 | LaneChangeAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up: needs p2-s3 lateral machinery + p3-s4 lane resolution, neither of which exists yet (ADR-0013). Absolute/relative target lane, offset carryover; 1.4 lane-layer awareness excluded |
 | LaneOffsetAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up (needs p2-s3 lateral machinery, ADR-0013). Incl. `continuous` variant |
 | LateralDistanceAction | §7.4.1.4 | In | p5-s4 | Kernel deferred to a p5-s4 follow-up (needs p2-s3 lateral machinery + 2D lateral positioning, ADR-0013). Shares p2-s3 lateral machinery |
 | TeleportAction | §7.4.1.4 | In | p5-s4 | Kernel landed for the world-frame target (§WorldPosition): step (instantaneous) write of the entity position, init and mid-run (ADR-0013). Other §6.3.8 position variants + orientation via the PositionResolver (p2-s4/p3-s4). XML lowering deferred (P4) |
 | SynchronizeAction | §7.4.1.4 | Post | — | Requires master-relative speed synthesis (steady-state solve); deferred to keep v0.0.1 honest |
-| VisibilityAction | §7.4.1.4 | In | p5-s5 | State flags surfaced via state/gateway; no sensor semantics in engine |
+| VisibilityAction | §7.4.1.4 | In | p5-s5 | Kernel landed: graphics/sensors/traffic flags stored per entity, readable via `Engine::visibility_of` and handed to the host through `ISimulatorGateway::on_visibility_changed`; no sensor semantics in the engine (ADR-0014). `sensorReferenceSet` (1.2+) → Post. XML lowering deferred (P4) |
 | ControllerAction (wrapper) | §7.4.1.4, §6.6 | In | p5-s5 | Wrapper for the three below |
-| AssignControllerAction | §6.6.3 | In | p5-s5 | Controller metadata handed to host via gateway |
-| ActivateControllerAction | §6.6.4 | In | p5-s5 | Lateral/longitudinal domains toggle engine default controller; lighting/animation domains → Post (appearance). Deprecated direct-under-PrivateAction placement accepted |
+| AssignControllerAction | §6.6.3 | In | p5-s5 | Kernel landed: controller name, controllerType (1.3) and ordered properties stored per entity and handed to the host through `ISimulatorGateway::on_controller_assigned`; activateLateral/activateLongitudinal applied, activation outside the controllerType rejected (rule `scenario_logic.controller_activation`). Lighting/animation activation → Post (appearance). XML lowering deferred (P4) |
+| ActivateControllerAction | §6.6.4 | In | p5-s5 | Kernel landed: the lateral/longitudinal flags toggle Scena's engine default controller, deactivation retiring the domain's current owner and suppressing later actions on it (ADR-0014); lighting/animation domains → Post (appearance). Deprecated direct-under-PrivateAction placement accepted (a frontend concern, P4). XML lowering deferred (P4) |
 | OverrideControllerValueAction (+ Throttle/Brake/Clutch/ParkingBrake/SteeringWheel/Gear) | §7.4.1.4 | Post | — | Pedal/wheel-level overrides are host-controller business; no engine vehicle-device model in v0.0.1 |
-| AssignRouteAction | §6.8.2 | In | p5-s5 | Route + RouteStrategy over P3 routes |
-| FollowTrajectoryAction | §6.9 | In | p5-s5 | timeReference none/timing × followingMode follow/position |
-| AcquirePositionAction | §7.4.1.4 | In | p5-s5 | Implicit two-waypoint route |
+| AssignRouteAction | §6.8.2 | In | p5-s5 | Assignment landed: Route/Waypoint/RouteStrategy over world-frame waypoints, installed per entity and readable via `Engine::route_of`, overwriting any prior route (§6.8.2) and completing immediately (Table 10) without touching a control domain (§7.4.1.4). Road semantics — waypoint-on-road prerequisites, RouteStrategy interpretation, route-following motion — → p3-s4. XML lowering deferred (P4) |
+| FollowTrajectoryAction | §6.9 | In | p5-s5 | Polyline subset landed: `timeReference` none (lateral domain only, entity's own speed sets the pace) and timing (absolute/relative, scale + offset, drives speed too), `initialDistanceOffset`, the §6.9.1–§6.9.3 start-state cases, exact completion at the final vertex (ADR-0014). `followingMode=follow` accepted-as-position and closed trajectories accepted-as-open, both with an UnsupportedFeature warning; Clothoid/ClothoidSpline/NURBS shapes, the Motion element and trajectory catalogs → p2-s5. XML lowering deferred (P4) |
+| AcquirePositionAction | §7.4.1.4 | In | p5-s5 | Assignment landed: the implicit two-waypoint route of §7.4.1.4 (position at apply time → target, strategy shortest), installed and completed immediately (Table 10). World-frame target only; other §6.3.8 position variants → p2-s4, road semantics → p3-s4. XML lowering deferred (P4) |
 | RandomRouteAction | §7.4.1.4 | Excl | — | Randomness violates the determinism contract; post-release only with host-seeded selection design *(verify introduction version)* |
 | PreferredLaneLayerAction | §7.4.1.3 | Excl | — | 1.4-only; outside targeted versions |
 | AnimationAction | §6.7 | Post | — | ≥1.2; appearance domain, no engine semantics in v0.0.1 |
@@ -156,7 +156,7 @@ IR lands (p4-s4).
 | ExternalObjectReference | §7.2.2 | Post | — | Requires road-network object binding beyond v0.0.1 map scope |
 | Trailer attributes on Vehicle | §7.2.2.6 | Post | — | With the trailer action family |
 | EntitySelection / ByType / ByObjectType | §7.2.2.2–7.2.2.5 | In | p4-s4 | Homogeneity rules cited |
-| ObjectController / Controller (+ properties) | §6.6 | In | p4-s4 | Domain typing; multiple controllers ≥1.2 accepted |
+| ObjectController / Controller (+ properties) | §6.6 | In | p4-s4, p5-s5 | Controller IR (name, controllerType, ordered properties) + assignment and gateway hand-off landed p5-s5; ObjectController wrapper, catalogs and multiple controllers (≥1.2) → p4-s4 |
 | Environment / Weather / TimeOfDay / RoadCondition (as data) | §7.4.2 | In | p4-s4, p5-s6 | Stored + queryable; no physics coupling |
 | TrafficDefinition / TrafficDistribution | §6.10 | Post | — | With the traffic family |
 
@@ -173,11 +173,11 @@ IR lands (p4-s4).
 | TrajectoryPosition | §6.3.8 | In | p2-s5 | |
 | GeoPosition | §6.3.8 | Post | — | Needs geodetic datum handling (rule-cited diagnostic when encountered) |
 | Orientation + ReferenceContext | §6.3.8 | In | p2-s4 | |
-| Trajectory + Polyline / Clothoid / Nurbs | §6.9 | In | p2-s5 | |
+| Trajectory + Polyline / Clothoid / Nurbs | §6.9 | In | p2-s5, p5-s5 | Polyline IR + follower landed (p5-s5); Clothoid and NURBS numerics → p2-s5. A `closed` trajectory is accepted with an UnsupportedFeature warning and followed as an open path until p2-s5 |
 | ClothoidSpline | §6.9 | Post | — | Introduction version unconfirmed *(verify)*; clothoid single-segment covers v0.0.1 need |
 | Motion class / Polyline Interpolation | §6.9 | Excl | — | 1.4-only |
-| TimeReference / Timing / TrajectoryFollowingMode | §6.9.1–6.9.5 | In | p2-s5, p5-s5 | |
-| Route / Waypoint / RouteStrategy / RouteRef | §6.8 | In | p3-s3, p5-s5 | RouteStrategy `random` → Excl (determinism); fastest/shortest/leastIntersections In |
+| TimeReference / Timing / TrajectoryFollowingMode | §6.9.1–6.9.5 | In | p2-s5, p5-s5 | TimeReference none/timing with ReferenceContext, scale and offset landed p5-s5, incl. the §6.9.1–§6.9.3 start-state cases. `followingMode=follow` is accepted and executed as `position` with a warning until a steering controller exists (p2-s5) |
+| Route / Waypoint / RouteStrategy / RouteRef | §6.8 | In | p3-s3, p5-s5 | Route/Waypoint/RouteStrategy IR + per-entity assignment landed p5-s5 (world-frame waypoints; the strategy is stored, never interpreted, so `random` reaches no random generator). Road-network path selection and RouteRef → p3-s3/p3-s4 |
 | TrafficSignalController / Phase / TrafficSignalState | §6.11 | In | p5-s6 | 1.4 TrafficSignalSemantics / GroupState excluded |
 
 ## Version-handling decisions

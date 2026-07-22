@@ -61,6 +61,10 @@ scn_add_test(condition_byentity_interaction_test)
 scn_add_test(longitudinal_test)
 scn_add_test(action_longitudinal_test)
 scn_add_test(action_teleport_test)
+scn_add_test(action_ir_test)
+scn_add_test(action_distance_test)
+scn_add_test(action_routing_test)
+scn_add_test(action_controller_visibility_test)
 
 # The determinism and detmath tests share the fixture and probe list with the
 # trace runner, so they link the support library.

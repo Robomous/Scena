@@ -36,10 +36,16 @@ const std::vector<std::string>& entity_ids() {
 
 // (1) detmath table: sin and cos of every probe input.
 void record_detmath_table(TraceRecorder& trace) {
-    trace.note("detmath sin/cos over the probe set");
+    trace.note("detmath sin/cos and atan2 over the probe sets");
     for (const double x : scena::testsupport::detmath_probe_inputs()) {
         trace.record_value("sin", x, scena::runtime::det_sin(x));
         trace.record_value("cos", x, scena::runtime::det_cos(x));
+    }
+    // atan2 takes two arguments; the trace row keys on the quotient's
+    // numerator so each pair still gets a distinct, ordered entry.
+    for (const scena::testsupport::Atan2Input& p :
+         scena::testsupport::detmath_atan2_probe_inputs()) {
+        trace.record_value("atan2", p.y, scena::runtime::det_atan2(p.y, p.x));
     }
 }
 

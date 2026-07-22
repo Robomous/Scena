@@ -7,8 +7,12 @@
 #include <string_view>
 #include <vector>
 
+#include "scena/ir/controller.h"
+#include "scena/ir/coordinate_system.h"
 #include "scena/ir/dynamics.h"
 #include "scena/ir/position.h"
+#include "scena/ir/route.h"
+#include "scena/ir/trajectory.h"
 
 namespace scena::ir {
 
@@ -173,6 +177,279 @@ public:
 private:
     std::string entity_id_;
     WorldPosition position_;
+};
+
+/// Where the distance or time gap of a LongitudinalDistanceAction applies
+/// relative to the reference entity, per ASAM OpenSCENARIO XML 1.4.0
+/// §LongitudinalDisplacement [1.1]. Omitted ⇒ `TrailingReferencedEntity`.
+enum class LongitudinalDisplacement {
+    /// Either ahead of or behind the reference entity; the actor keeps the side
+    /// it is currently on.
+    Any,
+    /// The actor stays behind the reference entity (the default).
+    TrailingReferencedEntity,
+    /// The actor stays ahead of the reference entity.
+    LeadingReferencedEntity,
+};
+
+/// Limits on the acceleration, deceleration and speed a distance controller may
+/// use, per §DynamicConstraints. Every field is optional and "missing value is
+/// interpreted as 'inf'" — an absent limit does not constrain. The rate limits
+/// (jerk) were added in 1.2; Scena stores them but does not yet clamp jerk
+/// (deferred with the followingMode=follow jerk model, #62).
+struct DynamicConstraints {
+    std::optional<double> max_acceleration;      ///< m/s^2, Range [0..inf[.
+    std::optional<double> max_acceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
+    std::optional<double> max_deceleration;      ///< m/s^2, Range [0..inf[.
+    std::optional<double> max_deceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
+    std::optional<double> max_speed;             ///< m/s, Range [0..inf[.
+};
+
+/// Keeps a longitudinal distance or time gap to a reference entity, per
+/// §LongitudinalDistanceAction: "activates a controller for the longitudinal
+/// behavior of an entity in a way that a given distance or time gap to the
+/// reference entity is maintained".
+///
+/// `distance` and `time_gap` are mutually exclusive (the XSD allows either
+/// attribute; init rejects both or neither). With `continuous == false` the
+/// action ends "by reaching the targeted distance" (Annex A Table 10); with
+/// `continuous == true` it has no regular ending and only a stopTransition or a
+/// superseding longitudinal action stops it (§7.5.3).
+///
+/// The action assigns a longitudinal control strategy (Table 10), so it
+/// supersedes any SpeedAction / SpeedProfileAction driving the same entity.
+class LongitudinalDistanceAction final : public Action {
+public:
+    LongitudinalDistanceAction(
+        std::string entity_id, std::string entity_ref, std::optional<double> distance,
+        std::optional<double> time_gap, bool freespace, bool continuous,
+        CoordinateSystem coordinate_system = CoordinateSystem::Entity,
+        LongitudinalDisplacement displacement = LongitudinalDisplacement::TrailingReferencedEntity,
+        std::optional<DynamicConstraints> constraints = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Reference entity the distance is kept to (§entityRef).
+    [[nodiscard]] const std::string& entity_ref() const;
+
+    /// Target distance [m], present iff the action is distance-dimensioned.
+    [[nodiscard]] const std::optional<double>& distance() const;
+
+    /// Target time gap [s], present iff the action is time-gap-dimensioned.
+    [[nodiscard]] const std::optional<double>& time_gap() const;
+
+    /// True: the gap is measured between the closest bounding-box points;
+    /// false: between reference points (§6.4.7).
+    [[nodiscard]] bool freespace() const noexcept;
+
+    /// True ⇒ the action never ends by itself (§7.5.3).
+    [[nodiscard]] bool continuous() const noexcept;
+
+    /// The coordinate system the gap is measured in; `Entity` (the default) is
+    /// the actor's local system (§CoordinateSystem) [1.1].
+    [[nodiscard]] CoordinateSystem coordinate_system() const noexcept;
+
+    /// Which side of the reference entity the gap applies to [1.1].
+    [[nodiscard]] LongitudinalDisplacement displacement() const noexcept;
+
+    /// Optional limits on the controller's dynamics; absent ⇒ unlimited.
+    [[nodiscard]] const std::optional<DynamicConstraints>& constraints() const;
+
+private:
+    std::string entity_id_;
+    std::string entity_ref_;
+    std::optional<double> distance_;
+    std::optional<double> time_gap_;
+    bool freespace_;
+    bool continuous_;
+    CoordinateSystem coordinate_system_;
+    LongitudinalDisplacement displacement_;
+    std::optional<DynamicConstraints> constraints_;
+};
+
+/// Assigns a route to an entity, per §AssignRouteAction (§6.8.2). The action
+/// "does not override any action that controls either lateral or longitudinal
+/// domain" and completes immediately (Annex A Table 10): it installs routing
+/// intent, it does not move the entity. The assigned route stays in place until
+/// another routing action overwrites it (§6.8.2).
+class AssignRouteAction final : public Action {
+public:
+    AssignRouteAction(std::string entity_id, Route route);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The route to assign; requires at least two waypoints (§Route).
+    [[nodiscard]] const Route& route() const;
+
+private:
+    std::string entity_id_;
+    Route route_;
+};
+
+/// Routes an entity towards a target position, per §AcquirePositionAction.
+/// Per §7.4.1.4 "a route with two waypoints is created: current position as
+/// first and specified position as last waypoint"; the action then completes
+/// immediately (Annex A Table 10). The entity's position at apply time becomes
+/// the first waypoint, so the installed route depends on when the action fires.
+class AcquirePositionAction final : public Action {
+public:
+    AcquirePositionAction(std::string entity_id, WorldPosition position);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The world-frame target position to acquire (§WorldPosition).
+    [[nodiscard]] const WorldPosition& position() const;
+
+private:
+    std::string entity_id_;
+    WorldPosition position_;
+};
+
+/// Moves an entity along a trajectory, per §FollowTrajectoryAction (§6.9).
+///
+/// The time reference decides which domains the action assigns (Annex A
+/// Table 10): with no timing it owns the lateral domain only and the entity's
+/// current longitudinal control (a SpeedAction, say) sets the pace; with a
+/// Timing it owns the longitudinal domain too and the vertex times set the
+/// pace. Either way it ends "by reaching the end of the trajectory".
+///
+/// Scena models `FollowingMode::Position` (strict adherence to the shape);
+/// `Follow` is accepted and treated as Position with a warning, the ADR-0011
+/// precedent — a true steering controller arrives with p2-s5.
+class FollowTrajectoryAction final : public Action {
+public:
+    FollowTrajectoryAction(std::string entity_id, Trajectory trajectory,
+                           FollowingMode following_mode = FollowingMode::Position,
+                           std::optional<Timing> time_reference = std::nullopt,
+                           double initial_distance_offset = 0.0);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The path to follow (§Trajectory).
+    [[nodiscard]] const Trajectory& trajectory() const;
+
+    /// How closely the actor adheres to the shape (§TrajectoryFollowingMode).
+    [[nodiscard]] FollowingMode following_mode() const noexcept;
+
+    /// The timing adjustment, or std::nullopt for §TimeReference "None" — the
+    /// trajectory's time information is then ignored.
+    [[nodiscard]] const std::optional<Timing>& time_reference() const;
+
+    /// An offset into the trajectory, truncating it so following starts at that
+    /// arc length. Unit: [m]. Range: [0..arclength of the trajectory].
+    [[nodiscard]] double initial_distance_offset() const noexcept;
+
+private:
+    std::string entity_id_;
+    Trajectory trajectory_;
+    FollowingMode following_mode_;
+    std::optional<Timing> time_reference_;
+    double initial_distance_offset_;
+};
+
+/// Assigns a controller model to an entity, per §AssignControllerAction, and
+/// optionally activates or deactivates it per domain. An unset activation flag
+/// means "no change for controlling that dimension". Completes immediately
+/// (Annex A Table 10).
+///
+/// The lighting and animation activation flags are not modeled (those domains
+/// have no runtime in Scena); a scenario using them is not rejected, they are
+/// simply not represented here.
+class AssignControllerAction final : public Action {
+public:
+    AssignControllerAction(std::string entity_id, Controller controller,
+                           std::optional<bool> activate_lateral = std::nullopt,
+                           std::optional<bool> activate_longitudinal = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The controller to assign (§Controller).
+    [[nodiscard]] const Controller& controller() const;
+
+    /// Activation request for the lateral domain; absent ⇒ no change.
+    [[nodiscard]] const std::optional<bool>& activate_lateral() const;
+
+    /// Activation request for the longitudinal domain; absent ⇒ no change.
+    [[nodiscard]] const std::optional<bool>& activate_longitudinal() const;
+
+private:
+    std::string entity_id_;
+    Controller controller_;
+    std::optional<bool> activate_lateral_;
+    std::optional<bool> activate_longitudinal_;
+};
+
+/// Activates or deactivates controlled behavior per domain, per
+/// §ActivateControllerAction. An unset flag means "no change for controlling
+/// that domain". Completes immediately (Annex A Table 10).
+///
+/// Scena's engine is the default controller (docs/user-guide/motion.md), so
+/// deactivating a domain releases the engine's control of it: the entity holds
+/// what it has and actions targeting that domain are suppressed until it is
+/// activated again (ADR-0014).
+///
+/// Standalone use of this action was deprecated in 1.1 in favor of
+/// ControllerAction/ActivateControllerAction; both spellings lower to this IR
+/// node, and it is the frontend (P4) that reports the deprecation.
+class ActivateControllerAction final : public Action {
+public:
+    ActivateControllerAction(std::string entity_id, std::optional<bool> lateral,
+                             std::optional<bool> longitudinal);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Activation request for the lateral domain; absent ⇒ no change.
+    [[nodiscard]] const std::optional<bool>& lateral() const;
+
+    /// Activation request for the longitudinal domain; absent ⇒ no change.
+    [[nodiscard]] const std::optional<bool>& longitudinal() const;
+
+private:
+    std::string entity_id_;
+    std::optional<bool> lateral_;
+    std::optional<bool> longitudinal_;
+};
+
+/// Toggles an entity's detectability, per §VisibilityAction: visibility in the
+/// image generator, to sensors, and to other traffic participants. All three
+/// attributes are required by the XSD, so the action always states a complete
+/// visibility. Completes immediately (Annex A Table 10).
+///
+/// The 1.2 `sensorReferenceSet` (naming individual sensors) is not modeled.
+class VisibilityAction final : public Action {
+public:
+    VisibilityAction(std::string entity_id, bool graphics, bool sensors, bool traffic);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Visible in the host's image generator(s).
+    [[nodiscard]] bool graphics() const noexcept;
+
+    /// Visible to the host's sensor model(s).
+    [[nodiscard]] bool sensors() const noexcept;
+
+    /// Visible to other traffic participants.
+    [[nodiscard]] bool traffic() const noexcept;
+
+private:
+    std::string entity_id_;
+    bool graphics_;
+    bool sensors_;
+    bool traffic_;
 };
 
 } // namespace scena::ir

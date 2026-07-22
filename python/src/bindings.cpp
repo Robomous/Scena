@@ -17,9 +17,11 @@
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
+#include "scena/entity_visibility.h"
 #include "scena/ir/action.h"
 #include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/controller.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/entity.h"
 #include "scena/ir/entity_condition.h"
@@ -27,9 +29,11 @@
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
+#include "scena/ir/route.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trajectory.h"
 #include "scena/ir/trigger.h"
 #include "scena/status.h"
 #include "scena/version.h"
@@ -816,6 +820,247 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("entity_id", &ir::TeleportAction::entity_id)
         .def_prop_ro("position", &ir::TeleportAction::position);
 
+    // Routing (§6.8.2 routes, §6.9 trajectories).
+    nb::enum_<ir::RouteStrategy>(m, "RouteStrategy",
+                                 "How to reach a waypoint (§RouteStrategy). Stored, not "
+                                 "interpreted: path selection needs a road network.")
+        .value("Fastest", ir::RouteStrategy::Fastest)
+        .value("LeastIntersections", ir::RouteStrategy::LeastIntersections)
+        .value("Random", ir::RouteStrategy::Random)
+        .value("Shortest", ir::RouteStrategy::Shortest);
+
+    nb::class_<ir::Waypoint>(m, "Waypoint")
+        .def(
+            "__init__",
+            [](ir::Waypoint* self, ir::WorldPosition position, ir::RouteStrategy strategy) {
+                new (self) ir::Waypoint{position, strategy};
+            },
+            "position"_a, "strategy"_a = ir::RouteStrategy::Shortest)
+        .def_rw("position", &ir::Waypoint::position)
+        .def_rw("strategy", &ir::Waypoint::strategy);
+
+    nb::class_<ir::Route>(m, "Route")
+        .def(
+            "__init__",
+            [](ir::Route* self, std::string name, bool closed,
+               std::vector<ir::Waypoint> waypoints) {
+                new (self) ir::Route{std::move(name), closed, std::move(waypoints)};
+            },
+            "name"_a = std::string(), "closed"_a = false,
+            "waypoints"_a = std::vector<ir::Waypoint>{},
+            "A route through the road network; at least two waypoints (§Route).")
+        .def_rw("name", &ir::Route::name)
+        .def_rw("closed", &ir::Route::closed)
+        .def_rw("waypoints", &ir::Route::waypoints)
+        .def(
+            "add_waypoint",
+            [](ir::Route& route, const ir::Waypoint& waypoint) {
+                route.waypoints.push_back(waypoint);
+            },
+            "waypoint"_a);
+
+    nb::enum_<ir::ReferenceContext>(m, "ReferenceContext",
+                                    "Whether trajectory vertex times are absolute or relative to "
+                                    "the action's start (§ReferenceContext).")
+        .value("Absolute", ir::ReferenceContext::Absolute)
+        .value("Relative", ir::ReferenceContext::Relative);
+
+    nb::class_<ir::Timing>(m, "Timing")
+        .def(
+            "__init__",
+            [](ir::Timing* self, ir::ReferenceContext domain, double scale, double offset) {
+                new (self) ir::Timing{domain, scale, offset};
+            },
+            "domain"_a = ir::ReferenceContext::Absolute, "scale"_a = 1.0, "offset"_a = 0.0,
+            "Effective vertex time = time * scale + offset, read in `domain` (§Timing).")
+        .def_rw("domain", &ir::Timing::domain)
+        .def_rw("scale", &ir::Timing::scale)
+        .def_rw("offset", &ir::Timing::offset);
+
+    nb::class_<ir::TrajectoryVertex>(m, "TrajectoryVertex")
+        .def(
+            "__init__",
+            [](ir::TrajectoryVertex* self, ir::WorldPosition position, std::optional<double> time) {
+                new (self) ir::TrajectoryVertex{position, time};
+            },
+            "position"_a, "time"_a = nb::none())
+        .def_rw("position", &ir::TrajectoryVertex::position)
+        .def_rw("time", &ir::TrajectoryVertex::time);
+
+    nb::class_<ir::Trajectory>(m, "Trajectory")
+        .def(
+            "__init__",
+            [](ir::Trajectory* self, std::string name, bool closed,
+               std::vector<ir::TrajectoryVertex> vertices) {
+                new (self) ir::Trajectory{std::move(name), closed, std::move(vertices)};
+            },
+            "name"_a = std::string(), "closed"_a = false,
+            "vertices"_a = std::vector<ir::TrajectoryVertex>{},
+            "A polyline path; at least two vertices (§Trajectory, §Polyline).")
+        .def_rw("name", &ir::Trajectory::name)
+        .def_rw("closed", &ir::Trajectory::closed)
+        .def_rw("vertices", &ir::Trajectory::vertices)
+        .def(
+            "add_vertex",
+            [](ir::Trajectory& trajectory, const ir::TrajectoryVertex& vertex) {
+                trajectory.vertices.push_back(vertex);
+            },
+            "vertex"_a);
+
+    // Distance keeping (§LongitudinalDistanceAction).
+    nb::enum_<ir::LongitudinalDisplacement>(
+        m, "LongitudinalDisplacement",
+        "Which side of the reference entity a longitudinal distance applies to "
+        "(§LongitudinalDisplacement).")
+        .value("Any", ir::LongitudinalDisplacement::Any)
+        .value("TrailingReferencedEntity", ir::LongitudinalDisplacement::TrailingReferencedEntity)
+        .value("LeadingReferencedEntity", ir::LongitudinalDisplacement::LeadingReferencedEntity);
+
+    nb::class_<ir::DynamicConstraints>(m, "DynamicConstraints")
+        .def(
+            "__init__",
+            [](ir::DynamicConstraints* self, std::optional<double> max_acceleration,
+               std::optional<double> max_acceleration_rate, std::optional<double> max_deceleration,
+               std::optional<double> max_deceleration_rate, std::optional<double> max_speed) {
+                new (self)
+                    ir::DynamicConstraints{max_acceleration, max_acceleration_rate,
+                                           max_deceleration, max_deceleration_rate, max_speed};
+            },
+            "max_acceleration"_a = nb::none(), "max_acceleration_rate"_a = nb::none(),
+            "max_deceleration"_a = nb::none(), "max_deceleration_rate"_a = nb::none(),
+            "max_speed"_a = nb::none(),
+            "Limits a distance controller may use; None means unlimited (§DynamicConstraints).")
+        .def_rw("max_acceleration", &ir::DynamicConstraints::max_acceleration)
+        .def_rw("max_acceleration_rate", &ir::DynamicConstraints::max_acceleration_rate)
+        .def_rw("max_deceleration", &ir::DynamicConstraints::max_deceleration)
+        .def_rw("max_deceleration_rate", &ir::DynamicConstraints::max_deceleration_rate)
+        .def_rw("max_speed", &ir::DynamicConstraints::max_speed);
+
+    // Controllers (§Controller, §ControllerType).
+    nb::enum_<ir::ControllerType>(m, "ControllerType",
+                                  "The operational domains a controller acts on (§ControllerType).")
+        .value("Lateral", ir::ControllerType::Lateral)
+        .value("Longitudinal", ir::ControllerType::Longitudinal)
+        .value("Lighting", ir::ControllerType::Lighting)
+        .value("Animation", ir::ControllerType::Animation)
+        .value("Movement", ir::ControllerType::Movement)
+        .value("Appearance", ir::ControllerType::Appearance)
+        .value("All", ir::ControllerType::All);
+
+    nb::class_<ir::Controller>(m, "Controller")
+        .def(
+            "__init__",
+            [](ir::Controller* self, std::string name, ir::ControllerType type,
+               std::vector<ir::Property> properties) {
+                new (self) ir::Controller{std::move(name), type, std::move(properties)};
+            },
+            "name"_a = std::string(), "type"_a = ir::ControllerType::Movement,
+            "properties"_a = std::vector<ir::Property>{},
+            "A controller model; its properties are a contract with the host (§Controller).")
+        .def_rw("name", &ir::Controller::name)
+        .def_rw("type", &ir::Controller::type)
+        .def_rw("properties", &ir::Controller::properties);
+
+    nb::class_<scena::EntityVisibility>(m, "EntityVisibility")
+        .def(
+            "__init__",
+            [](scena::EntityVisibility* self, bool graphics, bool sensors, bool traffic) {
+                new (self) scena::EntityVisibility{graphics, sensors, traffic};
+            },
+            "graphics"_a = true, "sensors"_a = true, "traffic"_a = true,
+            "Detectability of an entity; visible everywhere by default (§VisibilityAction).")
+        .def_rw("graphics", &scena::EntityVisibility::graphics)
+        .def_rw("sensors", &scena::EntityVisibility::sensors)
+        .def_rw("traffic", &scena::EntityVisibility::traffic)
+        .def("__repr__", [](const scena::EntityVisibility& visibility) {
+            return std::string("EntityVisibility(graphics=") +
+                   (visibility.graphics ? "True" : "False") +
+                   ", sensors=" + (visibility.sensors ? "True" : "False") +
+                   ", traffic=" + (visibility.traffic ? "True" : "False") + ")";
+        });
+
+    nb::class_<scena::ControllerActivation>(m, "ControllerActivation")
+        .def(
+            "__init__",
+            [](scena::ControllerActivation* self, bool lateral, bool longitudinal) {
+                new (self) scena::ControllerActivation{lateral, longitudinal};
+            },
+            "lateral"_a = true, "longitudinal"_a = true,
+            "Which movement domains the engine currently controls for an entity.")
+        .def_rw("lateral", &scena::ControllerActivation::lateral)
+        .def_rw("longitudinal", &scena::ControllerActivation::longitudinal)
+        .def("__repr__", [](const scena::ControllerActivation& activation) {
+            return std::string("ControllerActivation(lateral=") +
+                   (activation.lateral ? "True" : "False") +
+                   ", longitudinal=" + (activation.longitudinal ? "True" : "False") + ")";
+        });
+
+    // The p5-s5 private actions.
+    nb::class_<ir::LongitudinalDistanceAction, ir::Action>(m, "LongitudinalDistanceAction")
+        .def(nb::init<std::string, std::string, std::optional<double>, std::optional<double>, bool,
+                      bool, ir::CoordinateSystem, ir::LongitudinalDisplacement,
+                      std::optional<ir::DynamicConstraints>>(),
+             "entity_id"_a, "entity_ref"_a, "distance"_a = nb::none(), "time_gap"_a = nb::none(),
+             "freespace"_a = false, "continuous"_a = false,
+             "coordinate_system"_a = ir::CoordinateSystem::Entity,
+             "displacement"_a = ir::LongitudinalDisplacement::TrailingReferencedEntity,
+             "constraints"_a = nb::none())
+        .def_prop_ro("entity_id", &ir::LongitudinalDistanceAction::entity_id)
+        .def_prop_ro("entity_ref", &ir::LongitudinalDistanceAction::entity_ref)
+        .def_prop_ro("distance", &ir::LongitudinalDistanceAction::distance)
+        .def_prop_ro("time_gap", &ir::LongitudinalDistanceAction::time_gap)
+        .def_prop_ro("freespace", &ir::LongitudinalDistanceAction::freespace)
+        .def_prop_ro("continuous", &ir::LongitudinalDistanceAction::continuous)
+        .def_prop_ro("coordinate_system", &ir::LongitudinalDistanceAction::coordinate_system)
+        .def_prop_ro("displacement", &ir::LongitudinalDistanceAction::displacement)
+        .def_prop_ro("constraints", &ir::LongitudinalDistanceAction::constraints);
+
+    nb::class_<ir::AssignRouteAction, ir::Action>(m, "AssignRouteAction")
+        .def(nb::init<std::string, ir::Route>(), "entity_id"_a, "route"_a)
+        .def_prop_ro("entity_id", &ir::AssignRouteAction::entity_id)
+        .def_prop_ro("route", &ir::AssignRouteAction::route);
+
+    nb::class_<ir::AcquirePositionAction, ir::Action>(m, "AcquirePositionAction")
+        .def(nb::init<std::string, ir::WorldPosition>(), "entity_id"_a, "position"_a)
+        .def_prop_ro("entity_id", &ir::AcquirePositionAction::entity_id)
+        .def_prop_ro("position", &ir::AcquirePositionAction::position);
+
+    nb::class_<ir::FollowTrajectoryAction, ir::Action>(m, "FollowTrajectoryAction")
+        .def(nb::init<std::string, ir::Trajectory, ir::FollowingMode, std::optional<ir::Timing>,
+                      double>(),
+             "entity_id"_a, "trajectory"_a, "following_mode"_a = ir::FollowingMode::Position,
+             "time_reference"_a = nb::none(), "initial_distance_offset"_a = 0.0)
+        .def_prop_ro("entity_id", &ir::FollowTrajectoryAction::entity_id)
+        .def_prop_ro("trajectory", &ir::FollowTrajectoryAction::trajectory)
+        .def_prop_ro("following_mode", &ir::FollowTrajectoryAction::following_mode)
+        .def_prop_ro("time_reference", &ir::FollowTrajectoryAction::time_reference)
+        .def_prop_ro("initial_distance_offset",
+                     &ir::FollowTrajectoryAction::initial_distance_offset);
+
+    nb::class_<ir::AssignControllerAction, ir::Action>(m, "AssignControllerAction")
+        .def(nb::init<std::string, ir::Controller, std::optional<bool>, std::optional<bool>>(),
+             "entity_id"_a, "controller"_a, "activate_lateral"_a = nb::none(),
+             "activate_longitudinal"_a = nb::none())
+        .def_prop_ro("entity_id", &ir::AssignControllerAction::entity_id)
+        .def_prop_ro("controller", &ir::AssignControllerAction::controller)
+        .def_prop_ro("activate_lateral", &ir::AssignControllerAction::activate_lateral)
+        .def_prop_ro("activate_longitudinal", &ir::AssignControllerAction::activate_longitudinal);
+
+    nb::class_<ir::ActivateControllerAction, ir::Action>(m, "ActivateControllerAction")
+        .def(nb::init<std::string, std::optional<bool>, std::optional<bool>>(), "entity_id"_a,
+             "lateral"_a = nb::none(), "longitudinal"_a = nb::none())
+        .def_prop_ro("entity_id", &ir::ActivateControllerAction::entity_id)
+        .def_prop_ro("lateral", &ir::ActivateControllerAction::lateral)
+        .def_prop_ro("longitudinal", &ir::ActivateControllerAction::longitudinal);
+
+    nb::class_<ir::VisibilityAction, ir::Action>(m, "VisibilityAction")
+        .def(nb::init<std::string, bool, bool, bool>(), "entity_id"_a, "graphics"_a = true,
+             "sensors"_a = true, "traffic"_a = true)
+        .def_prop_ro("entity_id", &ir::VisibilityAction::entity_id)
+        .def_prop_ro("graphics", &ir::VisibilityAction::graphics)
+        .def_prop_ro("sensors", &ir::VisibilityAction::sensors)
+        .def_prop_ro("traffic", &ir::VisibilityAction::traffic);
+
     // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
     nb::enum_<ir::EventPriority>(m, "EventPriority",
                                  "How a starting event interacts with the other events of its "
@@ -1007,6 +1252,36 @@ NB_MODULE(_scena, m) {
              "Current state of an entity, or None when unknown.")
         .def("report_state", &scena::Engine::report_state, "entity_id"_a, "state"_a,
              "Reports the authoritative state of a host-controlled entity.")
+        .def(
+            "route_of",
+            [](const scena::Engine& engine,
+               const std::string& entity_id) -> std::optional<ir::Route> {
+                // Returns a copy: the engine's route is replaced by the next
+                // routing action, and a Python reference must not dangle.
+                const ir::Route* route = engine.route_of(entity_id);
+                if (route == nullptr) {
+                    return std::nullopt;
+                }
+                return *route;
+            },
+            "entity_id"_a,
+            "The route assigned to an entity (a copy), or None when it has none (§6.8.2).")
+        .def(
+            "assigned_controller_of",
+            [](const scena::Engine& engine,
+               const std::string& entity_id) -> std::optional<ir::Controller> {
+                const ir::Controller* controller = engine.assigned_controller_of(entity_id);
+                if (controller == nullptr) {
+                    return std::nullopt;
+                }
+                return *controller;
+            },
+            "entity_id"_a,
+            "The controller assigned to an entity (a copy), or None when it has none.")
+        .def("controller_activation_of", &scena::Engine::controller_activation_of, "entity_id"_a,
+             "Which movement domains the engine controls for an entity, or None when unknown.")
+        .def("visibility_of", &scena::Engine::visibility_of, "entity_id"_a,
+             "Current detectability of an entity (§VisibilityAction), or None when unknown.")
         .def("set_variable", &scena::Engine::set_variable, "name"_a, "value"_a,
              "Sets a declared variable; UnknownName for an undeclared name.")
         .def("variable", &scena::Engine::variable, "name"_a,

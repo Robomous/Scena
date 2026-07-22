@@ -13,6 +13,7 @@ add_library(scena-core STATIC
     src/ir/trigger.cpp
     src/runtime/clock.cpp
     src/runtime/detmath.cpp
+    src/runtime/distance_measure.cpp
     src/runtime/element_ref.cpp
     src/runtime/longitudinal.cpp
     src/runtime/obb2.cpp

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Robomous
 // SPDX-License-Identifier: Apache-2.0
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trajectory.h"
 #include "scena/ir/trigger.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/obb2.h"
@@ -674,7 +676,193 @@ scena::ir::Scenario make_gs1_scenario() {
     return scenario;
 }
 
+/// GS-4, the Traffic-jam approach golden scenario
+/// (docs/roadmap/golden-scenarios.md): a lead vehicle brakes to a crawl, the
+/// ego's TimeToCollisionCondition arms a hard deceleration, a freespace
+/// LongitudinalDistanceAction then holds the gap, and a timed trigger dissolves
+/// the jam. This is the determinism anchor for the p5-s5 distance-keeping
+/// controller — OBB freespace geometry, the deadbeat command and its glide
+/// limit, all integrated through detmath.
+scena::ir::Scenario make_gs4_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "gs4-traffic-jam-approach";
+
+    const auto vehicle_entity = [](const char* id, double max_deceleration) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        Vehicle vehicle;
+        vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, 5.0, 2.0, 1.5};
+        vehicle.performance = Performance{40.0, 3.0, max_deceleration, std::nullopt, std::nullopt};
+        entity.object = vehicle;
+        return entity;
+    };
+    scenario.entities.push_back(vehicle_entity("lead", 6.0));
+    scenario.entities.push_back(vehicle_entity("ego", 8.0));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("lead", WorldPosition{150.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("lead", 25.0));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 25.0));
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+
+    Event jam;
+    jam.name = "jam-forms";
+    jam.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(2.0));
+    jam.actions.push_back(std::make_shared<SpeedAction>(
+        "lead", 0.5, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 8.0}));
+    maneuver.events.push_back(std::move(jam));
+
+    Event brake;
+    brake.name = "ego-brakes";
+    brake.start_trigger = make_trigger(std::make_shared<TimeToCollisionCondition>(
+        TriggeringEntities{TriggeringEntitiesRule::Any, {"ego"}},
+        TimeToCollisionTarget{std::string("lead")}, 6.0, /*freespace=*/true, Rule::LessThan,
+        CoordinateSystem::Entity, RelativeDistanceType::Longitudinal));
+    brake.actions.push_back(std::make_shared<SpeedAction>(
+        "ego", 2.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 5.0}));
+    maneuver.events.push_back(std::move(brake));
+
+    Event keep;
+    keep.name = "ego-keeps-gap";
+    keep.start_trigger = make_trigger(std::make_shared<StoryboardElementStateCondition>(
+        StoryboardElementType::Event, "ego-brakes", StoryboardElementState::CompleteState));
+    keep.actions.push_back(std::make_shared<LongitudinalDistanceAction>(
+        "ego", "lead", 8.0, std::nullopt, /*freespace=*/true, /*continuous=*/true));
+    maneuver.events.push_back(std::move(keep));
+
+    Event dissolve;
+    dissolve.name = "jam-dissolves";
+    dissolve.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(40.0));
+    dissolve.actions.push_back(std::make_shared<SpeedAction>(
+        "lead", 20.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 8.0}));
+    maneuver.events.push_back(std::move(dissolve));
+
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+/// A vehicle following a timed polyline that turns a corner, so the trajectory
+/// follower's det_atan2 headings and its time interpolation reach the entity
+/// state. The p5-s5 anchor for the lateral half of the sprint.
+scena::ir::Scenario make_trajectory_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "trajectory-determinism";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    scenario.entities.push_back(std::move(ego));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 8.0));
+
+    Trajectory trajectory;
+    trajectory.name = "dogleg";
+    // Deliberately off-axis segments: the headings are irrational angles, so a
+    // libm atan2 would show up as a last-ulp divergence.
+    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
+    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{37.0, 11.0, 0.0}, 4.0});
+    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{58.0, -23.0, 0.0}, 9.0});
+    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{95.5, 4.25, 0.0}, 17.0});
+
+    Event follow;
+    follow.name = "follow";
+    follow.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(1.0));
+    follow.actions.push_back(std::make_shared<FollowTrajectoryAction>(
+        "ego", trajectory, FollowingMode::Position, Timing{ReferenceContext::Relative, 1.0, 0.5},
+        /*initial_distance_offset=*/3.5));
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(follow));
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
 } // namespace
+
+TEST(DeterminismTest, GoldenScenario4TrafficJamApproachIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_gs4_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_gs4_scenario()), Status::Ok);
+
+    // The same non-uniform step pattern the GS-1 anchor uses, over the whole
+    // approach, the jam and its dissolution (~50 s).
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 600; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+        expect_bit_identical(engine_a, engine_b, "lead");
+    }
+    expect_same_diagnostics(engine_a, engine_b);
+
+    // Guard against a dead scenario: the ego really did brake and close in.
+    ASSERT_TRUE(engine_a.state("ego").has_value());
+    ASSERT_TRUE(engine_a.state("lead").has_value());
+    const double gap = engine_a.state("lead")->x - engine_a.state("ego")->x - 5.0;
+    EXPECT_LT(gap, 20.0);
+    EXPECT_GT(gap, 0.0);
+}
+
+TEST(DeterminismTest, TrajectoryFollowingIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_trajectory_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_trajectory_scenario()), Status::Ok);
+
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    double lowest_y = 0.0;
+    for (int i = 0; i < 300; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+        lowest_y = std::fmin(lowest_y, engine_a.state("ego")->y);
+    }
+    // Guard against a dead scenario: the entity really did steer down to the
+    // dogleg's low vertex and the trajectory ran to its end.
+    EXPECT_LT(lowest_y, -20.0);
+    EXPECT_EQ(*engine_a.storyboard_element_state("story/act/group/maneuver/follow"),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(DeterminismTest, TrajectorySegmentHeadingsAreHexPinned) {
+    // The follower's headings come from det_atan2 and land in EntityState, so
+    // they are part of the bit-identity contract. These are the three segment
+    // headings of make_trajectory_scenario's dogleg.
+    using scena::runtime::det_atan2;
+    EXPECT_EQ(hex_bits(det_atan2(11.0 - 0.0, 37.0 - 0.0)), "3fd27e92b7d10a7a");
+    EXPECT_EQ(hex_bits(det_atan2(-23.0 - 11.0, 58.0 - 37.0)), "bff047b02dbf07b0");
+    EXPECT_EQ(hex_bits(det_atan2(4.25 - -23.0, 95.5 - 58.0)), "3fe41bd9d8b26dd0");
+}
 
 TEST(DeterminismTest, GoldenScenario1CruiseBaselineIsBitIdentical) {
     Engine engine_a;

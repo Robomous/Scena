@@ -578,3 +578,329 @@ TEST(CApiTest, EntityTaxonomyErrorPaths) {
 
     scn_engine_destroy(engine);
 }
+
+// --- p5-s5: routing, distance keeping, controllers, visibility -------------
+
+TEST(CApiTest, LongitudinalDistanceActionKeepsTheGap) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "lead", "lead", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_teleport_action(engine, "lead", 100.0, 0.0, 0.0, 0.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "lead", 10.0, 0.0), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+
+    const scn_dynamic_constraints constraints{2.0, -1.0, 3.0, -1.0, 40.0};
+    ASSERT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", /*distance=*/25.0, /*time_gap=*/-1.0, /*freespace=*/0,
+                  /*continuous=*/1, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LONGITUDINAL_DISPLACEMENT_TRAILING, &constraints, 1.0, SCN_PRIORITY_PARALLEL,
+                  1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 400; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 0.1), SCN_OK);
+    }
+    scn_entity_state ego{};
+    scn_entity_state lead{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &ego), SCN_OK);
+    ASSERT_EQ(scn_engine_get_state(engine, "lead", &lead), SCN_OK);
+    EXPECT_NEAR(lead.x - ego.x, 25.0, 1e-6);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LongitudinalDistanceActionRejectsBadTargets) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Neither target given.
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", -1.0, -1.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LONGITUDINAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Both targets given.
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", 10.0, 2.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LONGITUDINAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Out-of-range enums and a negative execution count.
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", 10.0, -1.0, 0, 0, static_cast<scn_coordinate_system>(99),
+                  SCN_LONGITUDINAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", 10.0, -1.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  static_cast<scn_longitudinal_displacement>(99), nullptr, 0.0,
+                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  engine, "ego", "lead", 10.0, -1.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LONGITUDINAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, RoutingActionsBuildAndQueryRoutes) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+
+    const scn_waypoint waypoints[] = {
+        {0.0, 0.0, 0.0, SCN_ROUTE_STRATEGY_SHORTEST},
+        {120.0, 8.0, 0.0, SCN_ROUTE_STRATEGY_FASTEST},
+    };
+    ASSERT_EQ(scn_engine_add_assign_route_action(engine, "ego", "r1", waypoints, 2, /*closed=*/0,
+                                                 1.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    // Before the action fires the entity has no route.
+    size_t count = 42;
+    EXPECT_EQ(scn_engine_entity_route_info(engine, "ego", &count, nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(count, 42U); // out params untouched on error
+    EXPECT_EQ(scn_engine_entity_route_info(engine, "missing", &count, nullptr),
+              SCN_ERROR_UNKNOWN_ENTITY);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    int closed = 7;
+    ASSERT_EQ(scn_engine_entity_route_info(engine, "ego", &count, &closed), SCN_OK);
+    EXPECT_EQ(count, 2U);
+    EXPECT_EQ(closed, 0);
+    scn_waypoint out{};
+    ASSERT_EQ(scn_engine_entity_route_waypoint_at(engine, "ego", 1, &out), SCN_OK);
+    EXPECT_EQ(out.x, 120.0);
+    EXPECT_EQ(out.y, 8.0);
+    EXPECT_EQ(out.strategy, SCN_ROUTE_STRATEGY_FASTEST);
+    EXPECT_EQ(scn_engine_entity_route_waypoint_at(engine, "ego", 2, &out),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    // AcquirePositionAction overwrites it with the implicit two-waypoint route.
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AcquirePositionActionInstallsTheImplicitRoute) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+    ASSERT_EQ(scn_engine_add_acquire_position_action(engine, "ego", 300.0, 0.0, 0.0, 2.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_entity_route_info(engine, "ego", &count, nullptr), SCN_OK);
+    EXPECT_EQ(count, 2U);
+    scn_waypoint first{};
+    scn_waypoint last{};
+    ASSERT_EQ(scn_engine_entity_route_waypoint_at(engine, "ego", 0, &first), SCN_OK);
+    ASSERT_EQ(scn_engine_entity_route_waypoint_at(engine, "ego", 1, &last), SCN_OK);
+    EXPECT_NEAR(first.x, 10.0, 1e-9); // the position when the action fired
+    EXPECT_EQ(last.x, 300.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, FollowTrajectoryActionMovesTheEntityAlongThePolyline) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+    const scn_trajectory_vertex vertices[] = {
+        {0.0, 0.0, 0.0, 0.0, 0},
+        {0.0, 100.0, 0.0, 0.0, 0},
+    };
+    ASSERT_EQ(scn_engine_add_follow_trajectory_action(
+                  engine, "ego", "t1", vertices, 2, /*closed=*/0, SCN_FOLLOWING_MODE_POSITION,
+                  /*timing=*/nullptr, /*initial_distance_offset=*/0.0, 1.0, SCN_PRIORITY_PARALLEL,
+                  1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    }
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    // Teleported to the trajectory start, then 30 m along it.
+    EXPECT_NEAR(state.x, 0.0, 1e-9);
+    EXPECT_NEAR(state.y, 30.0, 1e-9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, FollowTrajectoryActionWithTimingDrivesTheSpeed) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    const scn_trajectory_vertex vertices[] = {
+        {0.0, 0.0, 0.0, 0.0, 1},
+        {80.0, 0.0, 0.0, 8.0, 1},
+    };
+    const scn_timing timing{SCN_REFERENCE_CONTEXT_ABSOLUTE, 1.0, 0.0};
+    ASSERT_EQ(scn_engine_add_follow_trajectory_action(engine, "ego", "t1", vertices, 2, 0,
+                                                      SCN_FOLLOWING_MODE_POSITION, &timing, 0.0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    }
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_NEAR(state.x, 40.0, 1e-9);
+    EXPECT_NEAR(state.speed, 10.0, 1e-9); // 80 m over 8 s
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, ControllerAndVisibilityActionsRoundTrip) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+
+    const char* names[] = {"model", "aggressiveness"};
+    const char* values[] = {"idm", "0.7"};
+    ASSERT_EQ(scn_engine_add_assign_controller_action(
+                  engine, "ego", "driver", SCN_CONTROLLER_TYPE_MOVEMENT, names, values, 2,
+                  /*activate_lateral=*/-1, /*activate_longitudinal=*/1, 1.0, SCN_PRIORITY_PARALLEL,
+                  1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_visibility_action(engine, "ego", /*graphics=*/0, /*sensors=*/1,
+                                               /*traffic=*/0, 2.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_activate_controller_action(engine, "ego", /*lateral=*/-1,
+                                                        /*longitudinal=*/0, 3.0,
+                                                        SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    // Defaults before anything fires.
+    scn_entity_visibility visibility{};
+    ASSERT_EQ(scn_engine_entity_visibility(engine, "ego", &visibility), SCN_OK);
+    EXPECT_EQ(visibility.graphics, 1);
+    EXPECT_EQ(visibility.traffic, 1);
+    scn_controller_activation activation{};
+    ASSERT_EQ(scn_engine_entity_controller_activation(engine, "ego", &activation), SCN_OK);
+    EXPECT_EQ(activation.lateral, 1);
+    EXPECT_EQ(activation.longitudinal, 1);
+    scn_controller_type type{};
+    EXPECT_EQ(scn_engine_entity_controller_type(engine, "ego", &type), SCN_ERROR_INVALID_ARGUMENT);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // assign controller
+    ASSERT_EQ(scn_engine_entity_controller_type(engine, "ego", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_CONTROLLER_TYPE_MOVEMENT);
+    const char* name = nullptr;
+    ASSERT_EQ(scn_engine_entity_controller_name(engine, "ego", &name), SCN_OK);
+    ASSERT_NE(name, nullptr);
+    EXPECT_STREQ(name, "driver");
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // visibility
+    ASSERT_EQ(scn_engine_entity_visibility(engine, "ego", &visibility), SCN_OK);
+    EXPECT_EQ(visibility.graphics, 0);
+    EXPECT_EQ(visibility.sensors, 1);
+    EXPECT_EQ(visibility.traffic, 0);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // deactivate longitudinal
+    ASSERT_EQ(scn_engine_entity_controller_activation(engine, "ego", &activation), SCN_OK);
+    EXPECT_EQ(activation.lateral, 1); // tri-state -1 left it alone
+    EXPECT_EQ(activation.longitudinal, 0);
+
+    EXPECT_EQ(scn_engine_entity_visibility(engine, "missing", &visibility),
+              SCN_ERROR_UNKNOWN_ENTITY);
+    EXPECT_EQ(scn_engine_entity_controller_activation(engine, "missing", &activation),
+              SCN_ERROR_UNKNOWN_ENTITY);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, ControllerActivationOutsideItsTypeFailsInit) {
+    // per rule asam.net:xosc:1.2.0:scenario_logic.controller_activation
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_assign_controller_action(
+                  engine, "ego", "lights", SCN_CONTROLLER_TYPE_LIGHTING, nullptr, nullptr, 0,
+                  /*activate_lateral=*/1, /*activate_longitudinal=*/-1, 0.0, SCN_PRIORITY_PARALLEL,
+                  1),
+              SCN_OK);
+    EXPECT_EQ(scn_engine_init(engine), SCN_ERROR_VALIDATION);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, NullArgumentsAreRejectedForPrivateActions) {
+    const scn_waypoint waypoints[] = {
+        {0.0, 0.0, 0.0, SCN_ROUTE_STRATEGY_SHORTEST},
+        {1.0, 0.0, 0.0, SCN_ROUTE_STRATEGY_SHORTEST},
+    };
+    const scn_trajectory_vertex vertices[] = {
+        {0.0, 0.0, 0.0, 0.0, 0},
+        {1.0, 0.0, 0.0, 0.0, 0},
+    };
+    EXPECT_EQ(scn_engine_add_longitudinal_distance_action(
+                  nullptr, "ego", "lead", 1.0, -1.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LONGITUDINAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_assign_route_action(nullptr, "ego", "r", waypoints, 2, 0, 0.0,
+                                                 SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_acquire_position_action(nullptr, "ego", 0.0, 0.0, 0.0, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_follow_trajectory_action(nullptr, "ego", "t", vertices, 2, 0,
+                                                      SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_assign_controller_action(
+                  nullptr, "ego", "c", SCN_CONTROLLER_TYPE_MOVEMENT, nullptr, nullptr, 0, -1, -1,
+                  0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_activate_controller_action(nullptr, "ego", -1, -1, 0.0,
+                                                        SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_visibility_action(nullptr, "ego", 1, 1, 1, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_visibility(nullptr, "ego", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_controller_activation(nullptr, "ego", nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_controller_type(nullptr, "ego", nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_controller_name(nullptr, "ego", nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_route_info(nullptr, "ego", nullptr, nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_route_waypoint_at(nullptr, "ego", 0, nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Null ids, null arrays, and too-short arrays.
+    EXPECT_EQ(scn_engine_add_assign_route_action(engine, nullptr, "r", waypoints, 2, 0, 0.0,
+                                                 SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_assign_route_action(engine, "ego", "r", nullptr, 2, 0, 0.0,
+                                                 SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_assign_route_action(engine, "ego", "r", waypoints, 1, 0, 0.0,
+                                                 SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_follow_trajectory_action(engine, "ego", "t", vertices, 1, 0,
+                                                      SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_assign_controller_action(
+                  engine, "ego", nullptr, SCN_CONTROLLER_TYPE_MOVEMENT, nullptr, nullptr, 0, -1, -1,
+                  0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // A non-zero property count with null arrays.
+    EXPECT_EQ(scn_engine_add_assign_controller_action(
+                  engine, "ego", "c", SCN_CONTROLLER_TYPE_MOVEMENT, nullptr, nullptr, 1, -1, -1,
+                  0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_visibility_action(engine, nullptr, 1, 1, 1, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}

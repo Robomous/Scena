@@ -11,7 +11,9 @@ sin/cos implementation has exact, human-auditable constants:
     exact in double precision;
   * the Taylor-series kernel coefficients (-1)^j/(2j+1)! for sin and
     (-1)^j/(2j)! for cos, which are exact rationals — no Remez fitting, so
-    the values are trivially clean-room and reproducible from this script.
+    the values are trivially clean-room and reproducible from this script;
+  * the atan reduction constants (pi/2, pi/6, sqrt(3), tan(pi/12)) and the
+    Taylor coefficients (-1)^j/(2j+1) of the atan kernel.
 
 Standard library only (fractions, decimal, math.factorial, struct). Run once
 and paste the output into detmath.cpp; the constants never change.
@@ -87,6 +89,29 @@ def main() -> None:
         c = Fraction((-1) ** j, factorial(2 * j))
         print(f"inline constexpr double kC{idx} = {hex_of(double(c))}; "
               f"// (-1)^{j}/{2 * j}!")
+    print()
+
+    # atan reduction: fold [0, inf[ to [0, tan(pi/12)] with
+    #   atan(t) = pi/2 - atan(1/t)                    for t > 1
+    #   atan(t) = pi/6 + atan((t*sqrt3 - 1)/(t + sqrt3))  for t > tan(pi/12)
+    # sqrt(3) and tan(pi/12) = 2 - sqrt(3) come from the same exact radical.
+    sqrt3 = Decimal(3).sqrt()
+    print("// atan argument reduction: pi/2, pi/6, sqrt(3) and the fold")
+    print("// threshold tan(pi/12) = 2 - sqrt(3).")
+    print(f"inline constexpr double kPi = {hex_of(double(PI))};")
+    print(f"inline constexpr double kPiOver2 = {hex_of(double(PI / 2))};")
+    print(f"inline constexpr double kPiOver6 = {hex_of(double(PI / 6))};")
+    print(f"inline constexpr double kSqrt3 = {hex_of(double(sqrt3))};")
+    print(f"inline constexpr double kTanPiOver12 = {hex_of(double(2 - sqrt3))};")
+    print()
+    # atan kernel: u + u^3 * (kA1 + kA2 u^2 + ...), coefficients
+    # (-1)^j/(2j+1) for j = 1..15 -> terms u^3 .. u^31. On |u| <= tan(pi/12)
+    # the first neglected term is below 1e-20 relative.
+    print("// atan: u + u^3 * horner(u^2), coeffs (-1)^j/(2j+1) for j = 1..15.")
+    for idx, j in enumerate(range(1, 16), start=1):
+        c = Fraction((-1) ** j, 2 * j + 1)
+        print(f"inline constexpr double kA{idx} = {hex_of(double(c))}; "
+              f"// (-1)^{j}/{2 * j + 1}")
 
 
 if __name__ == "__main__":
