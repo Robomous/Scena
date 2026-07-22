@@ -30,7 +30,10 @@ struct Entity {
     std::string id;
     std::string name;
     ControlMode control_mode = ControlMode::EngineControlled;
-    std::optional<BoundingBox> bounding_box;
+    // Default member initializer so an aggregate/designated init that omits the
+    // box does not trip GCC's -Werror=missing-field-initializers (clang is
+    // quiet either way).
+    std::optional<BoundingBox> bounding_box = std::nullopt;
 };
 
 /// Root of the Scenario IR: the common representation both frontends
