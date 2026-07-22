@@ -4,13 +4,16 @@
 #include <string>
 #include <string_view>
 
+#include "scena/ir/dynamics.h"
+
 namespace scena::ir {
 
 /// Base class for all scenario actions in the Scenario IR.
 ///
-/// Actions in this phase are instantaneous: they take effect fully in the step
-/// in which their condition fires. Transition dynamics (ramps, profiles) come
-/// with the full ASAM OpenSCENARIO action set in a later phase.
+/// An action's lifetime is reported by the runtime as an
+/// `runtime::ActionOutcome`: a step-shaped action completes in the evaluation
+/// it fires, while an action governed by transition dynamics (a speed ramp)
+/// stays in progress across steps until it reaches its target.
 class Action {
 public:
     virtual ~Action() = default;
@@ -26,11 +29,19 @@ public:
     [[nodiscard]] virtual std::string_view kind() const noexcept = 0;
 };
 
-/// Instantaneously sets the longitudinal speed of an entity. Placeholder for
-/// the ASAM OpenSCENARIO SpeedAction: no transition dynamics yet.
+/// Transitions the longitudinal speed of an entity to a target speed, governed
+/// by transition dynamics. Per ASAM OpenSCENARIO XML 1.4.0 §SpeedAction (the
+/// target is the absolute-speed case; a speed relative to another entity is a
+/// later addition — see ADR-0011).
 class SpeedAction final : public Action {
 public:
+    /// Step (instantaneous) speed change: reaches `target_speed` in the
+    /// evaluation it fires. The back-compatible short form, equivalent to the
+    /// dynamics form with a Step shape.
     SpeedAction(std::string entity_id, double target_speed);
+
+    /// Speed transition to `target_speed` (m/s) shaped by `dynamics`.
+    SpeedAction(std::string entity_id, double target_speed, TransitionDynamics dynamics);
 
     [[nodiscard]] const std::string& entity_id() const override;
 
@@ -39,9 +50,13 @@ public:
     /// Target speed in meters per second.
     [[nodiscard]] double target_speed() const;
 
+    /// How the target speed is reached (§SpeedActionDynamics).
+    [[nodiscard]] const TransitionDynamics& dynamics() const;
+
 private:
     std::string entity_id_;
     double target_speed_;
+    TransitionDynamics dynamics_;
 };
 
 } // namespace scena::ir

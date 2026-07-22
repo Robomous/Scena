@@ -579,3 +579,75 @@ TEST(DeterminismTest, PoseBearingHostReportsStayBitIdentical) {
     EXPECT_EQ(ego->pitch, 0.05 * 9);
     EXPECT_EQ(ego->roll, -0.03 * 9);
 }
+
+namespace {
+
+/// A single engine-controlled vehicle driven through two transition-dynamics
+/// speed ramps — a cubic ramp up and a sinusoidal ramp down — so the
+/// determinism suite exercises the longitudinal controller and its det_cos
+/// path (p2-s2), not just straight-line kinematics.
+scena::ir::Scenario make_dynamics_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "dynamics-determinism";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    Vehicle vehicle;
+    vehicle.performance = Performance{40.0, 3.0, 3.0, std::nullopt, std::nullopt};
+    ego.object = vehicle;
+    scenario.entities.push_back(std::move(ego));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 2.0)); // initial speed
+
+    const auto ramp_event = [](std::string name, double at, double target, DynamicsShape shape,
+                               double duration) {
+        Event event;
+        event.name = std::move(name);
+        event.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(at));
+        event.actions.push_back(std::make_shared<SpeedAction>(
+            "ego", target, TransitionDynamics{shape, DynamicsDimension::Time, duration}));
+        return event;
+    };
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+    // Two non-overlapping ramps (the second starts after the first completes),
+    // both within the vehicle's acceleration envelope so neither is clamped.
+    maneuver.events.push_back(ramp_event("ramp-up", 0.0, 8.0, DynamicsShape::Cubic, 4.0));
+    maneuver.events.push_back(ramp_event("ramp-down", 5.0, 5.0, DynamicsShape::Sinusoidal, 3.0));
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+} // namespace
+
+TEST(DeterminismTest, LongitudinalDynamicsAreBitIdenticalAcrossRuns) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_dynamics_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_dynamics_scenario()), Status::Ok);
+
+    // A deterministic, non-uniform step sequence covering both ramps (~10 s).
+    const double pattern[] = {0.03, 0.07, 0.11, 0.05};
+    for (int i = 0; i < 160; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+    }
+    // The sinusoidal ramp-down has completed by now; the speed settled exactly
+    // on its target through the controller's terminal snap.
+    ASSERT_TRUE(engine_a.state("ego").has_value());
+    EXPECT_EQ(engine_a.state("ego")->speed, 5.0);
+}

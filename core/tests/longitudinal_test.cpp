@@ -8,17 +8,35 @@
 #include "scena/runtime/longitudinal.h"
 
 #include <cmath>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "scena/engine.h"
+#include "scena/ir/action.h"
 #include "scena/ir/dynamics.h"
+#include "scena/ir/entity.h"
+#include "scena/ir/scenario.h"
+#include "scena/ir/storyboard.h"
 #include "scena/runtime/detmath.h"
 
 namespace {
 
+using scena::Engine;
+using scena::Status;
+using scena::ir::ControlMode;
 using scena::ir::DynamicsDimension;
 using scena::ir::DynamicsShape;
+using scena::ir::Entity;
+using scena::ir::Performance;
+using scena::ir::Scenario;
+using scena::ir::SpeedAction;
 using scena::ir::TransitionDynamics;
+using scena::ir::Vehicle;
 using scena::runtime::LongitudinalController;
 using scena::runtime::shape_fraction;
 using scena::runtime::shape_peak_gradient_factor;
@@ -87,10 +105,12 @@ TEST(LongitudinalDurationTest, TimeDimensionReturnsValueDirectly) {
 TEST(LongitudinalDurationTest, RateDimensionUsesShapePeakGradient) {
     const double delta = 10.0; // 0 -> 10 m/s
     const double rate = 2.0;   // m/s per s (peak gradient)
-    EXPECT_NEAR(transition_duration({DynamicsShape::Linear, DynamicsDimension::Rate, rate}, 0.0, 10.0),
-                delta / rate, kTol); // 5 s
-    EXPECT_NEAR(transition_duration({DynamicsShape::Cubic, DynamicsDimension::Rate, rate}, 0.0, 10.0),
-                1.5 * delta / rate, kTol); // 7.5 s
+    EXPECT_NEAR(
+        transition_duration({DynamicsShape::Linear, DynamicsDimension::Rate, rate}, 0.0, 10.0),
+        delta / rate, kTol); // 5 s
+    EXPECT_NEAR(
+        transition_duration({DynamicsShape::Cubic, DynamicsDimension::Rate, rate}, 0.0, 10.0),
+        1.5 * delta / rate, kTol); // 7.5 s
     EXPECT_NEAR(
         transition_duration({DynamicsShape::Sinusoidal, DynamicsDimension::Rate, rate}, 0.0, 10.0),
         (kPi / 2.0) * delta / rate, kTol); // ~7.854 s
@@ -103,16 +123,16 @@ TEST(LongitudinalDurationTest, DistanceDimensionHasNoTimeDuration) {
 
 TEST(LongitudinalDurationTest, DegenerateTransitionsConsumeNoTime) {
     // Step is always instantaneous.
-    EXPECT_DOUBLE_EQ(transition_duration({DynamicsShape::Step, DynamicsDimension::Time, 0.0}, 0.0, 9.0),
-                     0.0);
+    EXPECT_DOUBLE_EQ(
+        transition_duration({DynamicsShape::Step, DynamicsDimension::Time, 0.0}, 0.0, 9.0), 0.0);
     // No value change ⇒ nothing to acquire.
-    EXPECT_DOUBLE_EQ(transition_duration({DynamicsShape::Linear, DynamicsDimension::Time, 5.0}, 3.0, 3.0),
-                     0.0);
+    EXPECT_DOUBLE_EQ(
+        transition_duration({DynamicsShape::Linear, DynamicsDimension::Time, 5.0}, 3.0, 3.0), 0.0);
     // Non-positive value ⇒ instantaneous.
-    EXPECT_DOUBLE_EQ(transition_duration({DynamicsShape::Linear, DynamicsDimension::Time, 0.0}, 0.0, 9.0),
-                     0.0);
-    EXPECT_DOUBLE_EQ(transition_duration({DynamicsShape::Linear, DynamicsDimension::Rate, -1.0}, 0.0, 9.0),
-                     0.0);
+    EXPECT_DOUBLE_EQ(
+        transition_duration({DynamicsShape::Linear, DynamicsDimension::Time, 0.0}, 0.0, 9.0), 0.0);
+    EXPECT_DOUBLE_EQ(
+        transition_duration({DynamicsShape::Linear, DynamicsDimension::Rate, -1.0}, 0.0, 9.0), 0.0);
 }
 
 TEST(LongitudinalDurationTest, PeakGradientFactors) {
@@ -196,3 +216,125 @@ TEST(LongitudinalControllerTest, EmptyControllerIsDone) {
 }
 
 } // namespace
+
+// --- Engine integration: SpeedAction through the default controller --------
+
+// Builds a scenario with one engine-controlled entity and a triggerless
+// SpeedAction to `target` shaped by `td`. `initial_speed` is set by a step init
+// action; `perf`, when present, makes the entity a Vehicle with that envelope.
+Scenario make_speed_scenario(double target, TransitionDynamics td, double initial_speed = 0.0,
+                             std::optional<Performance> perf = std::nullopt) {
+    Scenario scenario;
+    scenario.name = "longitudinal-integration";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    if (perf.has_value()) {
+        Vehicle vehicle;
+        vehicle.performance = *perf;
+        ego.object = vehicle;
+    }
+    scenario.entities.push_back(std::move(ego));
+
+    if (initial_speed != 0.0) {
+        scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", initial_speed));
+    }
+
+    scena::ir::Event event;
+    event.name = "event";
+    event.actions.push_back(std::make_shared<SpeedAction>("ego", target, td));
+    scena::ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(event));
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+double speed_of(const Engine& engine, const std::string& id) {
+    const std::optional<scena::EntityState> state = engine.state(id);
+    return state.has_value() ? state->speed : std::nan("");
+}
+
+TEST(LongitudinalEngineTest, LinearTimeRampDrivesSpeedAcrossSteps) {
+    Engine engine;
+    ASSERT_EQ(engine.init(
+                  make_speed_scenario(10.0, {DynamicsShape::Linear, DynamicsDimension::Time, 5.0})),
+              Status::Ok);
+    // Installed at t=0, still at the origin speed.
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 0.0);
+
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_NEAR(speed_of(engine, "ego"), 4.0, kTol); // 2 s of a 5 s ramp
+    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver/event"),
+              scena::runtime::ElementState::Running);
+
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 10.0); // reached target exactly
+    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver/event"),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(LongitudinalEngineTest, StepShapeSpeedActionIsInstantaneous) {
+    Engine engine;
+    // The 3-arg step form and the legacy 2-arg form behave identically.
+    ASSERT_EQ(
+        engine.init(make_speed_scenario(7.5, {DynamicsShape::Step, DynamicsDimension::Time, 0.0})),
+        Status::Ok);
+    // Reached in the t=0 evaluation; the event has already completed.
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 7.5);
+    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver/event"),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(LongitudinalEngineTest, PerformanceAccelerationClampExtendsTheRamp) {
+    // Ask for 0 -> 10 in 1 s (10 m/s^2) but cap acceleration at 2 m/s^2: the
+    // transition is stretched to 5 s, reaching the target no faster than the
+    // envelope allows.
+    Engine engine;
+    const Performance perf{60.0, 2.0, 2.0, std::nullopt, std::nullopt};
+    ASSERT_EQ(engine.init(make_speed_scenario(
+                  10.0, {DynamicsShape::Linear, DynamicsDimension::Time, 1.0}, 0.0, perf)),
+              Status::Ok);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 2.0, kTol); // clamped slope, not 10
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 10.0); // target reached at 5 s
+}
+
+TEST(LongitudinalEngineTest, PerformanceMaxSpeedClampsTheTarget) {
+    // Target 30 m/s but the vehicle tops out at 20 m/s.
+    Engine engine;
+    const Performance perf{20.0, 100.0, 100.0, std::nullopt, std::nullopt};
+    ASSERT_EQ(engine.init(make_speed_scenario(
+                  30.0, {DynamicsShape::Linear, DynamicsDimension::Time, 4.0}, 0.0, perf)),
+              Status::Ok);
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 20.0);
+}
+
+TEST(LongitudinalEngineTest, InvalidTransitionValueIsRejectedAtInit) {
+    Engine engine;
+    const Status status = engine.init(
+        make_speed_scenario(10.0, {DynamicsShape::Linear, DynamicsDimension::Time, -1.0}));
+    EXPECT_EQ(status, Status::ValidationError);
+}

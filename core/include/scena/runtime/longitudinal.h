@@ -23,7 +23,7 @@ namespace scena::runtime {
 ///
 /// - Linear:     g(p) = p.
 /// - Cubic:      g(p) = 3p^2 - 2p^3 (smoothstep).
-/// - Sinusoidal: g(p) = (1 - cos(pi * p)) / 2, via det_cos.
+/// - Sinusoidal: g(p) = (1 - cosine of pi*p) / 2, via det_cos.
 [[nodiscard]] double shape_fraction(ir::DynamicsShape shape, double p) noexcept;
 
 /// The transition value at progress p between `from` and `to`, for the given
@@ -64,11 +64,11 @@ namespace scena::runtime {
 /// travelled, which the caller supplies each step.
 struct LongitudinalController {
     struct Segment {
-        double from = 0.0;                          ///< Speed at segment start [m/s].
-        double to = 0.0;                            ///< Target speed [m/s].
+        double from = 0.0; ///< Speed at segment start [m/s].
+        double to = 0.0;   ///< Target speed [m/s].
         ir::DynamicsShape shape = ir::DynamicsShape::Linear;
-        bool by_distance = false;                   ///< false: `span` is seconds; true: metres.
-        double span = 0.0;                          ///< Duration [s] or distance [m]; <= 0 ⇒ instant.
+        bool by_distance = false; ///< false: `span` is seconds; true: metres.
+        double span = 0.0;        ///< Duration [s] or distance [m]; <= 0 ⇒ instant.
     };
 
     std::vector<Segment> segments;

@@ -41,8 +41,8 @@ double shape_fraction(ir::DynamicsShape shape, double p) noexcept {
         return c * c * (3.0 - 2.0 * c);
     }
     case ir::DynamicsShape::Sinusoidal: {
-        // (1 - cos(pi*p)) / 2; gradient zero at p = 0 and p = 1. det_cos, not
-        // libm, so the transcendental is bit-identical across platforms.
+        // (1 - cosine of pi*p) / 2; gradient zero at p = 0 and p = 1. det_cos,
+        // not libm, so the transcendental is bit-identical across platforms.
         const double c = clamp01(p);
         return (1.0 - det_cos(kPi * c)) * 0.5;
     }
@@ -64,7 +64,8 @@ double shape_peak_gradient_factor(ir::DynamicsShape shape) noexcept {
         // max |g'(p)| of 3p^2 - 2p^3 is at p = 0.5: g'(0.5) = 6(0.5) - 6(0.25) = 1.5.
         return 1.5;
     case ir::DynamicsShape::Sinusoidal:
-        // max |g'(p)| of (1 - cos(pi*p))/2 is at p = 0.5: (pi/2) sin(pi/2) = pi/2.
+        // Peak gradient of the (1 - cosine)/2 shape is at p = 0.5, where it
+        // equals pi/2.
         return kPi * 0.5;
     }
     return 1.0; // unreachable
