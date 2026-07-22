@@ -7,6 +7,7 @@
 // math itself is covered by longitudinal_test.cpp; here the focus is the IR
 // surface and the engine's cross-entity resolution.
 
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
