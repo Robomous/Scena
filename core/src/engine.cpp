@@ -699,6 +699,14 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                       "speed profile entry time must be finite and in range [0..inf[", entry_path);
             }
         }
+        return;
+    }
+    if (const auto* teleport = dynamic_cast<const ir::TeleportAction*>(&action)) {
+        const ir::WorldPosition& position = teleport->position();
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+            !std::isfinite(position.z)) {
+            error(sink, Status::ValidationError, "teleport action position must be finite", path);
+        }
     }
 }
 
@@ -1255,6 +1263,32 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
                                   speed_action != nullptr
                                       ? build_speed_controller(*speed_action, record)
                                       : build_profile_controller(*profile_action, record));
+    }
+
+    if (const auto* teleport = dynamic_cast<const ir::TeleportAction*>(&action)) {
+        // §TeleportAction: a step (instantaneous) action. Scena resolves the
+        // world-frame target only; the PositionResolver and the other §6.3.8
+        // variants arrive with p2-s4/p3-s4. Orientation is part of the full
+        // Position and is not modeled yet, so heading/pitch/roll are left as-is.
+        const auto it = entities_.find(action.entity_id());
+        if (it == entities_.end()) {
+            Diagnostic diagnostic;
+            diagnostic.severity = Severity::Warning;
+            diagnostic.code = Status::UnknownEntity;
+            diagnostic.message =
+                "action targets unknown entity '" + action.entity_id() + "'; action skipped";
+            diagnostic.path = "entities/" + action.entity_id();
+            diagnostics_.report(std::move(diagnostic));
+            return runtime::ActionOutcome::Complete;
+        }
+        EntityRecord& record = it->second;
+        const ir::WorldPosition& position = teleport->position();
+        record.state.x = position.x;
+        record.state.y = position.y;
+        record.state.z = position.z;
+        // A host-controlled entity's reported state overwrites this on the next
+        // poll; the formal host round-trip for teleport is p2-s4.
+        return runtime::ActionOutcome::Complete;
     }
 
     // An action kind the engine does not implement yet. A parser must never
