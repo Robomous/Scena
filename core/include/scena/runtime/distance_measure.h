@@ -6,8 +6,8 @@
 
 #include "scena/entity_state.h"
 #include "scena/ir/bounding_box.h"
+#include "scena/ir/coordinate_system.h"
 #include "scena/ir/evaluation_context.h"
-#include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
 #include "scena/runtime/obb2.h"
 
