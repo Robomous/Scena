@@ -401,6 +401,57 @@ scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const char* e
     }
 }
 
+scn_status scn_engine_add_relative_speed_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double value,
+    scn_speed_target_value_type value_type, int continuous, const scn_transition_dynamics* dynamics,
+    double at_time, scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || reference_entity_id == nullptr ||
+        dynamics == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(value_type) > static_cast<unsigned>(SCN_SPEED_TARGET_FACTOR) ||
+        static_cast<unsigned>(dynamics->shape) > static_cast<unsigned>(SCN_DYNAMICS_SHAPE_STEP) ||
+        static_cast<unsigned>(dynamics->dimension) >
+            static_cast<unsigned>(SCN_DYNAMICS_DIMENSION_RATE) ||
+        static_cast<unsigned>(dynamics->following_mode) >
+            static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::TransitionDynamics td{
+            static_cast<scena::ir::DynamicsShape>(dynamics->shape),
+            static_cast<scena::ir::DynamicsDimension>(dynamics->dimension), dynamics->value,
+            static_cast<scena::ir::FollowingMode>(dynamics->following_mode)};
+        const scena::ir::RelativeTargetSpeed target{
+            reference_entity_id, value, static_cast<scena::ir::SpeedTargetValueType>(value_type),
+            continuous != 0};
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::SpeedAction>(entity_id, target, td));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity_id, double x,
+                                          double y, double z, double at_time,
+                                          scn_event_priority priority,
+                                          int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::TeleportAction>(
+                                    entity_id, scena::ir::WorldPosition{x, y, z}));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
 scn_status scn_engine_init(scn_engine* engine) {
     if (engine == nullptr) {
         return SCN_ERROR_INVALID_ARGUMENT;

@@ -213,6 +213,13 @@ typedef enum scn_following_mode {
     SCN_FOLLOWING_MODE_FOLLOW = 1
 } scn_following_mode;
 
+/* How a relative speed target combines with the reference entity's speed
+ * (§SpeedTargetValueType). Values mirror the IR enum. */
+typedef enum scn_speed_target_value_type {
+    SCN_SPEED_TARGET_DELTA = 0, /* target = reference + value [m/s] */
+    SCN_SPEED_TARGET_FACTOR = 1 /* target = reference * value (unitless) */
+} scn_speed_target_value_type;
+
 /* Dynamics of a speed transition (§TransitionDynamics). Transparent struct;
  * append fields only. */
 typedef struct scn_transition_dynamics {
@@ -330,6 +337,32 @@ SCN_API scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const
                                                        scn_following_mode following_mode,
                                                        double at_time, scn_event_priority priority,
                                                        int maximum_execution_count);
+
+/* Adds a SpeedAction whose target is relative to `reference_entity_id`
+ * (§RelativeTargetSpeed): the target is that entity's speed combined with
+ * `value` per `value_type` (delta ⇒ reference + value, factor ⇒ reference *
+ * value). With `continuous` zero the target is resolved once at start and
+ * reached through `dynamics`; with `continuous` non-zero a controller keeps
+ * matching the reference and the action never ends by itself (§7.5.3) — which
+ * must not be combined with a time- or distance-dimensioned transition. A NULL
+ * `dynamics`, an out-of-range value_type/shape/dimension/following_mode/
+ * priority, or a negative maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_relative_speed_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double value,
+    scn_speed_target_value_type value_type, int continuous, const scn_transition_dynamics* dynamics,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a TeleportAction (§TeleportAction) that moves `entity_id` to the world
+ * position (`x`, `y`, `z`) [m] when triggered at `at_time`. A step
+ * (instantaneous) action; Scena resolves the world-frame target only (the other
+ * §6.3.8 position variants arrive with p2-s4/p3-s4). An out-of-range priority or
+ * a negative maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity_id,
+                                                  double x, double y, double z, double at_time,
+                                                  scn_event_priority priority,
+                                                  int maximum_execution_count);
 
 /* Lifecycle. */
 SCN_API scn_status scn_engine_init(scn_engine* engine);

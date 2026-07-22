@@ -330,6 +330,78 @@ TEST(CApiTest, LongitudinalBuildersRejectInvalidArguments) {
     scn_engine_destroy(engine);
 }
 
+TEST(CApiTest, AddRelativeSpeedActionResolvesAgainstReference) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "lead", "lead", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    // lead cruises at 8 m/s from t=0; ego jumps to lead + 4 = 12 m/s (Step).
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "lead", 8.0, 0.0), SCN_OK);
+    const scn_transition_dynamics step{SCN_DYNAMICS_SHAPE_STEP, SCN_DYNAMICS_DIMENSION_TIME, 0.0,
+                                       SCN_FOLLOWING_MODE_POSITION};
+    ASSERT_EQ(scn_engine_add_relative_speed_action(engine, "ego", "lead", 4.0,
+                                                   SCN_SPEED_TARGET_DELTA, 0, &step, 0.0,
+                                                   SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 12.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddTeleportActionMovesEntity) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_teleport_action(engine, "ego", 12.0, -3.0, 0.5, 1.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // t=1: teleport fires
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.x, 12.0);
+    EXPECT_EQ(state.y, -3.0);
+    EXPECT_EQ(state.z, 0.5);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, PrivateActionBuildersRejectInvalidArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    const scn_transition_dynamics step{SCN_DYNAMICS_SHAPE_STEP, SCN_DYNAMICS_DIMENSION_TIME, 0.0,
+                                       SCN_FOLLOWING_MODE_POSITION};
+    // Relative speed: NULL dynamics, NULL reference, out-of-range value_type, NULL engine.
+    EXPECT_EQ(scn_engine_add_relative_speed_action(engine, "ego", "lead", 4.0,
+                                                   SCN_SPEED_TARGET_DELTA, 0, nullptr, 0.0,
+                                                   SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_speed_action(engine, "ego", nullptr, 4.0,
+                                                   SCN_SPEED_TARGET_DELTA, 0, &step, 0.0,
+                                                   SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_speed_action(engine, "ego", "lead", 4.0,
+                                                   static_cast<scn_speed_target_value_type>(99), 0,
+                                                   &step, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_speed_action(nullptr, "ego", "lead", 4.0,
+                                                   SCN_SPEED_TARGET_DELTA, 0, &step, 0.0,
+                                                   SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Teleport: NULL engine/entity, negative execution count.
+    EXPECT_EQ(scn_engine_add_teleport_action(nullptr, "ego", 0.0, 0.0, 0.0, 0.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_teleport_action(engine, nullptr, 0.0, 0.0, 0.0, 0.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_teleport_action(engine, "ego", 0.0, 0.0, 0.0, 0.0,
+                                             SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
 TEST(CApiTest, NamedValueHostInterfaceRoundTrip) {
     scn_engine* engine = scn_engine_create();
     ASSERT_NE(engine, nullptr);
