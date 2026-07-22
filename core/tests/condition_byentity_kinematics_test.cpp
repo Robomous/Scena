@@ -18,13 +18,16 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
+#include "scena/ir/rule.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
+#include "scena/runtime/detmath.h"
 #include "scena/runtime/scheduler.h"
 
 namespace ir = scena::ir;
 using ir::DirectionalDimension;
 using ir::EntityKinematics;
+using ir::Rule;
 using ir::TriggeringEntities;
 using ir::TriggeringEntitiesRule;
 using scena::EntityState;
@@ -80,6 +83,22 @@ EntityKinematics with_speed(double speed) {
     return kinematics;
 }
 
+/// Kinematics with speed, heading and (optionally) an acceleration sample.
+EntityKinematics kin(double speed, double heading = 0.0,
+                     std::optional<double> acceleration = std::nullopt) {
+    EntityKinematics kinematics;
+    kinematics.state.speed = speed;
+    kinematics.state.heading = heading;
+    kinematics.acceleration = acceleration;
+    return kinematics;
+}
+
+/// A single-entity "ego" triggering set — the common case for the per-entity
+/// measurement tests.
+TriggeringEntities ego_only() {
+    return triggering(TriggeringEntitiesRule::Any, {"ego"});
+}
+
 bool holds(const ir::Condition& condition, const ir::EvaluationContext& context) {
     return condition.evaluate(context);
 }
@@ -110,14 +129,14 @@ TEST(TriggeringEntitiesTest, AnyAllReductionMatrix) {
     }};
 
     // Any: at least one entity moving.
-    EXPECT_TRUE(holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"mover", "still"})},
-                      context));
+    EXPECT_TRUE(
+        holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"mover", "still"})}, context));
     EXPECT_FALSE(holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"still"})}, context));
     // All: every entity moving.
-    EXPECT_TRUE(holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "other"})},
-                      context));
-    EXPECT_FALSE(holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "still"})},
-                       context));
+    EXPECT_TRUE(
+        holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "other"})}, context));
+    EXPECT_FALSE(
+        holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "still"})}, context));
     // Single entity: any and all agree.
     EXPECT_TRUE(holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"mover"})}, context));
     EXPECT_TRUE(holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover"})}, context));
@@ -133,10 +152,10 @@ TEST(TriggeringEntitiesTest, UnobservableEntityContributesFalsePerEntity) {
     // An entity absent from the context is false for that entity only: Any can
     // still hold through another ref; All cannot (ADR-0007 finest grain).
     const KinematicsContext context{{{"mover", with_speed(5.0)}}};
-    EXPECT_TRUE(holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"mover", "ghost"})},
-                      context));
-    EXPECT_FALSE(holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "ghost"})},
-                       context));
+    EXPECT_TRUE(
+        holds(MovingProbe{triggering(TriggeringEntitiesRule::Any, {"mover", "ghost"})}, context));
+    EXPECT_FALSE(
+        holds(MovingProbe{triggering(TriggeringEntitiesRule::All, {"mover", "ghost"})}, context));
 }
 
 // ---------------------------------------------------------------------------
@@ -191,4 +210,114 @@ TEST(EntityKinematicsFacetTest, BoundContextForwardsEntityKinematics) {
     const KinematicsContext moving{{{"ego", with_speed(4.0)}}};
     scheduler.step(moving, fire);
     EXPECT_TRUE(fired);
+}
+
+// ---------------------------------------------------------------------------
+// SpeedCondition (§ SpeedCondition)
+// ---------------------------------------------------------------------------
+
+TEST(SpeedConditionTest, TotalSpeedIsMagnitude) {
+    // No direction ⇒ total speed = |speed|, so a negative (reversing) speed
+    // still compares by magnitude.
+    const KinematicsContext context{{{"ego", kin(-8.0)}}};
+    EXPECT_TRUE(holds(ir::SpeedCondition{ego_only(), 8.0, Rule::EqualTo}, context));
+    EXPECT_TRUE(holds(ir::SpeedCondition{ego_only(), 5.0, Rule::GreaterThan}, context));
+    EXPECT_FALSE(holds(ir::SpeedCondition{ego_only(), 8.0, Rule::GreaterThan}, context));
+}
+
+TEST(SpeedConditionTest, DirectionalProjection) {
+    const KinematicsContext context{{{"ego", kin(-8.0)}}};
+    // Longitudinal ⇒ the *signed* speed, so -8 is < 0 and != 8.
+    EXPECT_TRUE(holds(
+        ir::SpeedCondition{ego_only(), -8.0, Rule::EqualTo, DirectionalDimension::Longitudinal},
+        context));
+    EXPECT_TRUE(holds(
+        ir::SpeedCondition{ego_only(), 0.0, Rule::LessThan, DirectionalDimension::Longitudinal},
+        context));
+    // Lateral / vertical ⇒ exactly 0.0 in the scalar model.
+    EXPECT_TRUE(
+        holds(ir::SpeedCondition{ego_only(), 0.0, Rule::EqualTo, DirectionalDimension::Lateral},
+              context));
+    EXPECT_TRUE(
+        holds(ir::SpeedCondition{ego_only(), 0.0, Rule::EqualTo, DirectionalDimension::Vertical},
+              context));
+}
+
+TEST(SpeedConditionTest, PerEntityAbsentStillFiresUnderAny) {
+    // "ghost" is not observable, so it is false, but "ego" satisfies the
+    // predicate and Any still holds.
+    const KinematicsContext context{{{"ego", kin(10.0)}}};
+    const TriggeringEntities any_two = triggering(TriggeringEntitiesRule::Any, {"ego", "ghost"});
+    EXPECT_TRUE(holds(ir::SpeedCondition{any_two, 5.0, Rule::GreaterThan}, context));
+}
+
+// ---------------------------------------------------------------------------
+// RelativeSpeedCondition (§ RelativeSpeedCondition)
+// ---------------------------------------------------------------------------
+
+TEST(RelativeSpeedConditionTest, SpecFormulaIsSignedDifferenceOfTotals) {
+    // speed_rel = |speed(triggering)| - |speed(reference)|; a slower
+    // triggering entity gives a negative relative speed.
+    const KinematicsContext context{{{"ego", kin(4.0)}, {"lead", kin(10.0)}}};
+    EXPECT_TRUE(
+        holds(ir::RelativeSpeedCondition{ego_only(), "lead", -6.0, Rule::EqualTo}, context));
+    EXPECT_TRUE(
+        holds(ir::RelativeSpeedCondition{ego_only(), "lead", 0.0, Rule::LessThan}, context));
+}
+
+TEST(RelativeSpeedConditionTest, AbsentReferenceIsFalse) {
+    const KinematicsContext context{{{"ego", kin(4.0)}}}; // no "lead"
+    EXPECT_FALSE(
+        holds(ir::RelativeSpeedCondition{ego_only(), "lead", 0.0, Rule::NotEqualTo}, context));
+}
+
+TEST(RelativeSpeedConditionTest, DirectionalProjectionInTriggeringFrame) {
+    // Triggering ego heads along +x (heading 0, exact under det_sincos); the
+    // reference heads at 1.0 rad. The projection is in ego's frame, so the
+    // longitudinal/lateral split follows the reference's heading only.
+    const KinematicsContext context{{{"ego", kin(10.0, 0.0)}, {"lead", kin(4.0, 1.0)}}};
+    const scena::runtime::SinCos r = scena::runtime::det_sincos(1.0);
+    const double longitudinal = 10.0 - 4.0 * r.cos; // vx, since ego cos=1 sin=0
+    const double lateral = -4.0 * r.sin;            // vy
+
+    EXPECT_TRUE(holds(ir::RelativeSpeedCondition{ego_only(), "lead", longitudinal, Rule::EqualTo,
+                                                 DirectionalDimension::Longitudinal},
+                      context));
+    EXPECT_TRUE(holds(ir::RelativeSpeedCondition{ego_only(), "lead", lateral, Rule::EqualTo,
+                                                 DirectionalDimension::Lateral},
+                      context));
+    EXPECT_TRUE(holds(ir::RelativeSpeedCondition{ego_only(), "lead", 0.0, Rule::EqualTo,
+                                                 DirectionalDimension::Vertical},
+                      context));
+}
+
+// ---------------------------------------------------------------------------
+// AccelerationCondition (§ AccelerationCondition)
+// ---------------------------------------------------------------------------
+
+TEST(AccelerationConditionTest, AbsentAccelerationIsFalseForEveryRule) {
+    // Fewer than two samples: acceleration is absent ⇒ false for every rule,
+    // including LessThan and NotEqualTo (the quantity does not exist).
+    const KinematicsContext context{{{"ego", kin(5.0, 0.0, std::nullopt)}}};
+    for (const Rule rule : {Rule::EqualTo, Rule::GreaterThan, Rule::LessThan, Rule::GreaterOrEqual,
+                            Rule::LessOrEqual, Rule::NotEqualTo}) {
+        EXPECT_FALSE(holds(ir::AccelerationCondition{ego_only(), 0.0, rule}, context)) << "rule";
+    }
+}
+
+TEST(AccelerationConditionTest, PresentAccelerationCompares) {
+    const KinematicsContext context{{{"ego", kin(5.0, 0.0, -3.0)}}};
+    // Total ⇒ magnitude.
+    EXPECT_TRUE(holds(ir::AccelerationCondition{ego_only(), 3.0, Rule::EqualTo}, context));
+    // Longitudinal ⇒ signed (braking is negative).
+    EXPECT_TRUE(holds(ir::AccelerationCondition{ego_only(), -3.0, Rule::EqualTo,
+                                                DirectionalDimension::Longitudinal},
+                      context));
+    EXPECT_TRUE(holds(ir::AccelerationCondition{ego_only(), 0.0, Rule::LessThan,
+                                                DirectionalDimension::Longitudinal},
+                      context));
+    // Lateral ⇒ 0.0.
+    EXPECT_TRUE(holds(
+        ir::AccelerationCondition{ego_only(), 0.0, Rule::EqualTo, DirectionalDimension::Lateral},
+        context));
 }

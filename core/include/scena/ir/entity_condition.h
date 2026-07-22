@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,6 +65,76 @@ protected:
 
 private:
     TriggeringEntities triggering_entities_;
+};
+
+/// Compares a triggering entity's speed to `value` under `rule`, per
+/// SpeedCondition. Without `direction` the total speed (magnitude) is
+/// compared; with it, the signed projection on that body axis (§7.6.5.1).
+class SpeedCondition final : public ByEntityCondition {
+public:
+    SpeedCondition(TriggeringEntities triggering, double value, Rule rule,
+                   std::optional<DirectionalDimension> direction = std::nullopt);
+
+    [[nodiscard]] double value() const;
+    [[nodiscard]] Rule rule() const;
+    [[nodiscard]] const std::optional<DirectionalDimension>& direction() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double value_;
+    Rule rule_;
+    std::optional<DirectionalDimension> direction_;
+};
+
+/// Compares a triggering entity's speed relative to a reference entity to
+/// `value` under `rule`, per RelativeSpeedCondition. The spec defines
+/// speed_rel = speed(triggering) - speed(reference); with `direction` the
+/// relative velocity is projected in the *triggering* entity's frame.
+class RelativeSpeedCondition final : public ByEntityCondition {
+public:
+    RelativeSpeedCondition(TriggeringEntities triggering, std::string entity_ref, double value,
+                           Rule rule, std::optional<DirectionalDimension> direction = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_ref() const;
+    [[nodiscard]] double value() const;
+    [[nodiscard]] Rule rule() const;
+    [[nodiscard]] const std::optional<DirectionalDimension>& direction() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    std::string entity_ref_;
+    double value_;
+    Rule rule_;
+    std::optional<DirectionalDimension> direction_;
+};
+
+/// Compares a triggering entity's acceleration to `value` under `rule`, per
+/// AccelerationCondition. Acceleration is a finite difference (see
+/// EntityKinematics): until two samples exist it is absent and the condition
+/// is deterministically false. Direction handling mirrors SpeedCondition.
+class AccelerationCondition final : public ByEntityCondition {
+public:
+    AccelerationCondition(TriggeringEntities triggering, double value, Rule rule,
+                          std::optional<DirectionalDimension> direction = std::nullopt);
+
+    [[nodiscard]] double value() const;
+    [[nodiscard]] Rule rule() const;
+    [[nodiscard]] const std::optional<DirectionalDimension>& direction() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double value_;
+    Rule rule_;
+    std::optional<DirectionalDimension> direction_;
 };
 
 } // namespace scena::ir
