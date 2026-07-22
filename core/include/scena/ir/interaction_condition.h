@@ -244,9 +244,10 @@ private:
 
 /// Holds when the triggering entity collides with a reference entity, per
 /// CollisionCondition: their bounding boxes intersect (the freespace distance
-/// is zero, §6.4.7.2). The standard also allows a ByObjectType target, but
-/// ir::Entity has no category yet (p2-s1), so only the EntityRef target is
-/// modeled this sprint (ADR-0009); a missing box or reference is false.
+/// is zero, §6.4.7.2). The standard also allows a ByObjectType target; the
+/// entity taxonomy landed the categories (p2-s1, ADR-0010), but wiring that
+/// target into this condition is a follow-up, so only the EntityRef target is
+/// modeled here (ADR-0009); a missing box or reference is false.
 class CollisionCondition final : public ByEntityCondition {
 public:
     CollisionCondition(TriggeringEntities triggering, std::string entity_ref);

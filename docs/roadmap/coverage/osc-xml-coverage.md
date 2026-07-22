@@ -94,7 +94,7 @@ IR lands (p4-s4).
 |---|---|---|---|---|
 | AccelerationCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: finite-difference acceleration, absent (⇒false) until two samples; optional direction (longitudinal signed, lateral/vertical 0 in the scalar model). XML lowering deferred (P4) |
 | AngleCondition | §7.6.5.1 | Post | — | Introduction version unconfirmed in local text *(verify)*; low demand for v0.0.1 set |
-| CollisionCondition | §7.6.5.1 | In | p5-s3 | Kernel landed: bounding-box (2D OBB) intersection, touching ⇒ collision (§6.4.7.2); absent box on either entity ⇒ false. EntityRef target only — ByObjectType deferred to p2-s1 (no category yet). XML lowering deferred (P4) |
+| CollisionCondition | §7.6.5.1 | In | p5-s3 | Kernel landed: bounding-box (2D OBB) intersection, touching ⇒ collision (§6.4.7.2); absent box on either entity ⇒ false. EntityRef target only — ByObjectType categories landed p2-s1 (ADR-0010); wiring the target into this condition is a follow-up. XML lowering deferred (P4) |
 | DistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Kernel landed: euclidean (3D reference-point / 2D freespace) and longitudinal/lateral (entity or world axis); road/lane/trajectory CS ⇒ deterministic false + UnsupportedFeature warning (deferred p3-s4). Deprecated `alongRoute`/`cartesianDistance` warned and mapped. XML lowering deferred (P4) |
 | EndOfRoadCondition | §7.6.5.1 | In | p5-s3 | IR + validation landed: requires road-network topology (p3-s4), so it evaluates deterministic false with a rule-cited UnsupportedFeature warning until then. XML lowering deferred (P4) |
 | OffroadCondition | §7.6.5.1 | In | p5-s3 | IR + validation landed: road-deferred like EndOfRoad — deterministic false + UnsupportedFeature warning until p3-s4. XML lowering deferred (P4) |
@@ -152,7 +152,7 @@ IR lands (p4-s4).
 | MonitorDeclaration | §6.14 | Post | — | With SetMonitorAction *(verify version)* |
 | Catalog / CatalogReference / CatalogLocations (vehicle, controller, pedestrian, miscObject, environment, maneuver, trajectory, route) | §9.4–9.6 | In | p4-s4 | 1.4-only trafficDistributionEntry catalog excluded |
 | ParameterValueDistribution files (Deterministic/Stochastic) | §9.3 | Post | — | Parameter-variation workflow belongs with the post-release generation family |
-| Entities: ScenarioObject + inline Vehicle/Pedestrian/MiscObject | §7.2.2 | In | p2-s1, p4-s2 | Performance, axles (as data), bounding boxes, properties |
+| Entities: ScenarioObject + inline Vehicle/Pedestrian/MiscObject | §7.2.2 | In | p2-s1, p4-s2 | IR + bindings landed (p2-s1): ObjectType/category/Role enums (full 1.4 sets, 1.3→1.4 deprecations noted), `Performance`, axles and properties as data, bounding boxes, EntityObject variant + `object_type_of`/`bounding_box_of`/`performance_of`; full h/p/r `EntityState`; C-ABI typed builders + metadata accessors; Performance range validation (ADR-0010). XML lowering → p4-s2 |
 | ExternalObjectReference | §7.2.2 | Post | — | Requires road-network object binding beyond v0.0.1 map scope |
 | Trailer attributes on Vehicle | §7.2.2.6 | Post | — | With the trailer action family |
 | EntitySelection / ByType / ByObjectType | §7.2.2.2–7.2.2.5 | In | p4-s4 | Homogeneity rules cited |
