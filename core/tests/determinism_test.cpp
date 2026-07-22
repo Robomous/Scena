@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MIT
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "scena/engine.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
+#include "scena/ir/date_time.h"
+#include "scena/ir/rule.h"
+#include "scena/ir/scenario.h"
+#include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 #include "support/fixtures.h"
 
 using scena::Engine;
@@ -25,6 +34,90 @@ void expect_bit_identical(const Engine& a, const Engine& b, const std::string& e
     ASSERT_EQ(state_a->z, state_b->z);
     ASSERT_EQ(state_a->heading, state_b->heading);
     ASSERT_EQ(state_a->speed, state_b->speed);
+}
+
+/// Two diagnostic records agree field for field, in order — the by-value
+/// warnings (unknown user value, unset time of day) must be deterministic.
+void expect_same_diagnostics(const Engine& a, const Engine& b) {
+    const auto& da = a.diagnostics();
+    const auto& db = b.diagnostics();
+    ASSERT_EQ(da.size(), db.size());
+    for (std::size_t i = 0; i < da.size(); ++i) {
+        EXPECT_EQ(da[i].severity, db[i].severity) << i;
+        EXPECT_EQ(da[i].code, db[i].code) << i;
+        EXPECT_EQ(da[i].message, db[i].message) << i;
+        EXPECT_EQ(da[i].path, db[i].path) << i;
+        EXPECT_EQ(da[i].rule_id, db[i].rule_id) << i;
+    }
+}
+
+/// A one-entity scenario whose speed is driven by by-value conditions: a
+/// rising-edge VariableCondition, a UserDefinedValueCondition, an unset
+/// UserDefinedValueCondition (warns once) and a TimeOfDayCondition.
+scena::ir::Scenario make_byvalue_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "byvalue-determinism";
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    scenario.entities.push_back(std::move(ego));
+    scenario.variables["v"] = "wait";
+
+    const auto event = [](std::string name, std::shared_ptr<Condition> expression, double speed) {
+        Event e;
+        e.name = std::move(name);
+        e.start_trigger = make_trigger(std::move(expression));
+        e.actions.push_back(std::make_shared<SpeedAction>("ego", speed));
+        return e;
+    };
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back([&] {
+        Event e;
+        e.name = "on-variable";
+        e.start_trigger = make_trigger(
+            std::make_shared<VariableCondition>("v", Rule::EqualTo, "go"), ConditionEdge::Rising);
+        e.actions.push_back(std::make_shared<SpeedAction>("ego", 10.0));
+        return e;
+    }());
+    maneuver.events.push_back(
+        event("on-user", std::make_shared<UserDefinedValueCondition>("sig", Rule::GreaterThan, "3"),
+              20.0));
+    maneuver.events.push_back(
+        event("on-missing",
+              std::make_shared<UserDefinedValueCondition>("absent", Rule::EqualTo, "1"), 30.0));
+    maneuver.events.push_back(event("on-time",
+                                    std::make_shared<TimeOfDayCondition>(
+                                        DateTime{2000, 1, 1, 12, 0, 5, 0, 0}, Rule::GreaterOrEqual),
+                                    40.0));
+
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+/// Applies the same host-setter sequence both engines are fed, keyed by step
+/// index, so two runs stay bit-identical only if the setters are deterministic.
+void apply_setters(Engine& engine, int step) {
+    if (step == 3) {
+        engine.set_variable("v", "go"); // rising edge fires on-variable
+    }
+    if (step == 5) {
+        engine.set_user_defined_value("sig", "5"); // 5 > 3 fires on-user
+    }
+    if (step == 7) {
+        engine.set_date_time(scena::ir::DateTime{2000, 1, 1, 12, 0, 4, 0, 0});
+    }
 }
 
 } // namespace
@@ -163,4 +256,32 @@ TEST(DeterminismTest, FixtureExercisesExecutionCountAndSkipPaths) {
     const auto ego = engine.state("ego");
     ASSERT_TRUE(ego.has_value());
     EXPECT_NE(ego->speed, 99.0); // "never" never applied its speed
+}
+
+TEST(DeterminismTest, IdenticalHostSetterSequencesStayBitIdentical) {
+    // By-value conditions are driven from outside the scenario. Two engines
+    // fed the same variable / user-value / date-time sequence must produce
+    // bit-identical entity states and an identical diagnostic stream — the
+    // host interface must not smuggle in any nondeterminism.
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_byvalue_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_byvalue_scenario()), Status::Ok);
+
+    for (int i = 0; i < 20; ++i) {
+        apply_setters(engine_a, i);
+        apply_setters(engine_b, i);
+        const double dt = (i % 2 == 0) ? 0.01 : 0.03;
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        SCOPED_TRACE(i);
+        expect_bit_identical(engine_a, engine_b, "ego");
+    }
+
+    // The rising-edge variable and the user value both fired, so ego was
+    // actually driven (guards the determinism claim against a dead scenario).
+    const auto ego = engine_a.state("ego");
+    ASSERT_TRUE(ego.has_value());
+    EXPECT_NE(ego->speed, 0.0);
+    expect_same_diagnostics(engine_a, engine_b);
 }

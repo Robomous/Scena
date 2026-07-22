@@ -202,3 +202,94 @@ TEST(CApiTest, AddSpeedActionExRejectsInvalidArguments) {
               SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }
+
+TEST(CApiTest, NamedValueHostInterfaceRoundTrip) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Builders take effect at the next init.
+    ASSERT_EQ(scn_engine_set_parameter(engine, "speedLimit", "30"), SCN_OK);
+    ASSERT_EQ(scn_engine_declare_variable(engine, "v", "0"), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    // A user-defined value staged before init survives it.
+    ASSERT_EQ(scn_engine_set_user_defined_value(engine, "sig", "on"), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    const char* value = nullptr;
+    ASSERT_EQ(scn_engine_get_variable(engine, "v", &value), SCN_OK);
+    EXPECT_STREQ(value, "0"); // seeded from the declaration
+    ASSERT_EQ(scn_engine_set_variable(engine, "v", "42"), SCN_OK);
+    ASSERT_EQ(scn_engine_get_variable(engine, "v", &value), SCN_OK);
+    EXPECT_STREQ(value, "42");
+
+    ASSERT_EQ(scn_engine_get_user_defined_value(engine, "sig", &value), SCN_OK);
+    EXPECT_STREQ(value, "on");
+    ASSERT_EQ(scn_engine_set_user_defined_value(engine, "sig", "off"), SCN_OK);
+    ASSERT_EQ(scn_engine_get_user_defined_value(engine, "sig", &value), SCN_OK);
+    EXPECT_STREQ(value, "off");
+
+    // A valid date-time is accepted; an out-of-range one is rejected.
+    EXPECT_EQ(scn_engine_set_date_time(engine, 2000, 1, 1, 12, 0, 0, 0, 0), SCN_OK);
+    EXPECT_EQ(scn_engine_set_date_time(engine, 2001, 2, 29, 0, 0, 0, 0, 0),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, NamedValueErrorPaths) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+
+    // Runtime setters need init.
+    EXPECT_EQ(scn_engine_set_variable(engine, "v", "1"), SCN_ERROR_NOT_INITIALIZED);
+
+    ASSERT_EQ(scn_engine_declare_variable(engine, "v", "0"), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    EXPECT_EQ(scn_engine_set_variable(engine, "ghost", "1"), SCN_ERROR_UNKNOWN_NAME);
+
+    // Unknown name leaves the out sentinel untouched.
+    const char* out = "sentinel";
+    EXPECT_EQ(scn_engine_get_variable(engine, "ghost", &out), SCN_ERROR_UNKNOWN_NAME);
+    EXPECT_STREQ(out, "sentinel");
+    EXPECT_EQ(scn_engine_get_user_defined_value(engine, "never-set", &out), SCN_ERROR_UNKNOWN_NAME);
+    EXPECT_STREQ(out, "sentinel");
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, NamedValueBorrowedStringStaysValidUntilNextAccess) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_declare_variable(engine, "v", "first"), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    const char* value = nullptr;
+    ASSERT_EQ(scn_engine_get_variable(engine, "v", &value), SCN_OK);
+    // The borrowed pointer is readable before any further engine call.
+    EXPECT_STREQ(value, "first");
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, NullArgumentsAreRejectedForNamedValues) {
+    EXPECT_EQ(scn_engine_set_parameter(nullptr, "p", "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_declare_variable(nullptr, "v", "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_variable(nullptr, "v", "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_variable(nullptr, "v", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_user_defined_value(nullptr, "u", "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_user_defined_value(nullptr, "u", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_date_time(nullptr, 2000, 1, 1, 0, 0, 0, 0, 0),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    const char* out = nullptr;
+    EXPECT_EQ(scn_engine_set_parameter(engine, nullptr, "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_declare_variable(engine, "v", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_variable(engine, nullptr, "1"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_variable(engine, nullptr, &out), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_variable(engine, "v", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_user_defined_value(engine, "u", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}

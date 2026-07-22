@@ -14,6 +14,9 @@
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/date_time.h"
+#include "scena/ir/evaluation_context.h"
+#include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
@@ -41,7 +44,8 @@ NB_MODULE(_scena, m) {
         .value("ParseError", scena::Status::ParseError)
         .value("ValidationError", scena::Status::ValidationError)
         .value("SemanticError", scena::Status::SemanticError)
-        .value("UnsupportedFeature", scena::Status::UnsupportedFeature);
+        .value("UnsupportedFeature", scena::Status::UnsupportedFeature)
+        .value("UnknownName", scena::Status::UnknownName);
 
     nb::enum_<scena::Severity>(m, "Severity")
         .value("Info", scena::Severity::Info)
@@ -101,10 +105,101 @@ NB_MODULE(_scena, m) {
             return "Entity(id='" + entity.id + "', name='" + entity.name + "')";
         });
 
+    // Rule comparator and by-value building blocks.
+    nb::enum_<ir::Rule>(m, "Rule", "Comparison operator shared by the by-value conditions.")
+        .value("EqualTo", ir::Rule::EqualTo)
+        .value("GreaterThan", ir::Rule::GreaterThan)
+        .value("LessThan", ir::Rule::LessThan)
+        .value("GreaterOrEqual", ir::Rule::GreaterOrEqual)
+        .value("LessOrEqual", ir::Rule::LessOrEqual)
+        .value("NotEqualTo", ir::Rule::NotEqualTo);
+
+    nb::enum_<ir::StoryboardElementType>(m, "StoryboardElementType")
+        .value("Story", ir::StoryboardElementType::Story)
+        .value("Act", ir::StoryboardElementType::Act)
+        .value("ManeuverGroup", ir::StoryboardElementType::ManeuverGroup)
+        .value("Maneuver", ir::StoryboardElementType::Maneuver)
+        .value("Event", ir::StoryboardElementType::Event)
+        .value("Action", ir::StoryboardElementType::Action);
+
+    nb::enum_<ir::StoryboardElementState>(m, "StoryboardElementState")
+        .value("StandbyState", ir::StoryboardElementState::StandbyState)
+        .value("RunningState", ir::StoryboardElementState::RunningState)
+        .value("CompleteState", ir::StoryboardElementState::CompleteState)
+        .value("StartTransition", ir::StoryboardElementState::StartTransition)
+        .value("EndTransition", ir::StoryboardElementState::EndTransition)
+        .value("StopTransition", ir::StoryboardElementState::StopTransition)
+        .value("SkipTransition", ir::StoryboardElementState::SkipTransition);
+
+    nb::class_<ir::DateTime>(m, "DateTime")
+        .def(
+            "__init__",
+            [](ir::DateTime* self, int year, int month, int day, int hour, int minute, int second,
+               int millisecond, int utc_offset_minutes) {
+                new (self) ir::DateTime{year,   month,  day,         hour,
+                                        minute, second, millisecond, utc_offset_minutes};
+            },
+            "year"_a = 1970, "month"_a = 1, "day"_a = 1, "hour"_a = 0, "minute"_a = 0,
+            "second"_a = 0, "millisecond"_a = 0, "utc_offset_minutes"_a = 0)
+        .def_rw("year", &ir::DateTime::year)
+        .def_rw("month", &ir::DateTime::month)
+        .def_rw("day", &ir::DateTime::day)
+        .def_rw("hour", &ir::DateTime::hour)
+        .def_rw("minute", &ir::DateTime::minute)
+        .def_rw("second", &ir::DateTime::second)
+        .def_rw("millisecond", &ir::DateTime::millisecond)
+        .def_rw("utc_offset_minutes", &ir::DateTime::utc_offset_minutes)
+        .def("valid", &ir::DateTime::valid)
+        .def("to_epoch_seconds", &ir::DateTime::to_epoch_seconds)
+        .def("__repr__", [](const ir::DateTime& dt) {
+            return nb::str("DateTime(year={}, month={}, day={}, hour={}, minute={}, second={}, "
+                           "millisecond={}, utc_offset_minutes={})")
+                .format(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.millisecond,
+                        dt.utc_offset_minutes);
+        });
+
     nb::class_<ir::Condition>(m, "Condition");
     nb::class_<ir::SimulationTimeCondition, ir::Condition>(m, "SimulationTimeCondition")
-        .def(nb::init<double>(), "at_time"_a)
-        .def_prop_ro("at_time", &ir::SimulationTimeCondition::at_time);
+        .def(
+            "__init__",
+            [](ir::SimulationTimeCondition* self, double at_time, ir::Rule rule) {
+                new (self) ir::SimulationTimeCondition(at_time, rule);
+            },
+            "at_time"_a, "rule"_a = ir::Rule::GreaterOrEqual)
+        .def_prop_ro("at_time", &ir::SimulationTimeCondition::at_time)
+        .def_prop_ro("value", &ir::SimulationTimeCondition::value)
+        .def_prop_ro("rule", &ir::SimulationTimeCondition::rule);
+
+    nb::class_<ir::ParameterCondition, ir::Condition>(m, "ParameterCondition")
+        .def(nb::init<std::string, ir::Rule, std::string>(), "parameter_ref"_a, "rule"_a, "value"_a)
+        .def_prop_ro("parameter_ref", &ir::ParameterCondition::parameter_ref)
+        .def_prop_ro("rule", &ir::ParameterCondition::rule)
+        .def_prop_ro("value", &ir::ParameterCondition::value);
+
+    nb::class_<ir::VariableCondition, ir::Condition>(m, "VariableCondition")
+        .def(nb::init<std::string, ir::Rule, std::string>(), "variable_ref"_a, "rule"_a, "value"_a)
+        .def_prop_ro("variable_ref", &ir::VariableCondition::variable_ref)
+        .def_prop_ro("rule", &ir::VariableCondition::rule)
+        .def_prop_ro("value", &ir::VariableCondition::value);
+
+    nb::class_<ir::UserDefinedValueCondition, ir::Condition>(m, "UserDefinedValueCondition")
+        .def(nb::init<std::string, ir::Rule, std::string>(), "name"_a, "rule"_a, "value"_a)
+        .def_prop_ro("name", &ir::UserDefinedValueCondition::name)
+        .def_prop_ro("rule", &ir::UserDefinedValueCondition::rule)
+        .def_prop_ro("value", &ir::UserDefinedValueCondition::value);
+
+    nb::class_<ir::TimeOfDayCondition, ir::Condition>(m, "TimeOfDayCondition")
+        .def(nb::init<ir::DateTime, ir::Rule>(), "date_time"_a, "rule"_a)
+        .def_prop_ro("date_time", &ir::TimeOfDayCondition::date_time)
+        .def_prop_ro("rule", &ir::TimeOfDayCondition::rule);
+
+    nb::class_<ir::StoryboardElementStateCondition, ir::Condition>(
+        m, "StoryboardElementStateCondition")
+        .def(nb::init<ir::StoryboardElementType, std::string, ir::StoryboardElementState>(),
+             "element_type"_a, "element_ref"_a, "state"_a)
+        .def_prop_ro("element_type", &ir::StoryboardElementStateCondition::element_type)
+        .def_prop_ro("element_ref", &ir::StoryboardElementStateCondition::element_ref)
+        .def_prop_ro("state", &ir::StoryboardElementStateCondition::state);
 
     // Trigger model (§7.6.1): a Trigger is an OR over ConditionGroups,
     // each an AND over TriggerConditions.
@@ -273,10 +368,26 @@ NB_MODULE(_scena, m) {
         .def(
             "__init__",
             [](ir::Scenario* self, std::string name) {
-                new (self) ir::Scenario{std::move(name), {}, {}, {}};
+                new (self) ir::Scenario();
+                self->name = std::move(name);
             },
             "name"_a = std::string())
         .def_rw("name", &ir::Scenario::name)
+        .def(
+            "set_parameter",
+            [](ir::Scenario& scenario, std::string name, std::string value) {
+                scenario.parameters[std::move(name)] = std::move(value);
+            },
+            "name"_a, "value"_a,
+            "Declares a global parameter (immutable at runtime); effective at the next init().")
+        .def(
+            "declare_variable",
+            [](ir::Scenario& scenario, std::string name, std::string value) {
+                scenario.variables[std::move(name)] = std::move(value);
+            },
+            "name"_a, "value"_a,
+            "Declares a global variable with its initialization value; effective at the next "
+            "init().")
         .def(
             "add_entity",
             [](ir::Scenario& scenario, const ir::Entity& entity) {
@@ -329,6 +440,18 @@ NB_MODULE(_scena, m) {
              "Current state of an entity, or None when unknown.")
         .def("report_state", &scena::Engine::report_state, "entity_id"_a, "state"_a,
              "Reports the authoritative state of a host-controlled entity.")
+        .def("set_variable", &scena::Engine::set_variable, "name"_a, "value"_a,
+             "Sets a declared variable; UnknownName for an undeclared name.")
+        .def("variable", &scena::Engine::variable, "name"_a,
+             "Current value of a variable, or None when undeclared or before init.")
+        .def("set_user_defined_value", &scena::Engine::set_user_defined_value, "name"_a, "value"_a,
+             "Creates or updates an external user-defined value.")
+        .def("user_defined_value", &scena::Engine::user_defined_value, "name"_a,
+             "Current value of a user-defined value, or None when unset.")
+        .def("set_date_time", &scena::Engine::set_date_time, "date_time"_a,
+             "Anchors the simulated time of day; InvalidArgument for an out-of-range DateTime.")
+        .def_prop_ro("date_time", &scena::Engine::date_time,
+                     "Simulated instant as epoch seconds, or None when no anchor is set.")
         .def("storyboard_element_state", &scena::Engine::storyboard_element_state, "path"_a,
              "Lifecycle state of the element at 'story/act/group/maneuver/event'; '' is the "
              "storyboard itself; None for unknown paths.")

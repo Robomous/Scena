@@ -100,14 +100,14 @@ All with `TriggeringEntities` any/all semantics (§7.6.5.1, p5-s2).
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| ParameterCondition | §7.6.5.2 | In | p5-s1 | Rule comparator; ordering only when numerically convertible |
-| VariableCondition | §7.6.5.2, §6.12 | In | p5-s1 | ≥1.2; strings equal/not-equal only |
-| SimulationTimeCondition | §7.6.5.2 | In | p5-s1 | Time starts when Storyboard enters running (§8.4.7) |
-| StoryboardElementStateCondition | §7.6.5.2, §8.1–8.2 | In | p5-s1 | States and transitions |
-| TimeOfDayCondition | §7.6.5.2 | In | p5-s1 | Fed by the EnvironmentAction time-of-day clock (p5-s6) |
+| ParameterCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: shared `Rule` comparator, exact IEEE numeric compare, ordering only when both operands are scalar-convertible; immutable at runtime (§9.1); dangling `parameterRef` ⇒ init `SemanticError`. XML lowering deferred (P4) |
+| VariableCondition | §7.6.5.2, §6.12 | In | p5-s1 | Kernel landed (≥1.2): runtime variable store seeded at init, host `set_variable`; strings equal/not-equal, numeric when scalar-convertible; dangling `variableRef` ⇒ init `SemanticError` (rule `reference_control.resolvable_variable_reference`). XML lowering deferred (P4) |
+| SimulationTimeCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: gained the spec's `rule` (default greaterOrEqual); time starts when the Storyboard enters running (§8.4.7); NaN value ⇒ init `ValidationError`. XML lowering deferred (P4) |
+| StoryboardElementStateCondition | §7.6.5.2, §8.1–8.2 | In | p5-s1 | Kernel landed: level states + one-evaluation transition pulses; nameRef `::` resolution; zero/ambiguous ref ⇒ init `SemanticError` (rule `reference_control.resolvable_storyboard_element_ref`); `action` type unsupported until p5-s4 (warns). XML lowering deferred (P4) |
+| TimeOfDayCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: host-anchored simulated clock advancing with sim time, epoch-seconds compare (UTC offset honored), leap-year-correct; unset anchor ⇒ false + warn-once. Same anchor fed later by the EnvironmentAction clock (p5-s6). XML lowering deferred (P4) |
 | TrafficSignalCondition | §7.6.5.2, §6.11 | In | p5-s6 | Lands with the signal actions |
 | TrafficSignalControllerCondition | §7.6.5.2, §6.11 | In | p5-s6 | Phase reached; 1.4 semantics excluded |
-| UserDefinedValueCondition | §7.6.5.2 | In | p5-s1 | Host-provided named values via gateway/API |
+| UserDefinedValueCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: host-provided named values (`set_user_defined_value`, stageable pre-init); unset name ⇒ false + warn-once. XML lowering deferred (P4) |
 
 ## Storyboard & runtime semantics
 

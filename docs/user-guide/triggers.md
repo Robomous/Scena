@@ -148,6 +148,24 @@ act.set_stop_trigger(scn.make_trigger(scn.SimulationTimeCondition(at_time=4.5)))
 keyword). A complete runnable example lives in
 [`python/examples/hello_engine.py`](../../python/examples/hello_engine.py).
 
+The logical expression inside a condition is any of the ASAM condition
+classes. The **by-value** set — comparing the simulation time, a parameter,
+a variable, an external value, the time of day, or another element's state —
+has its own chapter, [By-value conditions](conditions.md):
+
+```python
+import scena as scn
+
+# A variable the host flips at runtime, behind a rising edge.
+trigger = scn.make_trigger(
+    scn.VariableCondition("gate", scn.Rule.EqualTo, "open"),
+    edge=scn.ConditionEdge.Rising,
+)
+```
+
+A complete by-value example lives in
+[`python/examples/byvalue_conditions.py`](../../python/examples/byvalue_conditions.py).
+
 ## Triggers and the event lifecycle
 
 A start trigger is evaluated exactly once per evaluation, and only while its

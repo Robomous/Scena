@@ -10,6 +10,7 @@
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
 #include "scena/status.h"
 #include "scena/version.h"
@@ -17,6 +18,9 @@
 struct scn_engine {
     scena::ir::Scenario scenario;
     scena::Engine engine;
+    // Backing store for the last string returned by a get_* borrowed-string
+    // accessor; overwritten by the next such call (see capi.h lifetime docs).
+    std::string value_buffer;
 };
 
 namespace {
@@ -43,6 +47,8 @@ scn_status to_c_status(scena::Status status) {
         return SCN_ERROR_SEMANTIC;
     case scena::Status::UnsupportedFeature:
         return SCN_ERROR_UNSUPPORTED_FEATURE;
+    case scena::Status::UnknownName:
+        return SCN_ERROR_UNKNOWN_NAME;
     }
     return SCN_ERROR_INTERNAL;
 }
@@ -276,6 +282,103 @@ scn_status scn_engine_report_state(scn_engine* engine, const char* entity_id,
     }
     try {
         return to_c_status(engine->engine.report_state(entity_id, from_c_state(*state)));
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_parameter(scn_engine* engine, const char* name, const char* value) {
+    if (engine == nullptr || name == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        engine->scenario.parameters[name] = value;
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_declare_variable(scn_engine* engine, const char* name, const char* value) {
+    if (engine == nullptr || name == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        engine->scenario.variables[name] = value;
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_variable(scn_engine* engine, const char* name, const char* value) {
+    if (engine == nullptr || name == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        return to_c_status(engine->engine.set_variable(name, value));
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_get_variable(scn_engine* engine, const char* name, const char** out) {
+    if (engine == nullptr || name == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto value = engine->engine.variable(name);
+        if (!value.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out left untouched
+        }
+        engine->value_buffer = *value;
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_user_defined_value(scn_engine* engine, const char* name,
+                                             const char* value) {
+    if (engine == nullptr || name == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        return to_c_status(engine->engine.set_user_defined_value(name, value));
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_get_user_defined_value(scn_engine* engine, const char* name,
+                                             const char** out) {
+    if (engine == nullptr || name == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto value = engine->engine.user_defined_value(name);
+        if (!value.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out left untouched
+        }
+        engine->value_buffer = *value;
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_date_time(scn_engine* engine, int year, int month, int day, int hour,
+                                    int minute, int second, int millisecond,
+                                    int utc_offset_minutes) {
+    if (engine == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const scena::ir::DateTime date_time{year,   month,  day,         hour,
+                                            minute, second, millisecond, utc_offset_minutes};
+        return to_c_status(engine->engine.set_date_time(date_time));
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }

@@ -50,6 +50,7 @@ scn_add_test(detmath_test)
 scn_add_test(trigger_test)
 scn_add_test(event_priority_test)
 scn_add_test(diagnostics_test)
+scn_add_test(condition_byvalue_test)
 
 # The determinism and detmath tests share the fixture and probe list with the
 # trace runner, so they link the support library.

@@ -3,11 +3,41 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <utility>
+
+#include "scena/ir/condition.h"
+#include "scena/runtime/element_ref.h"
 
 namespace scena::runtime {
 
 namespace {
+
+/// Whether an element in `state`/`transition` (stamped at `stamp`) satisfies
+/// the queried StoryboardElementState. Level states hold whenever the element
+/// is in that state; transitions hold only in the evaluation they occurred
+/// (stamp == current evaluation), which is what makes a transition a
+/// one-evaluation pulse.
+bool element_state_holds(ElementState state, TransitionKind transition, std::uint64_t stamp,
+                         std::uint64_t evaluation, ir::StoryboardElementState query) {
+    switch (query) {
+    case ir::StoryboardElementState::StandbyState:
+        return state == ElementState::Standby;
+    case ir::StoryboardElementState::RunningState:
+        return state == ElementState::Running;
+    case ir::StoryboardElementState::CompleteState:
+        return state == ElementState::Complete;
+    case ir::StoryboardElementState::StartTransition:
+        return transition == TransitionKind::Start && stamp == evaluation;
+    case ir::StoryboardElementState::EndTransition:
+        return transition == TransitionKind::End && stamp == evaluation;
+    case ir::StoryboardElementState::StopTransition:
+        return transition == TransitionKind::Stop && stamp == evaluation;
+    case ir::StoryboardElementState::SkipTransition:
+        return transition == TransitionKind::Skip && stamp == evaluation;
+    }
+    return false;
+}
 
 /// Splits a '/'-separated element path into name segments.
 std::vector<std::string> split_path(const std::string& path) {
@@ -43,10 +73,13 @@ Scheduler::TriggerState Scheduler::make_trigger_state(const std::optional<ir::Tr
     return state;
 }
 
-bool Scheduler::evaluate_condition(ConditionState& state, double simulation_time) {
+bool Scheduler::evaluate_condition(ConditionState& state, const ir::EvaluationContext& context) {
     // Engine::init guarantees a non-null expression and a delay >= 0.
     const ir::TriggerCondition& condition = *state.condition;
-    const bool raw = condition.expression->evaluate(simulation_time);
+    const bool raw = condition.expression->evaluate(context);
+    // The edge and delay machinery is keyed on the discrete evaluation time,
+    // which the scheduler reads straight from the context.
+    const double simulation_time = context.simulation_time();
 
     // Edge detection over the raw logical expression (§7.6.2). Every edge
     // needs LE(t_{d-1}), which does not exist on the first check — §7.6.4
@@ -103,7 +136,7 @@ bool Scheduler::evaluate_condition(ConditionState& state, double simulation_time
     return delayed;
 }
 
-bool Scheduler::evaluate_trigger(TriggerState& state, double simulation_time) {
+bool Scheduler::evaluate_trigger(TriggerState& state, const ir::EvaluationContext& context) {
     if (!state.present()) {
         return false;
     }
@@ -117,7 +150,7 @@ bool Scheduler::evaluate_trigger(TriggerState& state, double simulation_time) {
     for (const ir::ConditionGroup& group : state.trigger->groups) {
         bool group_value = true;
         for (std::size_t i = 0; i < group.conditions.size(); ++i, ++index) {
-            group_value = evaluate_condition(state.conditions[index], simulation_time) &&
+            group_value = evaluate_condition(state.conditions[index], context) &&
                           group_value; // condition first: it must always run
         }
         trigger_value = group_value || trigger_value;
@@ -170,35 +203,58 @@ Scheduler::Node Scheduler::build(const ir::Storyboard& storyboard) {
 
 void Scheduler::bind(const ir::Storyboard& storyboard) {
     root_ = build(storyboard);
+    evaluation_ = 0;
+    element_refs_.clear();
+    build_element_ref_cache(storyboard);
     bound_ = true;
 }
 
 void Scheduler::step(double simulation_time, const FireCallback& fire) {
+    const ir::TimeOnlyEvaluationContext context{simulation_time};
+    step(context, fire);
+}
+
+void Scheduler::step(const ir::EvaluationContext& host_context, const FireCallback& fire) {
     if (!bound_ || root_.state == ElementState::Complete) {
         return;
     }
 
+    // A new discrete evaluation: bump the counter so transitions produced in
+    // this step form a one-evaluation pulse. The init evaluation is 1.
+    ++evaluation_;
+
+    // Wrap the host context so a StoryboardElementStateCondition sees this
+    // storyboard's live states and transitions; every other facet forwards to
+    // the host unchanged.
+    const BoundContext context{host_context, element_refs_, evaluation_};
+
     // The storyboard enters runningState when the simulation starts; the
     // engine issues this first evaluation at t = 0 during init (§8.4.7).
     if (root_.state == ElementState::Standby) {
-        enter_running(root_, simulation_time, fire);
+        enter_running(root_, context, fire);
     }
 
     // Stop trigger wins over any same-step starts: it moves the storyboard
     // and every still-executing descendant to completeState (§8.4.7). The
     // same stop-before-start ordering applies to act stop triggers in
     // update().
-    if (evaluate_trigger(root_.stop_trigger, simulation_time)) {
+    if (evaluate_trigger(root_.stop_trigger, context)) {
         stop_cascade(root_);
         return;
     }
 
-    update(root_, simulation_time, fire);
+    update(root_, context, fire);
 }
 
-void Scheduler::enter_running(Node& node, double simulation_time, const FireCallback& fire) {
+void Scheduler::mark_transition(Node& node, TransitionKind transition) {
+    node.transition = transition;
+    node.transition_evaluation = evaluation_;
+}
+
+void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
+                              const FireCallback& fire) {
     node.state = ElementState::Running;
-    node.transition = TransitionKind::Start;
+    mark_transition(node, TransitionKind::Start);
 
     if (node.kind == Node::Kind::Event) {
         // This startTransition is one of the event's executions (§8.4.2.1).
@@ -230,7 +286,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
         // and can equally override or be skipped.
         for (std::size_t i = 0; i < node.children.size(); ++i) {
             if (!node.children[i].start_trigger.present()) {
-                start_event(node, i, simulation_time, fire);
+                start_event(node, i, context, fire);
             } else {
                 // An event that is about to wait for its own trigger with no
                 // executions left never gets to run (§8.4.2.1).
@@ -240,7 +296,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
     } else {
         for (Node& child : node.children) {
             if (!child.start_trigger.present()) {
-                enter_running(child, simulation_time, fire);
+                enter_running(child, context, fire);
             }
         }
     }
@@ -251,7 +307,7 @@ void Scheduler::enter_running(Node& node, double simulation_time, const FireCall
     // this way (§8.4.7).
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
         node.state = ElementState::Complete;
-        node.transition = TransitionKind::End;
+        mark_transition(node, TransitionKind::End);
     }
 }
 
@@ -268,7 +324,7 @@ void Scheduler::end_execution(Node& event) {
     // §8.4.2.1: when the event is about to transfer out of runningState with
     // an endTransition it completes if its executions reached the maximum,
     // and returns to standbyState while executions remain.
-    event.transition = TransitionKind::End;
+    mark_transition(event, TransitionKind::End);
     event.state =
         event.executions >= event.max_executions ? ElementState::Complete : ElementState::Standby;
 }
@@ -281,11 +337,11 @@ void Scheduler::apply_standby_exhaustion(Node& event) {
     // exhausted before it ever starts.
     if (event.state == ElementState::Standby && event.executions >= event.max_executions) {
         event.state = ElementState::Complete;
-        event.transition = TransitionKind::Skip;
+        mark_transition(event, TransitionKind::Skip);
     }
 }
 
-void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation_time,
+void Scheduler::start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
                             const FireCallback& fire) {
     Node& event = maneuver.children[index];
     apply_standby_exhaustion(event);
@@ -316,7 +372,7 @@ void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation
         // skipTransition and counts as an execution (§8.4.2.1), which may
         // exhaust the event outright.
         if (has_running_sibling(maneuver, index)) {
-            event.transition = TransitionKind::Skip;
+            mark_transition(event, TransitionKind::Skip);
             ++event.executions;
             apply_standby_exhaustion(event);
             return;
@@ -328,10 +384,11 @@ void Scheduler::start_event(Node& maneuver, std::size_t index, double simulation
         break;
     }
 
-    enter_running(event, simulation_time, fire);
+    enter_running(event, context, fire);
 }
 
-void Scheduler::update_maneuver(Node& maneuver, double simulation_time, const FireCallback& fire) {
+void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
+                                const FireCallback& fire) {
     // Single pass in document order. Each decision is a pure function of the
     // time and of the decisions already taken by strictly earlier siblings,
     // which is what pins the outcome when several events trigger together —
@@ -344,14 +401,14 @@ void Scheduler::update_maneuver(Node& maneuver, double simulation_time, const Fi
         if (event.state != ElementState::Standby) {
             continue;
         }
-        if (!evaluate_trigger(event.start_trigger, simulation_time)) {
+        if (!evaluate_trigger(event.start_trigger, context)) {
             continue;
         }
-        start_event(maneuver, i, simulation_time, fire);
+        start_event(maneuver, i, context, fire);
     }
 }
 
-void Scheduler::update(Node& node, double simulation_time, const FireCallback& fire) {
+void Scheduler::update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire) {
     if (node.state == ElementState::Complete) {
         return;
     }
@@ -370,16 +427,16 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
     // ordering in step() would otherwise not hold one level down. An act
     // whose stop and start triggers both hold at the same discrete time is
     // therefore stopped, not started.
-    if (evaluate_trigger(node.stop_trigger, simulation_time)) {
+    if (evaluate_trigger(node.stop_trigger, context)) {
         stop_cascade(node);
         return;
     }
 
     if (node.state == ElementState::Standby) {
-        if (!evaluate_trigger(node.start_trigger, simulation_time)) {
+        if (!evaluate_trigger(node.start_trigger, context)) {
             return;
         }
-        enter_running(node, simulation_time, fire);
+        enter_running(node, context, fire);
         if (node.state == ElementState::Complete) {
             return;
         }
@@ -388,15 +445,15 @@ void Scheduler::update(Node& node, double simulation_time, const FireCallback& f
     // Advance children in document order, then check for a regular end
     // (§8.4.3–8.4.6).
     if (node.kind == Node::Kind::Maneuver) {
-        update_maneuver(node, simulation_time, fire);
+        update_maneuver(node, context, fire);
     } else {
         for (Node& child : node.children) {
-            update(child, simulation_time, fire);
+            update(child, context, fire);
         }
     }
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
         node.state = ElementState::Complete;
-        node.transition = TransitionKind::End;
+        mark_transition(node, TransitionKind::End);
     }
 }
 
@@ -414,7 +471,7 @@ void Scheduler::stop_cascade(Node& node) {
     if (node.state != ElementState::Complete) {
         // stopTransition leaves runningState or standbyState (§8.2).
         node.state = ElementState::Complete;
-        node.transition = TransitionKind::Stop;
+        mark_transition(node, TransitionKind::Stop);
     }
     for (Node& child : node.children) {
         stop_cascade(child);
@@ -477,6 +534,121 @@ bool Scheduler::storyboard_complete() const noexcept {
 void Scheduler::reset() noexcept {
     bound_ = false;
     root_ = Node{};
+    evaluation_ = 0;
+    element_refs_.clear();
+}
+
+std::optional<bool> Scheduler::BoundContext::storyboard_element_state(
+    ir::StoryboardElementType type, std::string_view ref, ir::StoryboardElementState state) const {
+    const auto it = element_refs_->find(element_ref_key(type, ref));
+    if (it == element_refs_->end() || it->second == nullptr) {
+        // The reference was not present at bind() (bare-scheduler tests) or did
+        // not resolve to a unique element; the condition is deterministically
+        // false. Engine::init reports the unresolved reference as an error.
+        return std::nullopt;
+    }
+    const Node& node = *it->second;
+    return element_state_holds(node.state, node.transition, node.transition_evaluation, evaluation_,
+                               state);
+}
+
+std::string Scheduler::element_ref_key(ir::StoryboardElementType type, std::string_view ref) {
+    // The type index disambiguates a name shared across element kinds; "|" is
+    // not a valid name character in a reference (references split on "::").
+    return std::to_string(static_cast<int>(type)) + "|" + std::string(ref);
+}
+
+void Scheduler::cache_trigger_refs(const std::optional<ir::Trigger>& trigger) {
+    if (!trigger.has_value()) {
+        return;
+    }
+    for (const ir::ConditionGroup& group : trigger->groups) {
+        for (const ir::TriggerCondition& condition : group.conditions) {
+            const auto* element_condition =
+                dynamic_cast<const ir::StoryboardElementStateCondition*>(
+                    condition.expression.get());
+            if (element_condition == nullptr) {
+                continue;
+            }
+            const std::string key = element_ref_key(element_condition->element_type(),
+                                                    element_condition->element_ref());
+            if (element_refs_.count(key) != 0) {
+                continue; // same reference already resolved
+            }
+            element_refs_[key] = resolve_element_ref(element_condition->element_type(),
+                                                     element_condition->element_ref());
+        }
+    }
+}
+
+void Scheduler::build_element_ref_cache(const ir::Storyboard& storyboard) {
+    cache_trigger_refs(storyboard.stop_trigger);
+    for (const ir::Story& story : storyboard.stories) {
+        for (const ir::Act& act : story.acts) {
+            cache_trigger_refs(act.start_trigger);
+            cache_trigger_refs(act.stop_trigger);
+            for (const ir::ManeuverGroup& group : act.groups) {
+                for (const ir::Maneuver& maneuver : group.maneuvers) {
+                    for (const ir::Event& event : maneuver.events) {
+                        cache_trigger_refs(event.start_trigger);
+                    }
+                }
+            }
+        }
+    }
+}
+
+const Scheduler::Node* Scheduler::resolve_element_ref(ir::StoryboardElementType type,
+                                                      std::string_view ref) const {
+    // Per-action nodes do not exist yet (p5-s4), so an action reference never
+    // resolves; the engine warns about it at init.
+    if (type == ir::StoryboardElementType::Action) {
+        return nullptr;
+    }
+    Node::Kind kind = Node::Kind::Story;
+    switch (type) {
+    case ir::StoryboardElementType::Story:
+        kind = Node::Kind::Story;
+        break;
+    case ir::StoryboardElementType::Act:
+        kind = Node::Kind::Act;
+        break;
+    case ir::StoryboardElementType::ManeuverGroup:
+        kind = Node::Kind::Group;
+        break;
+    case ir::StoryboardElementType::Maneuver:
+        kind = Node::Kind::Maneuver;
+        break;
+    case ir::StoryboardElementType::Event:
+        kind = Node::Kind::Event;
+        break;
+    case ir::StoryboardElementType::Action:
+        return nullptr;
+    }
+
+    const std::vector<std::string> segments = split_element_ref(ref);
+    const Node* match = nullptr;
+    int matches = 0;
+    // Depth-first walk carrying the root-to-here name path; the self-to-root
+    // chain each candidate is matched against is its reverse.
+    std::vector<std::string> path;
+    const auto visit = [&](const Node& node, auto&& self) -> void {
+        path.push_back(node.name);
+        if (node.kind == kind) {
+            std::vector<std::string> chain(path.rbegin(), path.rend());
+            if (element_ref_matches(segments, chain)) {
+                ++matches;
+                match = &node;
+            }
+        }
+        for (const Node& child : node.children) {
+            self(child, self);
+        }
+        path.pop_back();
+    };
+    visit(root_, visit);
+    // A reference resolves only when exactly one element matches (§ naming).
+    return matches == 1 ? match : nullptr;
 }
 
 } // namespace scena::runtime

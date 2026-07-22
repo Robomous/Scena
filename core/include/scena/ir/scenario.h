@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,6 +41,20 @@ struct Scenario {
     std::string name;
     std::vector<Entity> entities;
     std::vector<std::shared_ptr<Action>> init_actions;
+
+    /// Global parameters (§9.1): named string values assigned at load time and
+    /// immutable at runtime, so a ParameterCondition's result is constant over
+    /// a run. Typed declarations arrive with p4-s3; the by-value conditions
+    /// compare stringly, matching the ParameterCondition XSD. std::less<>
+    /// gives heterogeneous lookup so validation and evaluation can query with
+    /// a std::string_view without allocating.
+    std::map<std::string, std::string, std::less<>> parameters;
+
+    /// Global variables (§6.12): named string values with an initialization
+    /// value that the engine seeds into its runtime store at init and that a
+    /// VariableAction or the host may change during the run.
+    std::map<std::string, std::string, std::less<>> variables;
+
     Storyboard storyboard;
 };
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -374,4 +375,50 @@ TEST(EngineTest, StoryboardElementStateQuery) {
               scena::runtime::ElementState::Complete);
     EXPECT_EQ(*engine.storyboard_element_transition("story/act/group/maneuver/event-1"),
               scena::runtime::TransitionKind::End);
+}
+
+// --- Named-value host interface (§6.12 variables, UserDefinedValueCondition) -
+
+TEST(EngineTest, VariableSettersRequireInitialization) {
+    Engine engine;
+    EXPECT_EQ(engine.set_variable("v", "1"), Status::NotInitialized);
+    EXPECT_FALSE(engine.variable("v").has_value());
+}
+
+TEST(EngineTest, VariableSetterRejectsUndeclaredName) {
+    Scenario scenario = make_scenario();
+    scenario.variables["declared"] = "0";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_EQ(engine.set_variable("declared", "9"), Status::Ok);
+    EXPECT_EQ(engine.variable("declared"), std::optional<std::string>("9"));
+    EXPECT_EQ(engine.set_variable("ghost", "1"), Status::UnknownName);
+    EXPECT_FALSE(engine.variable("ghost").has_value());
+}
+
+TEST(EngineTest, VariablesResetToDeclarationOnReinit) {
+    Scenario first = make_scenario();
+    first.variables["v"] = "0";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(first)), Status::Ok);
+    ASSERT_EQ(engine.set_variable("v", "42"), Status::Ok);
+    ASSERT_EQ(engine.close(), Status::Ok);
+    EXPECT_FALSE(engine.variable("v").has_value()); // cleared by close
+
+    Scenario second = make_scenario();
+    second.variables["v"] = "0";
+    ASSERT_EQ(engine.init(std::move(second)), Status::Ok);
+    EXPECT_EQ(engine.variable("v"), std::optional<std::string>("0")); // reseeded, not 42
+}
+
+TEST(EngineTest, UserDefinedValuesPersistAcrossInitAndClearOnClose) {
+    Engine engine;
+    EXPECT_EQ(engine.set_user_defined_value("ext", "staged"), Status::Ok); // before init
+    EXPECT_EQ(engine.user_defined_value("ext"), std::optional<std::string>("staged"));
+    ASSERT_EQ(engine.init(make_scenario()), Status::Ok);
+    EXPECT_EQ(engine.user_defined_value("ext"),
+              std::optional<std::string>("staged")); // survives init
+    EXPECT_EQ(engine.set_user_defined_value("ext", "updated"), Status::Ok);
+    ASSERT_EQ(engine.close(), Status::Ok);
+    EXPECT_FALSE(engine.user_defined_value("ext").has_value()); // cleared by close
 }

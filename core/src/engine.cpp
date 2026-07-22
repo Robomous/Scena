@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT
 #include "scena/engine.h"
 
+#include <cmath>
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "scena/gateway/simulator_gateway.h"
+#include "scena/ir/condition.h"
+#include "scena/ir/evaluation_context.h"
+#include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
+#include "scena/runtime/element_ref.h"
 
 namespace scena {
 
@@ -21,6 +28,103 @@ constexpr const char* kRuleUniqueNames =
     "asam.net:xosc:1.0.0:naming.unique_element_names_on_same_level";
 constexpr const char* kRuleConditionDelay =
     "asam.net:xosc:1.0.0:data_type.condition_delay_not_negative";
+constexpr const char* kRuleResolvableVariable =
+    "asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference";
+constexpr const char* kRuleResolvableStoryboardElement =
+    "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref";
+
+using NamedValueStore = std::map<std::string, std::string, std::less<>>;
+
+/// The runtime EvaluationContext the engine hands the scheduler each step. It
+/// exposes simulation time and the named-value facets from the engine's live
+/// stores, and warns once when a UserDefinedValueCondition reads a value the
+/// host never set. The stores and diagnostic sink are borrowed and must
+/// outlive the context (they are engine members; the context is a per-step
+/// temporary).
+class RuntimeContext final : public ir::EvaluationContext {
+public:
+    RuntimeContext(double simulation_time, const NamedValueStore& parameters,
+                   const NamedValueStore& variables, const NamedValueStore& user_defined_values,
+                   std::optional<double> date_time_seconds, DiagnosticSink& sink,
+                   std::set<std::string>& warned)
+        : simulation_time_(simulation_time), parameters_(&parameters), variables_(&variables),
+          user_defined_values_(&user_defined_values), date_time_seconds_(date_time_seconds),
+          sink_(&sink), warned_(&warned) {}
+
+    [[nodiscard]] double simulation_time() const override { return simulation_time_; }
+
+    [[nodiscard]] std::optional<double> date_time_seconds() const override {
+        if (!date_time_seconds_.has_value()) {
+            warn_once("timeOfDay", "time of day is not set; condition false");
+        }
+        return date_time_seconds_;
+    }
+
+    [[nodiscard]] std::optional<std::string_view>
+    named_value(ir::NamedValueKind kind, std::string_view name) const override {
+        const NamedValueStore* store = nullptr;
+        switch (kind) {
+        case ir::NamedValueKind::Parameter:
+            store = parameters_;
+            break;
+        case ir::NamedValueKind::Variable:
+            store = variables_;
+            break;
+        case ir::NamedValueKind::UserDefinedValue:
+            store = user_defined_values_;
+            break;
+        }
+        const auto it = store->find(name);
+        if (it != store->end()) {
+            return std::string_view{it->second};
+        }
+        // Parameters and variables cannot dangle at runtime — init rejects an
+        // undeclared ref — so only an unset external value reaches here, and
+        // that is a degraded-but-running condition, not a failure.
+        if (kind == ir::NamedValueKind::UserDefinedValue) {
+            warn_once("values/userDefined/" + std::string(name),
+                      "user-defined value '" + std::string(name) + "' is not set; condition false");
+        }
+        return std::nullopt;
+    }
+
+private:
+    void warn_once(std::string path, std::string message) const {
+        if (!warned_->insert(path).second) {
+            return; // already reported this name in this run
+        }
+        Diagnostic diagnostic;
+        diagnostic.severity = Severity::Warning;
+        diagnostic.code = Status::UnknownName;
+        diagnostic.message = std::move(message);
+        diagnostic.path = std::move(path);
+        sink_->report(std::move(diagnostic));
+    }
+
+    double simulation_time_;
+    const NamedValueStore* parameters_;
+    const NamedValueStore* variables_;
+    const NamedValueStore* user_defined_values_;
+    std::optional<double> date_time_seconds_;
+    DiagnosticSink* sink_;
+    std::set<std::string>* warned_;
+};
+
+/// True for the four ordering rules, which the by-value conditions support
+/// only between scalar-convertible operands (ParameterCondition clause).
+bool is_ordering_rule(ir::Rule rule) {
+    switch (rule) {
+    case ir::Rule::GreaterThan:
+    case ir::Rule::LessThan:
+    case ir::Rule::GreaterOrEqual:
+    case ir::Rule::LessOrEqual:
+        return true;
+    case ir::Rule::EqualTo:
+    case ir::Rule::NotEqualTo:
+        return false;
+    }
+    return false;
+}
 
 /// Appends one Error diagnostic to `sink`.
 void error(DiagnosticSink& sink, Status code, std::string message, std::string path,
@@ -34,8 +138,174 @@ void error(DiagnosticSink& sink, Status code, std::string message, std::string p
     sink.report(std::move(diagnostic));
 }
 
+/// Appends one Warning diagnostic to `sink` (no rule id).
+void warn(DiagnosticSink& sink, Status code, std::string message, std::string path) {
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = code;
+    diagnostic.message = std::move(message);
+    diagnostic.path = std::move(path);
+    sink.report(std::move(diagnostic));
+}
+
 std::string join_path(const std::string& prefix, const std::string& child) {
     return prefix.empty() ? child : prefix + "/" + child;
+}
+
+/// Warns when an ordering rule is applied to operands that are not both
+/// scalar-convertible: the comparison is defined to be false in that case
+/// (ParameterCondition / VariableCondition clause), so it is a degraded
+/// condition worth surfacing at load time rather than a hard error.
+void warn_if_ordering_non_numeric(DiagnosticSink& sink, const std::string& path, ir::Rule rule,
+                                  std::string_view stored, std::string_view literal) {
+    if (!is_ordering_rule(rule)) {
+        return;
+    }
+    if (ir::parse_scalar(stored).has_value() && ir::parse_scalar(literal).has_value()) {
+        return;
+    }
+    warn(sink, Status::UnsupportedFeature,
+         "ordering rule on a non-scalar value; condition is always false", path);
+}
+
+/// Counts the storyboard elements of `type` whose name reference matches
+/// `segments`, walking the tree in document order. The path carries a leading
+/// empty root name so the self-to-root chains match the scheduler's tree (its
+/// storyboard root has an empty name), keeping validation and evaluation in
+/// exact agreement about what resolves.
+int count_element_matches(const ir::Storyboard& storyboard, ir::StoryboardElementType type,
+                          const std::vector<std::string>& segments) {
+    int matches = 0;
+    std::vector<std::string> path{""};
+    const auto consider = [&](ir::StoryboardElementType candidate) {
+        if (candidate != type) {
+            return;
+        }
+        const std::vector<std::string> chain(path.rbegin(), path.rend());
+        if (runtime::element_ref_matches(segments, chain)) {
+            ++matches;
+        }
+    };
+    for (const ir::Story& story : storyboard.stories) {
+        path.push_back(story.name);
+        consider(ir::StoryboardElementType::Story);
+        for (const ir::Act& act : story.acts) {
+            path.push_back(act.name);
+            consider(ir::StoryboardElementType::Act);
+            for (const ir::ManeuverGroup& group : act.groups) {
+                path.push_back(group.name);
+                consider(ir::StoryboardElementType::ManeuverGroup);
+                for (const ir::Maneuver& maneuver : group.maneuvers) {
+                    path.push_back(maneuver.name);
+                    consider(ir::StoryboardElementType::Maneuver);
+                    for (const ir::Event& event : maneuver.events) {
+                        path.push_back(event.name);
+                        consider(ir::StoryboardElementType::Event);
+                        path.pop_back();
+                    }
+                    path.pop_back();
+                }
+                path.pop_back();
+            }
+            path.pop_back();
+        }
+        path.pop_back();
+    }
+    return matches;
+}
+
+/// Validates one trigger condition's logical expression against the scenario's
+/// named-value declarations and storyboard hierarchy. dynamic_cast selects the
+/// concrete by-value condition; the expression may also be a plain time/entity
+/// condition, which carries no named reference and needs no check here. A null
+/// expression is reported by the caller.
+void validate_condition_expression(const ir::TriggerCondition& condition,
+                                   const std::string& condition_path,
+                                   const ir::Storyboard& storyboard,
+                                   const NamedValueStore& parameters,
+                                   const NamedValueStore& variables, DiagnosticSink& sink) {
+    const ir::Condition* expression = condition.expression.get();
+    if (expression == nullptr) {
+        return;
+    }
+    if (const auto* parameter = dynamic_cast<const ir::ParameterCondition*>(expression)) {
+        const auto it = parameters.find(parameter->parameter_ref());
+        if (it == parameters.end()) {
+            // The standard defines no checker rule for parameter-reference
+            // resolvability, so the diagnostic carries no rule id.
+            error(sink, Status::SemanticError,
+                  "parameter '" + parameter->parameter_ref() + "' is not declared", condition_path);
+            return;
+        }
+        warn_if_ordering_non_numeric(sink, condition_path, parameter->rule(), it->second,
+                                     parameter->value());
+    } else if (const auto* variable = dynamic_cast<const ir::VariableCondition*>(expression)) {
+        const auto it = variables.find(variable->variable_ref());
+        if (it == variables.end()) {
+            error(sink, Status::SemanticError,
+                  "variable '" + variable->variable_ref() + "' is not declared", condition_path,
+                  kRuleResolvableVariable);
+            return;
+        }
+        warn_if_ordering_non_numeric(sink, condition_path, variable->rule(), it->second,
+                                     variable->value());
+    } else if (const auto* user = dynamic_cast<const ir::UserDefinedValueCondition*>(expression)) {
+        // The external value is unknown at load time, so only the literal can
+        // be checked: an ordering rule on a non-scalar literal can never hold.
+        if (is_ordering_rule(user->rule()) && !ir::parse_scalar(user->value()).has_value()) {
+            warn(sink, Status::UnsupportedFeature,
+                 "ordering rule on a non-scalar value; condition is always false", condition_path);
+        }
+    } else if (const auto* sim = dynamic_cast<const ir::SimulationTimeCondition*>(expression)) {
+        // A NaN reference value can never be reached by any rule; the XSD type
+        // is double, so this is a content defect.
+        if (std::isnan(sim->value())) {
+            error(sink, Status::ValidationError, "simulation time condition value is NaN",
+                  condition_path);
+        }
+    } else if (const auto* tod = dynamic_cast<const ir::TimeOfDayCondition*>(expression)) {
+        // An out-of-range date-time (Feb 30, hour 24, ...) has no instant to
+        // compare against. The string-format rule (data_type.time_format) is a
+        // frontend concern; at the IR level the fields are already parsed.
+        if (!tod->date_time().valid()) {
+            error(sink, Status::ValidationError, "time of day condition has an invalid date-time",
+                  condition_path);
+        }
+    } else if (const auto* element =
+                   dynamic_cast<const ir::StoryboardElementStateCondition*>(expression)) {
+        const ir::StoryboardElementType type = element->element_type();
+        const ir::StoryboardElementState state = element->state();
+        if (type == ir::StoryboardElementType::Action) {
+            // Per-action nodes arrive with p5-s4; until then an action
+            // reference is unobservable and the condition is constant false.
+            warn(sink, Status::UnsupportedFeature,
+                 "storyboardElementType 'action' is not supported yet; condition is always false",
+                 condition_path);
+            return;
+        }
+        // skipTransition is defined only for Event instances
+        // (§ StoryboardElementState); on any other type it can never occur.
+        if (state == ir::StoryboardElementState::SkipTransition &&
+            type != ir::StoryboardElementType::Event) {
+            warn(sink, Status::UnsupportedFeature,
+                 "skipTransition is only defined for events; condition is always false",
+                 condition_path);
+        }
+        const std::vector<std::string> segments =
+            runtime::split_element_ref(element->element_ref());
+        const int matches = count_element_matches(storyboard, type, segments);
+        if (matches == 0) {
+            // Zero matches covers both a dangling reference and a reference to
+            // an element of a different type (no node of this kind matches).
+            error(sink, Status::SemanticError,
+                  "storyboard element '" + element->element_ref() + "' is not found",
+                  condition_path, kRuleResolvableStoryboardElement);
+        } else if (matches > 1) {
+            error(sink, Status::SemanticError,
+                  "storyboard element reference '" + element->element_ref() + "' is ambiguous",
+                  condition_path, kRuleResolvableStoryboardElement);
+        }
+    }
 }
 
 /// Reports empty and sibling-duplicate names in `range`. Element names
@@ -71,7 +341,9 @@ void check_sibling_names(const Range& range, NameOf name_of, const char* label,
 /// hosts the trigger (empty for the storyboard); `trigger_kind` is
 /// "startTrigger" or "stopTrigger".
 void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::string& owner_path,
-                      const char* trigger_kind, DiagnosticSink& sink) {
+                      const char* trigger_kind, const ir::Storyboard& storyboard,
+                      const NamedValueStore& parameters, const NamedValueStore& variables,
+                      DiagnosticSink& sink) {
     if (!trigger.has_value()) {
         return;
     }
@@ -106,6 +378,10 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
                 error(sink, Status::ValidationError, "condition delay is negative", condition_path,
                       kRuleConditionDelay);
             }
+            // By-value conditions carry named references and rule/value pairs
+            // whose resolvability and scalar-convertibility are checked here.
+            validate_condition_expression(condition, condition_path, storyboard, parameters,
+                                          variables, sink);
         }
     }
 }
@@ -115,10 +391,12 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
 /// Every defect is appended to `sink`; the walk never stops early.
 template <typename Records>
 void validate_storyboard(const ir::Storyboard& storyboard, const Records& records,
+                         const NamedValueStore& parameters, const NamedValueStore& variables,
                          DiagnosticSink& sink) {
     check_sibling_names(
         storyboard.stories, [](const ir::Story& s) { return s.name; }, "story", "", sink);
-    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", sink);
+    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", storyboard, parameters, variables,
+                     sink);
     for (const ir::Story& story : storyboard.stories) {
         const std::string story_path = story.name;
         check_sibling_names(
@@ -128,8 +406,10 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
             check_sibling_names(
                 act.groups, [](const ir::ManeuverGroup& g) { return g.name; }, "maneuver group",
                 act_path, sink);
-            validate_trigger(act.start_trigger, act_path, "startTrigger", sink);
-            validate_trigger(act.stop_trigger, act_path, "stopTrigger", sink);
+            validate_trigger(act.start_trigger, act_path, "startTrigger", storyboard, parameters,
+                             variables, sink);
+            validate_trigger(act.stop_trigger, act_path, "stopTrigger", storyboard, parameters,
+                             variables, sink);
             for (const ir::ManeuverGroup& group : act.groups) {
                 const std::string group_path = join_path(act_path, group.name);
                 check_sibling_names(
@@ -152,7 +432,8 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                         maneuver_path, sink);
                     for (const ir::Event& event : maneuver.events) {
                         const std::string event_path = join_path(maneuver_path, event.name);
-                        validate_trigger(event.start_trigger, event_path, "startTrigger", sink);
+                        validate_trigger(event.start_trigger, event_path, "startTrigger",
+                                         storyboard, parameters, variables, sink);
                         // §8.3.3.2/§8.4.2.1: the XSD type of
                         // maximumExecutionCount is unsignedInt, so a negative
                         // budget has no meaning at all. Zero is schema-valid
@@ -250,7 +531,8 @@ Status Engine::init(ir::Scenario scenario) {
                   "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
     }
-    validate_storyboard(scenario.storyboard, records, diagnostics_);
+    validate_storyboard(scenario.storyboard, records, scenario.parameters, scenario.variables,
+                        diagnostics_);
 
     if (diagnostics_.has_errors()) {
         return first_error_code(diagnostics_);
@@ -258,6 +540,14 @@ Status Engine::init(ir::Scenario scenario) {
 
     scenario_ = std::move(scenario);
     entities_ = std::move(records);
+    // Seed the runtime variable store from the declarations (§6.12: variables
+    // take their initialization value at load time). Parameters are read
+    // straight from scenario_.parameters — immutable at runtime, so no copy.
+    // User-defined values are deliberately not cleared here: a host may stage
+    // them before init so they are visible at the t = 0 evaluation, and they
+    // persist across init() until close().
+    variables_ = scenario_.variables;
+    warned_values_.clear();
     clock_.reset();
     initialized_ = true;
 
@@ -273,7 +563,14 @@ Status Engine::init(ir::Scenario scenario) {
     // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
     // conditions that already hold fire before the first host step.
     scheduler_.bind(scenario_.storyboard);
-    scheduler_.step(0.0, [this](const ir::Action& action) { return apply(action); });
+    RuntimeContext context{0.0,
+                           scenario_.parameters,
+                           variables_,
+                           user_defined_values_,
+                           current_date_time_seconds(0.0),
+                           diagnostics_,
+                           warned_values_};
+    scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     return Status::Ok;
 }
@@ -299,7 +596,14 @@ Status Engine::step(double dt) {
         }
     }
 
-    scheduler_.step(clock_.now(), [this](const ir::Action& action) { return apply(action); });
+    RuntimeContext context{clock_.now(),
+                           scenario_.parameters,
+                           variables_,
+                           user_defined_values_,
+                           current_date_time_seconds(clock_.now()),
+                           diagnostics_,
+                           warned_values_};
+    scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
         (void)id;
@@ -348,6 +652,73 @@ Status Engine::report_state(const std::string& entity_id, const EntityState& sta
     return Status::Ok;
 }
 
+Status Engine::set_variable(const std::string& name, std::string value) {
+    if (!initialized_) {
+        return Status::NotInitialized;
+    }
+    const auto it = variables_.find(name);
+    if (it == variables_.end()) {
+        // §6.12: variables must be declared. Setting an undeclared name is
+        // host misuse, reported as a Status only (no diagnostic).
+        return Status::UnknownName;
+    }
+    it->second = std::move(value);
+    return Status::Ok;
+}
+
+std::optional<std::string> Engine::variable(const std::string& name) const {
+    if (!initialized_) {
+        return std::nullopt;
+    }
+    const auto it = variables_.find(name);
+    if (it == variables_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+Status Engine::set_user_defined_value(const std::string& name, std::string value) {
+    // External values are not declared in the scenario, so any name is
+    // accepted and the value is created or updated. Allowed before and after
+    // init (a pre-init value is visible at the t = 0 evaluation).
+    user_defined_values_[name] = std::move(value);
+    return Status::Ok;
+}
+
+std::optional<std::string> Engine::user_defined_value(const std::string& name) const {
+    const auto it = user_defined_values_.find(name);
+    if (it == user_defined_values_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+Status Engine::set_date_time(const ir::DateTime& date_time) {
+    if (!date_time.valid()) {
+        return Status::InvalidArgument;
+    }
+    // Anchor the given instant to the current simulation time; it advances
+    // one-for-one from there. Settable before init (anchor_sim = 0) so a
+    // pre-staged time of day is visible at the t = 0 evaluation.
+    date_time_anchor_epoch_ = date_time.to_epoch_seconds();
+    date_time_anchor_sim_ = clock_.now();
+    date_time_set_ = true;
+    return Status::Ok;
+}
+
+std::optional<double> Engine::date_time() const {
+    return current_date_time_seconds(clock_.now());
+}
+
+std::optional<double> Engine::current_date_time_seconds(double simulation_time) const {
+    if (!date_time_set_) {
+        return std::nullopt;
+    }
+    // Fixed IEEE expression, no wall clock: the simulated instant is the
+    // anchor plus the simulation time elapsed since the anchor was set.
+    return date_time_anchor_epoch_ + (simulation_time - date_time_anchor_sim_);
+}
+
 std::optional<runtime::ElementState>
 Engine::storyboard_element_state(const std::string& path) const {
     if (!initialized_) {
@@ -387,6 +758,13 @@ Status Engine::close() {
     scheduler_.reset();
     clock_.reset();
     entities_.clear();
+    variables_.clear();
+    // User-defined values and the time-of-day anchor persist across init()
+    // but not across close(): a closed engine forgets everything the host
+    // staged.
+    user_defined_values_.clear();
+    date_time_set_ = false;
+    warned_values_.clear();
     scenario_ = ir::Scenario{};
     initialized_ = false;
     return Status::Ok;
