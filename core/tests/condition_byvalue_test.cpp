@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // By-value conditions and their shared building blocks, per ASAM
 // OpenSCENARIO XML 1.4.0: the Rule comparator (§ enum Rule), the dateTime
 // value type (preface "Data types"), and the SimulationTime, Parameter,

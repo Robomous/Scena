@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Scena: scenario execution engine for autonomous-driving simulation.
 
 Executes scenarios described in ASAM OpenSCENARIO through a step-based API:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Drive the ASAM OpenSCENARIO interaction conditions from the host side.
 
 An ego vehicle closes on a stationary lead vehicle. Three interaction

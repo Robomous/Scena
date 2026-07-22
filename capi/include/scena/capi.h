@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef SCENA_CAPI_H
 #define SCENA_CAPI_H
 

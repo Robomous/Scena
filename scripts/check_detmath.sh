@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Forbids raw libm transcendentals in runtime code (core/). Transcendental
 # math must go through scena::runtime detmath (det_sin/det_cos/det_sincos),
 # which is bit-identical across platforms. IEEE-exact functions (sqrt, fabs,

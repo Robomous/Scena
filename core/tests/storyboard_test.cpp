@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Engine-level storyboard semantics: init phase, element lifecycle
 // observation, stop trigger, and multi-story parallelism, per ASAM
 // OpenSCENARIO XML 1.4.0 §8.

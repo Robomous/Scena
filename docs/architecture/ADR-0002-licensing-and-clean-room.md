@@ -13,7 +13,11 @@ standard texts and existing scenario engines.
 
 ### License
 
-Scena is licensed under **MIT**. Every dependency must be MIT, BSD, or
+> **Superseded in part by [ADR-0012](ADR-0012-relicense-to-apache-2.0.md):**
+> Scena is licensed under **Apache-2.0**, not MIT. The dependency rules below
+> are unchanged and remain in force.
+
+Scena is licensed under **Apache-2.0**. Every dependency must be MIT, BSD, or
 Apache-2.0 compatible:
 
 - **No GPL or LGPL anywhere** in the dependency tree, including statically

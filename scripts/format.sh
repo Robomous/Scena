@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Formats all first-party C/C++ sources with clang-format.
 # Usage: scripts/format.sh [--check]
 #   --check  verify formatting without modifying files (non-zero exit on drift)

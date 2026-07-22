@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Longitudinal dynamics (SpeedAction transition dynamics + SpeedProfileAction)
 through the Python bindings (p2-s2)."""
 

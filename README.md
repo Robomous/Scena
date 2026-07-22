@@ -7,7 +7,7 @@
 **Scena** is the scenario execution engine of the Robomous toolchain — the
 stage where scenario actors perform.
 
-It is an open-source (MIT) scenario execution engine for autonomous-driving
+It is an open-source (Apache-2.0) scenario execution engine for autonomous-driving
 simulation, developed by [Robomous](https://robomous.ai). It executes scenarios
 described in **ASAM OpenSCENARIO XML (1.0–1.3)** and, in later phases, **ASAM
 OpenSCENARIO DSL (2.x)** — closing the current gap of a native C++ execution
@@ -100,7 +100,7 @@ Architecture decisions: [`docs/architecture/`](docs/architecture/).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party dependency licenses are recorded in
+Apache-2.0 — see [LICENSE](LICENSE). Third-party dependency licenses are recorded in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 Scena implements the ASAM OpenSCENARIO standard. It is an independent

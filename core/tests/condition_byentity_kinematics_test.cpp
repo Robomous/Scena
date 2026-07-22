@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // By-entity conditions (ASAM OpenSCENARIO XML 1.4.0 §7.6.5.1): the
 // triggering-entities any/all frame and the six kinematic/position
 // conditions. This file covers the shared frame and the pure-context

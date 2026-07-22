@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // The deterministic 2D OBB freespace kernel (scena/runtime/obb2.h, p5-s3).
 // Axis-aligned cases assert exact distances; a heading-rotated case hex-pins
 // the raw bit pattern, since every op is IEEE-exact and the only trig routes

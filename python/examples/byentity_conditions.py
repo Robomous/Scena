@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Drive the ASAM OpenSCENARIO by-entity conditions from the host side.
 
 Three entities are observed by four by-entity conditions (ASAM OpenSCENARIO

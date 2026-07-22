@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //
 // Longitudinal-dynamics evaluator and controller (p2-s2). The transition math
 // is closed form, so the shape x dimension matrix is checked against its own

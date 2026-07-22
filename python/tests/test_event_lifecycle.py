@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Event priority and execution counts through the Python bindings.
 
 ASAM OpenSCENARIO XML 1.4.0 §7.3.2, §8.2, §8.3.3.2 and §8.4.2.
