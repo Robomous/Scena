@@ -42,7 +42,8 @@ typedef enum scn_status {
     SCN_ERROR_VALIDATION = 8,           /* scenario content violates a structural rule */
     SCN_ERROR_SEMANTIC = 9,             /* scenario content references something missing */
     SCN_ERROR_UNSUPPORTED_FEATURE = 10, /* a construct the engine does not implement */
-    SCN_ERROR_UNKNOWN_NAME = 11         /* a host referenced an undeclared named value */
+    SCN_ERROR_UNKNOWN_NAME = 11,        /* a host referenced an undeclared named value */
+    SCN_ERROR_DEPRECATED_FEATURE = 12   /* content uses a construct the standard deprecated */
 } scn_status;
 
 /* Mirrors scena::Severity. */

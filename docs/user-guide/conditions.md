@@ -1,17 +1,23 @@
-# By-value conditions
+# Conditions
 
 A trigger [condition](triggers.md) is a logical expression evaluated each
-step. The **by-value** conditions (ASAM OpenSCENARIO XML §7.6.5.2,
-`ByValueCondition`) compare a runtime value against a reference: the
+step. Scena implements two families from ASAM OpenSCENARIO XML §7.6.5: the
+**by-value** conditions (§7.6.5.2, comparing a runtime value to a reference)
+and the **by-entity** conditions (§7.6.5.1, observing one or more entities'
+kinematics or position). This chapter covers both, and the host interface
+they read.
+
+> The kernel exposes these conditions and their host interface; lowering them
+> from OpenSCENARIO XML is a P4 frontend concern and lands separately.
+
+## By-value conditions
+
+The **by-value** conditions compare a runtime value against a reference: the
 simulation time, a named parameter or variable, an external value the host
 injects, the simulated time of day, or the live state of another storyboard
-element. This chapter covers the six the kernel implements and the host
-interface they read.
+element.
 
-> The kernel exposes these conditions and their host-value interface; lowering
-> them from OpenSCENARIO XML is a P4 frontend concern and lands separately.
-
-## The condition catalog
+### The condition catalog
 
 | Condition | Compares | Reads from |
 |---|---|---|
@@ -196,3 +202,104 @@ identical, ordered diagnostic stream. The warn-once messages name the offending
 value only — never a floating-point or date value, which would be
 locale-sensitive. See [Determinism](determinism.md) and
 [ADR-0007](../architecture/ADR-0007-condition-evaluation-context.md).
+
+## By-entity conditions
+
+The **by-entity** conditions (§7.6.5.1, `ByEntityCondition`) observe one or
+more entities' kinematics or position. Every one names a set of
+**triggering entities** and reduces a per-entity logical expression over them.
+
+### Triggering entities: any / all
+
+A by-entity condition carries a `TriggeringEntities` set — one or more entity
+references and a rule. The per-entity expression is evaluated **independently
+for every entity**, then reduced:
+
+| Rule | Holds when |
+|---|---|
+| `any` | at least one triggering entity satisfies the expression |
+| `all` | every triggering entity satisfies it |
+
+The reduction happens **inside** the condition, before the trigger's
+edge/delay machinery (§7.6.5.1). Every entity is evaluated — there is no
+short-circuit — so the outcome never depends on evaluation order. An entity
+the engine cannot observe contributes `false` for itself only, so `any` can
+still hold through another reference (the ADR-0007 absent⇒false contract at
+its finest grain). Dangling references are rejected at `init()` with
+`SemanticError`.
+
+### The condition catalog
+
+| Condition | Holds when |
+|---|---|
+| `SpeedCondition` | the entity's speed compares to a value under a `Rule` |
+| `RelativeSpeedCondition` | the entity's speed relative to a reference entity compares to a value |
+| `AccelerationCondition` | the entity's acceleration compares to a value |
+| `StandStillCondition` | the entity has stood still for `duration` seconds (`>=`) |
+| `TraveledDistanceCondition` | the entity has traveled `value` meters of path (`>=`) |
+| `ReachPositionCondition` | the entity is within `tolerance` of a position (2D) |
+
+Speed, RelativeSpeed and Acceleration take a `Rule`; the other three have no
+rule and use an exact `>=` / `<=`, so a `0` threshold holds immediately.
+
+### The scalar-velocity model
+
+Scena's `EntityState` carries a scalar `speed` along the entity's heading — no
+full velocity vector yet. The measurements follow from that (they generalize
+when a velocity vector lands):
+
+- **Total speed / acceleration** (no `direction`) is the magnitude, `|value|`.
+- **Directional** (`DirectionalDimension`, ISO 8855 body axes): `longitudinal`
+  is the signed value; `lateral` and `vertical` are exactly `0.0`.
+- **RelativeSpeed** without direction is the spec's
+  `speed_rel = speed(triggering) − speed(reference)` — a signed difference of
+  total speeds, not the magnitude of the relative velocity. With a direction,
+  the relative velocity is projected in the **triggering** entity's frame,
+  through the deterministic `det_sincos` (the only trigonometry here).
+- **ReachPosition** uses the 2D horizontal distance `sqrt(dx²+dy²)` — the spec
+  calls `tolerance` the "radius of tolerance circle", so `z` is ignored.
+  It is deprecated (1.2, superseded by `DistanceCondition`): using it emits a
+  `DeprecatedFeature` warning, and the condition still evaluates.
+
+### How the engine observes entities
+
+The derived quantities are refreshed once per `step(dt)`, between the host
+poll and the storyboard evaluation, from the snapshots the conditions
+actually observe:
+
+- **Acceleration** is a finite difference `(speed − prev_speed)/dt`; until two
+  samples exist it is **absent**, so an AccelerationCondition is false for
+  every rule (including `lessThan` / `notEqualTo`).
+- **Traveled distance** is the cumulative world-frame path length since init
+  (Euclidean displacement per step) — path length, not straight-line
+  displacement.
+- **Standstill** accumulates `dt` while speed is **exactly** `0.0` and resets
+  on any motion. The spec is silent on a threshold and Scena invents none.
+
+A `dt == 0` step is skipped entirely (no `0/0`, the previous sample is kept).
+The baseline is seeded at `init()` after the init actions, so an init-action
+speed is the reference — there is no phantom acceleration or distance at
+`t = 0`. Host- and engine-controlled entities are treated identically; the
+existing one-step observation lag for engine-controlled motion (integration
+runs later in the step) is unchanged. This is the same for both control modes
+and is documented on `Engine::step` and in
+[ADR-0008](../architecture/ADR-0008-entity-kinematics-observation.md).
+
+### Building by-entity conditions in Python
+
+```python
+import scena as scn
+
+ego = scn.TriggeringEntities(["ego"])                       # rule defaults to Any
+faster_than_lead = scn.RelativeSpeedCondition(ego, "lead", 2.0, scn.Rule.GreaterOrEqual)
+parked = scn.StandStillCondition(scn.TriggeringEntities(["parked"]), 1.0)
+reached = scn.ReachPositionCondition(ego, scn.WorldPosition(10.0, 0.0, 0.0), 0.5)
+```
+
+A complete by-entity example lives in
+[`python/examples/byentity_conditions.py`](../../python/examples/byentity_conditions.py).
+
+> **Deferred (P4 / p3-s4):** the by-entity conditions are cartesian-only in
+> the kernel. Road-coordinate measurement and `ReachPosition` against the full
+> Position variants arrive when the PositionResolver (#18) and road plumbing
+> (#23) land; XML lowering arrives with the P4 frontend.

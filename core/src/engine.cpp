@@ -12,6 +12,7 @@
 
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
@@ -36,22 +37,37 @@ constexpr const char* kRuleResolvableStoryboardElement =
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
 /// The runtime EvaluationContext the engine hands the scheduler each step. It
-/// exposes simulation time and the named-value facets from the engine's live
-/// stores, and warns once when a UserDefinedValueCondition reads a value the
-/// host never set. The stores and diagnostic sink are borrowed and must
-/// outlive the context (they are engine members; the context is a per-step
-/// temporary).
-class RuntimeContext final : public ir::EvaluationContext {
+/// exposes simulation time and the named-value / time-of-day / entity facets
+/// from the engine's live stores, and warns once when a
+/// UserDefinedValueCondition reads a value the host never set. The stores and
+/// diagnostic sink are borrowed and must outlive the context (they are engine
+/// members; the context is a per-step temporary).
+///
+/// Templated over the entity-map type because the record type is private to
+/// Engine (the same trick validate_storyboard uses): the facet reads a
+/// record's public members through the dependent type without naming it.
+template <typename EntityMap> class RuntimeContext final : public ir::EvaluationContext {
 public:
     RuntimeContext(double simulation_time, const NamedValueStore& parameters,
                    const NamedValueStore& variables, const NamedValueStore& user_defined_values,
-                   std::optional<double> date_time_seconds, DiagnosticSink& sink,
-                   std::set<std::string>& warned)
+                   const EntityMap& entities, std::optional<double> date_time_seconds,
+                   DiagnosticSink& sink, std::set<std::string>& warned)
         : simulation_time_(simulation_time), parameters_(&parameters), variables_(&variables),
-          user_defined_values_(&user_defined_values), date_time_seconds_(date_time_seconds),
-          sink_(&sink), warned_(&warned) {}
+          user_defined_values_(&user_defined_values), entities_(&entities),
+          date_time_seconds_(date_time_seconds), sink_(&sink), warned_(&warned) {}
 
     [[nodiscard]] double simulation_time() const override { return simulation_time_; }
+
+    [[nodiscard]] std::optional<ir::EntityKinematics>
+    entity_kinematics(std::string_view id) const override {
+        const auto it = entities_->find(id); // heterogeneous lookup (std::less<>)
+        if (it == entities_->end()) {
+            return std::nullopt;
+        }
+        const auto& record = it->second;
+        return ir::EntityKinematics{record.state, record.acceleration, record.traveled_distance,
+                                    record.standstill_seconds};
+    }
 
     [[nodiscard]] std::optional<double> date_time_seconds() const override {
         if (!date_time_seconds_.has_value()) {
@@ -105,6 +121,7 @@ private:
     const NamedValueStore* parameters_;
     const NamedValueStore* variables_;
     const NamedValueStore* user_defined_values_;
+    const EntityMap* entities_;
     std::optional<double> date_time_seconds_;
     DiagnosticSink* sink_;
     std::set<std::string>* warned_;
@@ -219,9 +236,10 @@ int count_element_matches(const ir::Storyboard& storyboard, ir::StoryboardElemen
 /// concrete by-value condition; the expression may also be a plain time/entity
 /// condition, which carries no named reference and needs no check here. A null
 /// expression is reported by the caller.
+template <typename Records>
 void validate_condition_expression(const ir::TriggerCondition& condition,
                                    const std::string& condition_path,
-                                   const ir::Storyboard& storyboard,
+                                   const ir::Storyboard& storyboard, const Records& records,
                                    const NamedValueStore& parameters,
                                    const NamedValueStore& variables, DiagnosticSink& sink) {
     const ir::Condition* expression = condition.expression.get();
@@ -305,6 +323,72 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
                   "storyboard element reference '" + element->element_ref() + "' is ambiguous",
                   condition_path, kRuleResolvableStoryboardElement);
         }
+    } else if (const auto* by_entity = dynamic_cast<const ir::ByEntityCondition*>(expression)) {
+        // Common to every by-entity condition (§7.6.5.1): 1..* triggering
+        // entities, each resolvable. The standard defines no checker rule for
+        // entity-reference resolvability, so the diagnostics carry no rule id
+        // (actor-reference precedent).
+        const ir::TriggeringEntities& triggering = by_entity->triggering_entities();
+        if (triggering.entity_refs.empty()) {
+            error(sink, Status::ValidationError, "triggering entities list is empty",
+                  condition_path);
+        }
+        for (const std::string& ref : triggering.entity_refs) {
+            if (records.find(ref) == records.end()) {
+                error(sink, Status::SemanticError, "triggering entity '" + ref + "' is unknown",
+                      condition_path);
+            }
+        }
+        // Condition-specific numeric ranges and references (the negated >=
+        // comparisons reject NaN too; messages carry no floating-point value).
+        if (const auto* speed = dynamic_cast<const ir::SpeedCondition*>(expression)) {
+            if (std::isnan(speed->value())) {
+                error(sink, Status::ValidationError, "speed condition value is NaN",
+                      condition_path);
+            }
+        } else if (const auto* relative =
+                       dynamic_cast<const ir::RelativeSpeedCondition*>(expression)) {
+            if (records.find(relative->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "reference entity '" + relative->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+            if (std::isnan(relative->value())) {
+                error(sink, Status::ValidationError, "relative speed condition value is NaN",
+                      condition_path);
+            }
+        } else if (const auto* accel = dynamic_cast<const ir::AccelerationCondition*>(expression)) {
+            if (std::isnan(accel->value())) {
+                error(sink, Status::ValidationError, "acceleration condition value is NaN",
+                      condition_path);
+            }
+        } else if (const auto* stand = dynamic_cast<const ir::StandStillCondition*>(expression)) {
+            if (!(stand->duration() >= 0.0)) {
+                error(sink, Status::ValidationError, "standstill condition duration is negative",
+                      condition_path);
+            }
+        } else if (const auto* traveled =
+                       dynamic_cast<const ir::TraveledDistanceCondition*>(expression)) {
+            if (!(traveled->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "traveled distance condition value is negative", condition_path);
+            }
+        } else if (const auto* reach =
+                       dynamic_cast<const ir::ReachPositionCondition*>(expression)) {
+            const ir::WorldPosition& position = reach->position();
+            if (!(reach->tolerance() >= 0.0) || std::isnan(position.x) || std::isnan(position.y) ||
+                std::isnan(position.z)) {
+                error(sink, Status::ValidationError,
+                      "reach position condition has an invalid position or tolerance",
+                      condition_path);
+            }
+            // Deprecated with version 1.2 (superseded by DistanceCondition); a
+            // warning, and the condition still fully evaluates.
+            warn(sink, Status::DeprecatedFeature,
+                 "reach position condition is deprecated with version 1.2; superseded by the "
+                 "distance condition",
+                 condition_path);
+        }
     }
 }
 
@@ -340,10 +424,11 @@ void check_sibling_names(const Range& range, NameOf name_of, const char* label,
 /// but empty one (§7.6.1: always false). `owner_path` is the element that
 /// hosts the trigger (empty for the storyboard); `trigger_kind` is
 /// "startTrigger" or "stopTrigger".
+template <typename Records>
 void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::string& owner_path,
                       const char* trigger_kind, const ir::Storyboard& storyboard,
-                      const NamedValueStore& parameters, const NamedValueStore& variables,
-                      DiagnosticSink& sink) {
+                      const Records& records, const NamedValueStore& parameters,
+                      const NamedValueStore& variables, DiagnosticSink& sink) {
     if (!trigger.has_value()) {
         return;
     }
@@ -378,10 +463,10 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
                 error(sink, Status::ValidationError, "condition delay is negative", condition_path,
                       kRuleConditionDelay);
             }
-            // By-value conditions carry named references and rule/value pairs
-            // whose resolvability and scalar-convertibility are checked here.
-            validate_condition_expression(condition, condition_path, storyboard, parameters,
-                                          variables, sink);
+            // By-value and by-entity conditions carry named references and
+            // numeric fields whose resolvability and ranges are checked here.
+            validate_condition_expression(condition, condition_path, storyboard, records,
+                                          parameters, variables, sink);
         }
     }
 }
@@ -395,8 +480,8 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                          DiagnosticSink& sink) {
     check_sibling_names(
         storyboard.stories, [](const ir::Story& s) { return s.name; }, "story", "", sink);
-    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", storyboard, parameters, variables,
-                     sink);
+    validate_trigger(storyboard.stop_trigger, "", "stopTrigger", storyboard, records, parameters,
+                     variables, sink);
     for (const ir::Story& story : storyboard.stories) {
         const std::string story_path = story.name;
         check_sibling_names(
@@ -406,10 +491,10 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
             check_sibling_names(
                 act.groups, [](const ir::ManeuverGroup& g) { return g.name; }, "maneuver group",
                 act_path, sink);
-            validate_trigger(act.start_trigger, act_path, "startTrigger", storyboard, parameters,
-                             variables, sink);
-            validate_trigger(act.stop_trigger, act_path, "stopTrigger", storyboard, parameters,
-                             variables, sink);
+            validate_trigger(act.start_trigger, act_path, "startTrigger", storyboard, records,
+                             parameters, variables, sink);
+            validate_trigger(act.stop_trigger, act_path, "stopTrigger", storyboard, records,
+                             parameters, variables, sink);
             for (const ir::ManeuverGroup& group : act.groups) {
                 const std::string group_path = join_path(act_path, group.name);
                 check_sibling_names(
@@ -433,7 +518,7 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                     for (const ir::Event& event : maneuver.events) {
                         const std::string event_path = join_path(maneuver_path, event.name);
                         validate_trigger(event.start_trigger, event_path, "startTrigger",
-                                         storyboard, parameters, variables, sink);
+                                         storyboard, records, parameters, variables, sink);
                         // §8.3.3.2/§8.4.2.1: the XSD type of
                         // maximumExecutionCount is unsignedInt, so a negative
                         // budget has no meaning at all. Zero is schema-valid
@@ -500,7 +585,7 @@ Status Engine::init(ir::Scenario scenario) {
     // Validate into a temporary record map so a failed init leaves the engine
     // untouched. Validation walks the whole scenario in document order and
     // accumulates every defect rather than stopping at the first.
-    std::map<std::string, EntityRecord> records;
+    std::map<std::string, EntityRecord, std::less<>> records;
     std::size_t entity_index = 0;
     for (const ir::Entity& entity : scenario.entities) {
         if (entity.id.empty()) {
@@ -559,17 +644,25 @@ Status Engine::init(ir::Scenario scenario) {
         apply(*action);
     }
 
+    // Seed the derived-observation baseline after init actions, before the
+    // t = 0 evaluation: the post-init state is the reference the first dt > 0
+    // step differences against. Acceleration stays absent (no phantom at t=0),
+    // the odometer starts at 0, and a stationary entity's standstill timer is
+    // 0 — so a StandStill with duration 0 holds at t = 0 while Acceleration
+    // does not.
+    for (auto& [id, record] : entities_) {
+        (void)id;
+        record.prev_sample = record.state;
+        record.has_prev_sample = true;
+    }
+
     // The storyboard enters runningState and simulation time starts with it
     // (§8.4.7): evaluate once at t = 0 so trigger-less chains and start
     // conditions that already hold fire before the first host step.
     scheduler_.bind(scenario_.storyboard);
-    RuntimeContext context{0.0,
-                           scenario_.parameters,
-                           variables_,
-                           user_defined_values_,
-                           current_date_time_seconds(0.0),
-                           diagnostics_,
-                           warned_values_};
+    RuntimeContext context{
+        0.0,       scenario_.parameters,           variables_,   user_defined_values_,
+        entities_, current_date_time_seconds(0.0), diagnostics_, warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     return Status::Ok;
@@ -596,13 +689,23 @@ Status Engine::step(double dt) {
         }
     }
 
-    RuntimeContext context{clock_.now(),
-                           scenario_.parameters,
-                           variables_,
-                           user_defined_values_,
-                           current_date_time_seconds(clock_.now()),
-                           diagnostics_,
-                           warned_values_};
+    // Phase 2b: refresh the derived observations the by-entity conditions read
+    // (§7.6.5.1). These are finite differences of exactly the snapshots the
+    // storyboard is about to observe, so they iterate entities_ in std::map
+    // order and treat both control modes uniformly. A dt == 0 step is skipped
+    // entirely: no accumulator update and prev_sample is left untouched, so
+    // there is no 0/0 (which would poison NotEqualTo into true) and no motion
+    // is lost — displacement accrues at the next dt > 0 step. The one-step
+    // observation lag for engine-controlled entities (integration is phase 4)
+    // is intentional and unchanged.
+    if (dt > 0.0) {
+        refresh_observations(dt);
+    }
+
+    RuntimeContext context{clock_.now(), scenario_.parameters,
+                           variables_,   user_defined_values_,
+                           entities_,    current_date_time_seconds(clock_.now()),
+                           diagnostics_, warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
@@ -627,6 +730,32 @@ Status Engine::step(double dt) {
     }
 
     return Status::Ok;
+}
+
+void Engine::refresh_observations(double dt) {
+    // Precondition: dt > 0 (the caller skips dt == 0). Iterates entities_ in
+    // std::map order for determinism.
+    for (auto& [id, record] : entities_) {
+        (void)id;
+        if (record.has_prev_sample) {
+            // Finite differences of exactly the observed snapshots. Fixed
+            // operand order; std::sqrt is IEEE-exact.
+            record.acceleration = (record.state.speed - record.prev_sample.speed) / dt;
+            const double dx = record.state.x - record.prev_sample.x;
+            const double dy = record.state.y - record.prev_sample.y;
+            const double dz = record.state.z - record.prev_sample.z;
+            record.traveled_distance += std::sqrt(dx * dx + dy * dy + dz * dz);
+            // Standstill is exact speed == 0.0 (true for -0.0 under IEEE); the
+            // standard is silent on a threshold, so none is invented (ADR-0008).
+            if (record.state.speed == 0.0) {
+                record.standstill_seconds += dt;
+            } else {
+                record.standstill_seconds = 0.0;
+            }
+        }
+        record.prev_sample = record.state;
+        record.has_prev_sample = true;
+    }
 }
 
 std::optional<EntityState> Engine::state(const std::string& entity_id) const {

@@ -293,3 +293,9 @@ TEST(CApiTest, NullArgumentsAreRejectedForNamedValues) {
     EXPECT_EQ(scn_engine_get_user_defined_value(engine, "u", nullptr), SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }
+
+TEST(CApiTest, DeprecatedFeatureStatusHasStableAbiValue) {
+    // ABI: appended after SCN_ERROR_UNKNOWN_NAME (11); never renumbered.
+    EXPECT_EQ(SCN_ERROR_UNKNOWN_NAME, 11);
+    EXPECT_EQ(SCN_ERROR_DEPRECATED_FEATURE, 12);
+}

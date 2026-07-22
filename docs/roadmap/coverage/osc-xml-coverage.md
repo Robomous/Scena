@@ -75,26 +75,31 @@ Rules of this document:
 
 ## Conditions — by entity
 
-All with `TriggeringEntities` any/all semantics (§7.6.5.1, p5-s2).
+All with `TriggeringEntities` any/all semantics (§7.6.5.1) — evaluated
+per entity then reduced, before the trigger edge/delay machinery. The
+kinematics/position set (p5-s2) landed cartesian-only under Scena's
+scalar-velocity model; road-coordinate measurement is deferred to p3-s4.
+`TriggeringEntities` holds plain entity references; `EntitySelection`
+references are out of scope until the selection IR lands (p4-s4).
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| AccelerationCondition | §7.6.5.1 | In | p5-s2 | Optional direction dimension |
+| AccelerationCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: finite-difference acceleration, absent (⇒false) until two samples; optional direction (longitudinal signed, lateral/vertical 0 in the scalar model). XML lowering deferred (P4) |
 | AngleCondition | §7.6.5.1 | Post | — | Introduction version unconfirmed in local text *(verify)*; low demand for v0.0.1 set |
 | CollisionCondition | §7.6.5.1 | In | p5-s3 | OBB intersection over p2-s1 bounding boxes |
 | DistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | coordinateSystem × relativeDistanceType; deprecated `alongRoute` accepted and mapped |
 | EndOfRoadCondition | §7.6.5.1 | In | p5-s3 | Requires road network (rule-cited prerequisite) |
 | OffroadCondition | §7.6.5.1 | In | p5-s3 | Requires road network |
-| ReachPositionCondition | §7.6.5.1 | In | p5-s2 | Accepted, deprecated (successor: DistanceCondition) |
+| ReachPositionCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: deprecated (1.2) ⇒ DeprecatedFeature warning, still evaluated; 2D horizontal tolerance circle (z ignored) against a minimal WorldPosition. Road Position variants + PositionResolver deferred (p2-s4/p3-s4); XML lowering deferred (P4) |
 | RelativeAngleCondition | §7.6.5.1 | Post | — | Same rationale as AngleCondition *(verify)* |
 | RelativeClearanceCondition | §7.6.5.1 | In | p5-s3 | Adjacent-lane/longitudinal-window freeness |
 | RelativeDistanceCondition | §7.6.5.1, §6.4 | In | p5-s3 | Freespace via bounding boxes |
-| RelativeSpeedCondition | §7.6.5.1 | In | p5-s2 | Optional direction |
-| SpeedCondition | §7.6.5.1 | In | p5-s2 | Optional direction |
-| StandStillCondition | §7.6.5.1 | In | p5-s2 | Duration accumulation |
+| RelativeSpeedCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: spec formula `speed_rel = speed(trig) − speed(ref)` (signed); directional projection in the triggering frame via det_sincos; absent reference ⇒ false. XML lowering deferred (P4) |
+| SpeedCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: total = \|speed\|, optional directional projection. XML lowering deferred (P4) |
+| StandStillCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: contiguous time at speed exactly 0.0 (no invented ε), `>=` duration. XML lowering deferred (P4) |
 | TimeHeadwayCondition | §7.6.5.1, §6.4 | In | p5-s3 | Deprecated `alongRoute` accepted and mapped |
 | TimeToCollisionCondition | §7.6.5.1, §6.4 | In | p5-s3 | Closed-form (distance / closing speed, no acceleration); diverging ⇒ false |
-| TraveledDistanceCondition | §7.6.5.1 | In | p5-s2 | |
+| TraveledDistanceCondition | §7.6.5.1 | In | p5-s2 | Kernel landed: cumulative world-frame path length from init (not displacement), `>=` value. XML lowering deferred (P4) |
 
 ## Conditions — by value
 
