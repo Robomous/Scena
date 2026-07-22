@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # All third-party dependencies, fetched with FetchContent and pinned to exact tags.
 # Every entry here must be recorded in THIRD_PARTY_LICENSES.md with its license.
 

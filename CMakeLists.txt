@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 cmake_minimum_required(VERSION 3.24)
 
 # Keep the version in sync with core/include/scena/version.h and python/pyproject.toml.

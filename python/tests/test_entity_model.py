@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Entity taxonomy (ASAM OpenSCENARIO XML 1.4.0 §7.2.2) through the bindings."""
 
 import scena as scn

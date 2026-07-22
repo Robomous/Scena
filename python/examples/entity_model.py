@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Entity taxonomy example: build classified entities and query their metadata.
 
 Mirrors the C ABI builders and read-back accessors (ASAM OpenSCENARIO XML

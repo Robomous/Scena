@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Build a storyboard in code, step it at 100 Hz, and verify the speed action fires.
 
 One engine-controlled entity starts at rest. The storyboard is the full ASAM

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Pins IEEE-strict floating-point evaluation for first-party targets:
 # no FMA contraction, no fast-math. Bit-identity across ISAs (x64 vs arm64)
 # depends on this — a * b + c must not fuse on one platform and round twice

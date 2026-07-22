@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Trigger semantics driven directly through the scheduler: condition
 // groups, condition edges, delays and act stop triggers, per ASAM
 // OpenSCENARIO XML 1.4.0 §7.6.

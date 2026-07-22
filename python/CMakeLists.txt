@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Python bindings: nanobind extension module `scena._scena`.
 
 nanobind_add_module(_scena src/bindings.cpp)

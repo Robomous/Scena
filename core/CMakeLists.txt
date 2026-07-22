@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 add_library(scena-core STATIC
     src/version.cpp
     src/engine.cpp

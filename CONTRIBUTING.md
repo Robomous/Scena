@@ -48,7 +48,7 @@ PYTHONPATH=build/python python python/examples/hello_engine.py
   (`.clang-format`); run `./scripts/format.sh` before committing, or
   `./scripts/format.sh --check` to verify.
 - Namespace `scena`; CMake options and macros prefixed `SCN_`.
-- Every source file starts with `// SPDX-License-Identifier: MIT`.
+- Every source file starts with `// SPDX-License-Identifier: Apache-2.0`.
 - Implement standard behavior exclusively from the ASAM specifications; cite
   them by section number in comments (e.g. "per ASAM OpenSCENARIO XML 1.3
   §x.y"). Never copy, translate, or paraphrase code from other scenario
@@ -56,6 +56,16 @@ PYTHONPATH=build/python python python/examples/hello_engine.py
 - Refer to external simulators and tools generically ("host simulator",
   "external reference player") — no third-party product names anywhere in the
   tree.
+
+## Licensing of contributions
+
+Scena is licensed under **Apache-2.0** (see [LICENSE](LICENSE) and
+[ADR-0012](docs/architecture/ADR-0012-relicense-to-apache-2.0.md)). Per
+Apache-2.0 §5, any contribution you intentionally submit for inclusion is
+licensed under those same terms, including its §3 patent grant, unless you
+state otherwise explicitly. There is no separate CLA. Only submit code you
+have the right to license this way — and never code derived from another
+scenario engine (see the clean-room rule above).
 
 ## Dependencies
 

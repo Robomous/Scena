@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Fetch ASAM specifications as local Markdown references for Scena.
 
 Downloads the ASAM OpenSCENARIO XML (and, for road-query work, ASAM

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Strict warnings for first-party targets. Third-party targets keep their own flags.
 
 function(scn_set_warnings target)

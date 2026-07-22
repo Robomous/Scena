@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Pytest suite for the structured diagnostics surface of the Python bindings."""
 
 import scena as scn

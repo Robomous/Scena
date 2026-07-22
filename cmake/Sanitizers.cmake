@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Sanitizer support, controlled by the SCN_SANITIZE cache variable.
 # Accepts a comma-separated list of: address, undefined, thread.
 # Note: thread cannot be combined with address.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Generate the constexpr coefficient block for core/src/runtime/detmath.cpp.
 
 Emits ready-to-paste ``constexpr double`` hex-float literals so the vendored

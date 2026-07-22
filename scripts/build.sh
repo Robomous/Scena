@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Convenience wrapper: configure + build + test.
 # Usage: scripts/build.sh [extra cmake configure args...]
 # Environment: BUILD_DIR (default: build)

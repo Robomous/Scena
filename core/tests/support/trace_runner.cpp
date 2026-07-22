@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 //
 // scena-trace-runner: emits a "scena-trace v1" image of a fixed detmath +
 // engine workload to a file. Two runs on different platforms must produce

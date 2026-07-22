@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Interaction conditions through the Python bindings (ASAM OpenSCENARIO XML 1.4.0 §6.4)."""
 
 import pytest

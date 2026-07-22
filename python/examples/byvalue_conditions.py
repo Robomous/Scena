@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Drive the ASAM OpenSCENARIO by-value conditions from the host side.
 
 One engine-controlled entity is driven by four events, each guarded by a
