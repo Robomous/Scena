@@ -6,6 +6,8 @@
 // visibility actions. Runtime behavior lives in action_distance_test.cpp,
 // action_routing_test.cpp and action_controller_visibility_test.cpp.
 
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -17,12 +19,14 @@
 #include "scena/ir/controller.h"
 #include "scena/ir/coordinate_system.h"
 #include "scena/ir/route.h"
+#include "scena/ir/rule.h"
 #include "scena/ir/trajectory.h"
 
 namespace {
 
 using scena::EntityVisibility;
 using scena::ir::AcquirePositionAction;
+using scena::ir::Action;
 using scena::ir::ActivateControllerAction;
 using scena::ir::AssignControllerAction;
 using scena::ir::AssignRouteAction;
@@ -34,8 +38,12 @@ using scena::ir::CoordinateSystem;
 using scena::ir::DynamicConstraints;
 using scena::ir::FollowingMode;
 using scena::ir::FollowTrajectoryAction;
+using scena::ir::GlobalAction;
 using scena::ir::LongitudinalDisplacement;
 using scena::ir::LongitudinalDistanceAction;
+using scena::ir::ModifyOperator;
+using scena::ir::ParameterModifyAction;
+using scena::ir::ParameterSetAction;
 using scena::ir::Property;
 using scena::ir::ReferenceContext;
 using scena::ir::Route;
@@ -43,6 +51,8 @@ using scena::ir::RouteStrategy;
 using scena::ir::Timing;
 using scena::ir::Trajectory;
 using scena::ir::TrajectoryVertex;
+using scena::ir::VariableModifyAction;
+using scena::ir::VariableSetAction;
 using scena::ir::VisibilityAction;
 using scena::ir::Waypoint;
 using scena::ir::WorldPosition;
@@ -266,6 +276,107 @@ TEST(ActionIrTest, EveryNewKindIsTheStableAsamElementName) {
     for (const auto& [actual, name] : expected) {
         EXPECT_EQ(actual, name);
     }
+}
+
+// --- Global actions (p5-s6, §7.4.2) ---------------------------------------
+
+TEST(GlobalActionIrTest, GlobalActionsCarryNoEntityId) {
+    // The actor-less base finalizes entity_id() to a shared empty string, so a
+    // call site that takes a reference stays valid; dispatch must branch on the
+    // GlobalAction type, never on the emptiness.
+    const VariableSetAction set("v", "1");
+    const VariableModifyAction modify("v", ModifyOperator::Add, 2.0);
+    const ParameterSetAction parameter_set("p", "x");
+    const ParameterModifyAction parameter_modify("p", ModifyOperator::Multiply, 3.0);
+    for (const Action* action :
+         {static_cast<const Action*>(&set), static_cast<const Action*>(&modify),
+          static_cast<const Action*>(&parameter_set),
+          static_cast<const Action*>(&parameter_modify)}) {
+        EXPECT_TRUE(action->entity_id().empty());
+        EXPECT_NE(dynamic_cast<const GlobalAction*>(action), nullptr);
+    }
+    // A private action is not a global one — the branch that matters.
+    const VisibilityAction visibility("ego", true, true, true);
+    EXPECT_EQ(dynamic_cast<const GlobalAction*>(static_cast<const Action*>(&visibility)), nullptr);
+}
+
+TEST(GlobalActionIrTest, VariableAndParameterActionAccessors) {
+    const VariableSetAction set("trigger", "true");
+    EXPECT_EQ(set.variable_ref(), "trigger");
+    EXPECT_EQ(set.value(), "true");
+
+    const VariableModifyAction modify("counter", ModifyOperator::Multiply, 2.5);
+    EXPECT_EQ(modify.variable_ref(), "counter");
+    EXPECT_EQ(modify.op(), ModifyOperator::Multiply);
+    EXPECT_DOUBLE_EQ(modify.value(), 2.5);
+
+    const ParameterSetAction parameter_set("speedLimit", "30");
+    EXPECT_EQ(parameter_set.parameter_ref(), "speedLimit");
+    EXPECT_EQ(parameter_set.value(), "30");
+
+    const ParameterModifyAction parameter_modify("speedLimit", ModifyOperator::Add, -4.0);
+    EXPECT_EQ(parameter_modify.parameter_ref(), "speedLimit");
+    EXPECT_EQ(parameter_modify.op(), ModifyOperator::Add);
+    EXPECT_DOUBLE_EQ(parameter_modify.value(), -4.0);
+}
+
+TEST(GlobalActionIrTest, GlobalKindsAreTheStableAsamElementNames) {
+    EXPECT_EQ(VariableSetAction("v", "1").kind(), "VariableSetAction");
+    EXPECT_EQ(VariableModifyAction("v", ModifyOperator::Add, 1.0).kind(), "VariableModifyAction");
+    EXPECT_EQ(ParameterSetAction("p", "1").kind(), "ParameterSetAction");
+    EXPECT_EQ(ParameterModifyAction("p", ModifyOperator::Add, 1.0).kind(), "ParameterModifyAction");
+}
+
+// --- format_scalar (the write side of the variable store) ------------------
+
+TEST(FormatScalarTest, RoundTripsEveryFiniteDoubleBitForBit) {
+    // The round-trip is what lets a VariableModifyAction write its result back
+    // into the string-valued store without drift.
+    const double values[] = {0.0,
+                             -0.0,
+                             1.0,
+                             -1.0,
+                             0.1,
+                             1.0 / 3.0,
+                             1e-300,
+                             1e300,
+                             123456789.123456789,
+                             std::numeric_limits<double>::min(),
+                             std::numeric_limits<double>::max(),
+                             std::numeric_limits<double>::denorm_min()};
+    for (const double value : values) {
+        const std::string text = scena::ir::format_scalar(value);
+        const std::optional<double> parsed = scena::ir::parse_scalar(text);
+        ASSERT_TRUE(parsed.has_value()) << text;
+        EXPECT_EQ(*parsed, value) << text;
+    }
+}
+
+TEST(FormatScalarTest, EmitsTheShortestRoundTripForm) {
+    // Pinned exactly: these strings are what a scenario's variable store holds
+    // after a modify action, and a diagnostic or a trace may quote them.
+    EXPECT_EQ(scena::ir::format_scalar(0.1 + 0.2), "0.30000000000000004");
+    EXPECT_EQ(scena::ir::format_scalar(1.0), "1");
+    EXPECT_EQ(scena::ir::format_scalar(-0.0), "-0");
+    EXPECT_EQ(scena::ir::format_scalar(2.5), "2.5");
+    EXPECT_EQ(scena::ir::format_scalar(100.0), "100");
+    // Locale-independent: never a comma, never std::to_string's six-digit pad.
+    EXPECT_EQ(scena::ir::format_scalar(1.5), "1.5");
+}
+
+TEST(FormatScalarTest, NonFiniteValuesRoundTripThroughParseScalar) {
+    const double infinity = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(scena::ir::format_scalar(infinity), "inf");
+    EXPECT_EQ(scena::ir::format_scalar(-infinity), "-inf");
+    const std::optional<double> parsed =
+        scena::ir::parse_scalar(scena::ir::format_scalar(infinity));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(*parsed, infinity);
+    // NaN formats and parses, but never compares equal (IEEE ordering).
+    const std::optional<double> nan_parsed =
+        scena::ir::parse_scalar(scena::ir::format_scalar(std::numeric_limits<double>::quiet_NaN()));
+    ASSERT_TRUE(nan_parsed.has_value());
+    EXPECT_TRUE(std::isnan(*nan_parsed));
 }
 
 } // namespace

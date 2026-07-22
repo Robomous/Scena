@@ -3,6 +3,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace scena::ir {
@@ -43,6 +44,18 @@ enum class Rule {
 /// nullopt. A single leading '+' is accepted (std::from_chars rejects it) so
 /// that "+5" reads as 5.
 [[nodiscard]] std::optional<double> parse_scalar(std::string_view text);
+
+/// Formats `value` as the shortest decimal text that reads back as exactly the
+/// same double, locale-independently via std::to_chars (the write-side mirror
+/// of parse_scalar, and never std::to_string, which is locale-sensitive and
+/// pads to six fractional digits).
+///
+/// Round-trip guarantee: `parse_scalar(format_scalar(v)) == v` bit for bit for
+/// every finite v. This is what lets a VariableModifyAction store its result
+/// back into the string-valued variable store without drift — the string
+/// carries the full double. Non-finite values format as "inf"/"-inf"/"nan",
+/// which parse_scalar reads back (std::from_chars accepts them).
+[[nodiscard]] std::string format_scalar(double value);
 
 /// Compares a stored/actual value against a reference literal under `rule`,
 /// the ParameterCondition / VariableCondition / UserDefinedValueCondition
