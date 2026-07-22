@@ -14,6 +14,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
+#include "scena/ir/interaction_condition.h"
 #include "scena/ir/rule.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/element_ref.h"
@@ -33,6 +34,8 @@ constexpr const char* kRuleResolvableVariable =
     "asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference";
 constexpr const char* kRuleResolvableStoryboardElement =
     "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref";
+constexpr const char* kRuleDistancesNotNegative =
+    "asam.net:xosc:1.1.0:data_type.distances_are_not_negative";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -183,6 +186,40 @@ void warn_if_ordering_non_numeric(DiagnosticSink& sink, const std::string& path,
     }
     warn(sink, Status::UnsupportedFeature,
          "ordering rule on a non-scalar value; condition is always false", path);
+}
+
+/// Warns for the shared distance-parameter modes of the interaction conditions
+/// (Distance / RelativeDistance / TimeHeadway / TimeToCollision): a deprecated
+/// alongRoute, the deprecated cartesianDistance literal, and a road-based
+/// effective coordinate system that is deferred to a real road network. All
+/// three leave the condition running (deterministic false for the deferred CS),
+/// so they are warnings, not errors. `authored_rdt` is the authored
+/// relativeDistanceType (nullopt when defaulted); `along_route` is the authored
+/// alongRoute (nullopt when absent — RelativeDistance never has one).
+void warn_interaction_modes(DiagnosticSink& sink, const std::string& path,
+                            ir::CoordinateSystem effective_cs,
+                            std::optional<ir::RelativeDistanceType> authored_rdt,
+                            std::optional<bool> along_route) {
+    if (along_route.has_value()) {
+        // Deprecated attribute; the standard defines no rule id for it.
+        warn(sink, Status::DeprecatedFeature,
+             "alongRoute is deprecated (§ DistanceCondition); it is ignored when "
+             "coordinateSystem or relativeDistanceType is set",
+             path);
+    }
+    if (authored_rdt.has_value() && *authored_rdt == ir::RelativeDistanceType::CartesianDistance) {
+        warn(sink, Status::DeprecatedFeature,
+             "cartesianDistance is deprecated; treated as euclidianDistance", path);
+    }
+    if (effective_cs == ir::CoordinateSystem::Lane || effective_cs == ir::CoordinateSystem::Road ||
+        effective_cs == ir::CoordinateSystem::Trajectory) {
+        // A road prerequisite has no asam.net rule id, so the diagnostic cites
+        // section numbers (p5-s1 precedent) rather than inventing one.
+        warn(sink, Status::UnsupportedFeature,
+             "road/lane/trajectory coordinate system requires road network topology "
+             "(§7.6.5.1, §6.4.5); condition is a deterministic false until p3-s4",
+             path);
+    }
 }
 
 /// Counts the storyboard elements of `type` whose name reference matches
@@ -388,6 +425,38 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
                  "reach position condition is deprecated with version 1.2; superseded by the "
                  "distance condition",
                  condition_path);
+        } else if (const auto* distance = dynamic_cast<const ir::DistanceCondition*>(expression)) {
+            // value in [0..inf[; a NaN or negative target distance is a content
+            // defect (rule distances_are_not_negative). The negated >= rejects
+            // NaN too.
+            if (!(distance->value() >= 0.0)) {
+                error(sink, Status::ValidationError, "distance condition value is negative or NaN",
+                      condition_path, kRuleDistancesNotNegative);
+            }
+            const ir::WorldPosition& position = distance->position();
+            if (std::isnan(position.x) || std::isnan(position.y) || std::isnan(position.z)) {
+                error(sink, Status::ValidationError, "distance condition position is NaN",
+                      condition_path);
+            }
+            warn_interaction_modes(sink, condition_path, distance->effective_coordinate_system(),
+                                   distance->relative_distance_type(), distance->along_route());
+        } else if (const auto* relative_distance =
+                       dynamic_cast<const ir::RelativeDistanceCondition*>(expression)) {
+            if (!(relative_distance->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "relative distance condition value is negative or NaN", condition_path,
+                      kRuleDistancesNotNegative);
+            }
+            if (records.find(relative_distance->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "reference entity '" + relative_distance->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+            // RelativeDistance has no alongRoute; relativeDistanceType is
+            // required, so it is always "authored".
+            warn_interaction_modes(sink, condition_path,
+                                   relative_distance->effective_coordinate_system(),
+                                   relative_distance->relative_distance_type(), std::nullopt);
         }
     }
 }
