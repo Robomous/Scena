@@ -72,7 +72,10 @@ struct Entity {
     std::string id;
     std::string name;
     ControlMode control_mode = ControlMode::EngineControlled;
-    std::optional<EntityObject> object; ///< Absent ⇒ an unclassified participant.
+    // Default member initializer so a designated init that omits the object
+    // (the common bare-participant case) does not trip GCC's
+    // -Werror=missing-field-initializers (clang is quiet either way).
+    std::optional<EntityObject> object = std::nullopt; ///< Absent ⇒ unclassified.
 };
 
 /// The ObjectType of an entity's concrete object, or nullopt when it has none
