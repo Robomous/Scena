@@ -28,8 +28,8 @@ namespace scena::runtime {
 struct Obb2 {
     double cx = 0.0;    ///< World center x, m.
     double cy = 0.0;    ///< World center y, m.
-    double cos_h = 1.0; ///< cos(heading) from det_sincos; body x axis is (cos_h, sin_h).
-    double sin_h = 0.0; ///< sin(heading) from det_sincos; body y axis is (-sin_h, cos_h).
+    double cos_h = 1.0; ///< cosine of heading from det_sincos; body x axis is (cos_h, sin_h).
+    double sin_h = 0.0; ///< sine of heading from det_sincos; body y axis is (-sin_h, cos_h).
     double hx = 0.0;    ///< Half extent along body x (length/2), m.
     double hy = 0.0;    ///< Half extent along body y (width/2), m.
 };

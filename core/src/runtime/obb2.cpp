@@ -13,8 +13,8 @@ namespace {
 /// Body x axis is (cos_h, sin_h), body y axis is (-sin_h, cos_h). Fixed
 /// operand order; std::fabs is IEEE-exact.
 double projected_radius(const Obb2& box, double ux, double uy) {
-    const double ax = box.cos_h * ux + box.sin_h * uy;   // body x axis . u
-    const double ay = -box.sin_h * ux + box.cos_h * uy;  // body y axis . u
+    const double ax = box.cos_h * ux + box.sin_h * uy;  // body x axis . u
+    const double ay = -box.sin_h * ux + box.cos_h * uy; // body y axis . u
     return box.hx * std::fabs(ax) + box.hy * std::fabs(ay);
 }
 
@@ -94,14 +94,14 @@ double obb_distance(const Obb2& a, const Obb2& b) {
     const std::array<double, 8> b_corners = world_corners(b);
     double min_sq = point_obb_distance_sq(a_corners[0], a_corners[1], b);
     for (int i = 1; i < 4; ++i) {
-        min_sq = std::fmin(min_sq, point_obb_distance_sq(a_corners[static_cast<std::size_t>(2 * i)],
-                                                         a_corners[static_cast<std::size_t>(2 * i + 1)],
-                                                         b));
+        min_sq = std::fmin(
+            min_sq, point_obb_distance_sq(a_corners[static_cast<std::size_t>(2 * i)],
+                                          a_corners[static_cast<std::size_t>(2 * i + 1)], b));
     }
     for (int i = 0; i < 4; ++i) {
-        min_sq = std::fmin(min_sq, point_obb_distance_sq(b_corners[static_cast<std::size_t>(2 * i)],
-                                                         b_corners[static_cast<std::size_t>(2 * i + 1)],
-                                                         a));
+        min_sq = std::fmin(
+            min_sq, point_obb_distance_sq(b_corners[static_cast<std::size_t>(2 * i)],
+                                          b_corners[static_cast<std::size_t>(2 * i + 1)], a));
     }
     return std::sqrt(min_sq);
 }

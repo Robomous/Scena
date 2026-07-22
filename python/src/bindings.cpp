@@ -10,15 +10,18 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/ir/action.h"
+#include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
+#include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
@@ -96,16 +99,37 @@ NB_MODULE(_scena, m) {
         .value("Stop", scena::runtime::TransitionKind::Stop)
         .value("Skip", scena::runtime::TransitionKind::Skip);
 
+    // Minimal entity bounding box (§ BoundingBox, p5-s3): center offset in the
+    // entity frame plus dimensions. Must be bound before Entity uses it.
+    nb::class_<ir::BoundingBox>(m, "BoundingBox")
+        .def(
+            "__init__",
+            [](ir::BoundingBox* self, double center_x, double center_y, double center_z,
+               double length, double width, double height) {
+                new (self) ir::BoundingBox{center_x, center_y, center_z, length, width, height};
+            },
+            "center_x"_a = 0.0, "center_y"_a = 0.0, "center_z"_a = 0.0, "length"_a = 0.0,
+            "width"_a = 0.0, "height"_a = 0.0)
+        .def_rw("center_x", &ir::BoundingBox::center_x)
+        .def_rw("center_y", &ir::BoundingBox::center_y)
+        .def_rw("center_z", &ir::BoundingBox::center_z)
+        .def_rw("length", &ir::BoundingBox::length)
+        .def_rw("width", &ir::BoundingBox::width)
+        .def_rw("height", &ir::BoundingBox::height);
+
     nb::class_<ir::Entity>(m, "Entity")
         .def(
             "__init__",
-            [](ir::Entity* self, std::string id, std::string name, ir::ControlMode control_mode) {
-                new (self) ir::Entity{std::move(id), std::move(name), control_mode};
+            [](ir::Entity* self, std::string id, std::string name, ir::ControlMode control_mode,
+               std::optional<ir::BoundingBox> bounding_box) {
+                new (self) ir::Entity{std::move(id), std::move(name), control_mode, bounding_box};
             },
-            "id"_a, "name"_a, "control_mode"_a = ir::ControlMode::EngineControlled)
+            "id"_a, "name"_a, "control_mode"_a = ir::ControlMode::EngineControlled,
+            "bounding_box"_a = nb::none())
         .def_rw("id", &ir::Entity::id)
         .def_rw("name", &ir::Entity::name)
         .def_rw("control_mode", &ir::Entity::control_mode)
+        .def_rw("bounding_box", &ir::Entity::bounding_box)
         .def("__repr__", [](const ir::Entity& entity) {
             return "Entity(id='" + entity.id + "', name='" + entity.name + "')";
         });
@@ -283,6 +307,173 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("triggering_entities", &ir::ReachPositionCondition::triggering_entities)
         .def_prop_ro("position", &ir::ReachPositionCondition::position)
         .def_prop_ro("tolerance", &ir::ReachPositionCondition::tolerance);
+
+    // Interaction conditions (§7.6.5.1, §6.4): the two-entity / entity-to-
+    // position metrics and their shared distance parameters.
+    nb::enum_<ir::CoordinateSystem>(m, "CoordinateSystem")
+        .value("Entity", ir::CoordinateSystem::Entity)
+        .value("Lane", ir::CoordinateSystem::Lane)
+        .value("Road", ir::CoordinateSystem::Road)
+        .value("Trajectory", ir::CoordinateSystem::Trajectory)
+        .value("World", ir::CoordinateSystem::World);
+
+    nb::enum_<ir::RelativeDistanceType>(m, "RelativeDistanceType")
+        .value("Longitudinal", ir::RelativeDistanceType::Longitudinal)
+        .value("Lateral", ir::RelativeDistanceType::Lateral)
+        .value("CartesianDistance", ir::RelativeDistanceType::CartesianDistance)
+        .value("EuclidianDistance", ir::RelativeDistanceType::EuclidianDistance);
+
+    nb::enum_<ir::RoutingAlgorithm>(m, "RoutingAlgorithm")
+        .value("AssignedRoute", ir::RoutingAlgorithm::AssignedRoute)
+        .value("Fastest", ir::RoutingAlgorithm::Fastest)
+        .value("LeastIntersections", ir::RoutingAlgorithm::LeastIntersections)
+        .value("Shortest", ir::RoutingAlgorithm::Shortest)
+        .value("Undefined", ir::RoutingAlgorithm::Undefined);
+
+    // `from` is a Python keyword, so the fields are exposed as from_lane/to_lane.
+    nb::class_<ir::RelativeLaneRange>(m, "RelativeLaneRange")
+        .def(
+            "__init__",
+            [](ir::RelativeLaneRange* self, std::optional<int> from_lane,
+               std::optional<int> to_lane) {
+                new (self) ir::RelativeLaneRange{from_lane, to_lane};
+            },
+            "from_lane"_a = nb::none(), "to_lane"_a = nb::none())
+        .def_rw("from_lane", &ir::RelativeLaneRange::from)
+        .def_rw("to_lane", &ir::RelativeLaneRange::to);
+
+    nb::class_<ir::DistanceCondition, ir::Condition>(m, "DistanceCondition")
+        .def(nb::init<ir::TriggeringEntities, ir::WorldPosition, double, bool, ir::Rule,
+                      std::optional<ir::CoordinateSystem>, std::optional<ir::RelativeDistanceType>,
+                      std::optional<ir::RoutingAlgorithm>, std::optional<bool>>(),
+             "triggering_entities"_a, "position"_a, "value"_a, "freespace"_a, "rule"_a,
+             "coordinate_system"_a = nb::none(), "relative_distance_type"_a = nb::none(),
+             "routing_algorithm"_a = nb::none(), "along_route"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::DistanceCondition::triggering_entities)
+        .def_prop_ro("position", &ir::DistanceCondition::position)
+        .def_prop_ro("value", &ir::DistanceCondition::value)
+        .def_prop_ro("freespace", &ir::DistanceCondition::freespace)
+        .def_prop_ro("rule", &ir::DistanceCondition::rule)
+        .def_prop_ro("coordinate_system", &ir::DistanceCondition::coordinate_system)
+        .def_prop_ro("relative_distance_type", &ir::DistanceCondition::relative_distance_type)
+        .def_prop_ro("routing_algorithm", &ir::DistanceCondition::routing_algorithm)
+        .def_prop_ro("along_route", &ir::DistanceCondition::along_route);
+
+    nb::class_<ir::RelativeDistanceCondition, ir::Condition>(m, "RelativeDistanceCondition")
+        .def(nb::init<ir::TriggeringEntities, std::string, double, bool, ir::RelativeDistanceType,
+                      ir::Rule, std::optional<ir::CoordinateSystem>,
+                      std::optional<ir::RoutingAlgorithm>>(),
+             "triggering_entities"_a, "entity_ref"_a, "value"_a, "freespace"_a,
+             "relative_distance_type"_a, "rule"_a, "coordinate_system"_a = nb::none(),
+             "routing_algorithm"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::RelativeDistanceCondition::triggering_entities)
+        .def_prop_ro("entity_ref", &ir::RelativeDistanceCondition::entity_ref)
+        .def_prop_ro("value", &ir::RelativeDistanceCondition::value)
+        .def_prop_ro("freespace", &ir::RelativeDistanceCondition::freespace)
+        .def_prop_ro("relative_distance_type",
+                     &ir::RelativeDistanceCondition::relative_distance_type)
+        .def_prop_ro("rule", &ir::RelativeDistanceCondition::rule)
+        .def_prop_ro("coordinate_system", &ir::RelativeDistanceCondition::coordinate_system)
+        .def_prop_ro("routing_algorithm", &ir::RelativeDistanceCondition::routing_algorithm);
+
+    nb::class_<ir::TimeHeadwayCondition, ir::Condition>(m, "TimeHeadwayCondition")
+        .def(nb::init<ir::TriggeringEntities, std::string, double, bool, ir::Rule,
+                      std::optional<ir::CoordinateSystem>, std::optional<ir::RelativeDistanceType>,
+                      std::optional<ir::RoutingAlgorithm>, std::optional<bool>>(),
+             "triggering_entities"_a, "entity_ref"_a, "value"_a, "freespace"_a, "rule"_a,
+             "coordinate_system"_a = nb::none(), "relative_distance_type"_a = nb::none(),
+             "routing_algorithm"_a = nb::none(), "along_route"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::TimeHeadwayCondition::triggering_entities)
+        .def_prop_ro("entity_ref", &ir::TimeHeadwayCondition::entity_ref)
+        .def_prop_ro("value", &ir::TimeHeadwayCondition::value)
+        .def_prop_ro("freespace", &ir::TimeHeadwayCondition::freespace)
+        .def_prop_ro("rule", &ir::TimeHeadwayCondition::rule)
+        .def_prop_ro("coordinate_system", &ir::TimeHeadwayCondition::coordinate_system)
+        .def_prop_ro("relative_distance_type", &ir::TimeHeadwayCondition::relative_distance_type)
+        .def_prop_ro("routing_algorithm", &ir::TimeHeadwayCondition::routing_algorithm)
+        .def_prop_ro("along_route", &ir::TimeHeadwayCondition::along_route);
+
+    // TimeToCollision takes a reference entity XOR a position; a custom __init__
+    // enforces exactly one, and the target is read back as two Optionals.
+    nb::class_<ir::TimeToCollisionCondition, ir::Condition>(m, "TimeToCollisionCondition")
+        .def(
+            "__init__",
+            [](ir::TimeToCollisionCondition* self, ir::TriggeringEntities triggering, double value,
+               bool freespace, ir::Rule rule, std::optional<std::string> entity_ref,
+               std::optional<ir::WorldPosition> position,
+               std::optional<ir::CoordinateSystem> coordinate_system,
+               std::optional<ir::RelativeDistanceType> relative_distance_type,
+               std::optional<ir::RoutingAlgorithm> routing_algorithm,
+               std::optional<bool> along_route) {
+                if (entity_ref.has_value() == position.has_value()) {
+                    throw nb::value_error(
+                        "TimeToCollisionCondition requires exactly one of entity_ref or position");
+                }
+                ir::TimeToCollisionTarget target =
+                    entity_ref.has_value() ? ir::TimeToCollisionTarget{std::move(*entity_ref)}
+                                           : ir::TimeToCollisionTarget{*position};
+                new (self) ir::TimeToCollisionCondition(
+                    std::move(triggering), std::move(target), value, freespace, rule,
+                    coordinate_system, relative_distance_type, routing_algorithm, along_route);
+            },
+            "triggering_entities"_a, "value"_a, "freespace"_a, "rule"_a,
+            "entity_ref"_a = nb::none(), "position"_a = nb::none(),
+            "coordinate_system"_a = nb::none(), "relative_distance_type"_a = nb::none(),
+            "routing_algorithm"_a = nb::none(), "along_route"_a = nb::none())
+        .def_prop_ro("triggering_entities", &ir::TimeToCollisionCondition::triggering_entities)
+        .def_prop_ro("entity_ref",
+                     [](const ir::TimeToCollisionCondition& c) -> std::optional<std::string> {
+                         if (std::holds_alternative<std::string>(c.target())) {
+                             return std::get<std::string>(c.target());
+                         }
+                         return std::nullopt;
+                     })
+        .def_prop_ro("position",
+                     [](const ir::TimeToCollisionCondition& c) -> std::optional<ir::WorldPosition> {
+                         if (std::holds_alternative<ir::WorldPosition>(c.target())) {
+                             return std::get<ir::WorldPosition>(c.target());
+                         }
+                         return std::nullopt;
+                     })
+        .def_prop_ro("value", &ir::TimeToCollisionCondition::value)
+        .def_prop_ro("freespace", &ir::TimeToCollisionCondition::freespace)
+        .def_prop_ro("rule", &ir::TimeToCollisionCondition::rule)
+        .def_prop_ro("coordinate_system", &ir::TimeToCollisionCondition::coordinate_system)
+        .def_prop_ro("relative_distance_type",
+                     &ir::TimeToCollisionCondition::relative_distance_type)
+        .def_prop_ro("routing_algorithm", &ir::TimeToCollisionCondition::routing_algorithm)
+        .def_prop_ro("along_route", &ir::TimeToCollisionCondition::along_route);
+
+    nb::class_<ir::CollisionCondition, ir::Condition>(m, "CollisionCondition")
+        .def(nb::init<ir::TriggeringEntities, std::string>(), "triggering_entities"_a,
+             "entity_ref"_a)
+        .def_prop_ro("triggering_entities", &ir::CollisionCondition::triggering_entities)
+        .def_prop_ro("entity_ref", &ir::CollisionCondition::entity_ref);
+
+    nb::class_<ir::EndOfRoadCondition, ir::Condition>(m, "EndOfRoadCondition")
+        .def(nb::init<ir::TriggeringEntities, double>(), "triggering_entities"_a, "duration"_a)
+        .def_prop_ro("triggering_entities", &ir::EndOfRoadCondition::triggering_entities)
+        .def_prop_ro("duration", &ir::EndOfRoadCondition::duration);
+
+    nb::class_<ir::OffroadCondition, ir::Condition>(m, "OffroadCondition")
+        .def(nb::init<ir::TriggeringEntities, double>(), "triggering_entities"_a, "duration"_a)
+        .def_prop_ro("triggering_entities", &ir::OffroadCondition::triggering_entities)
+        .def_prop_ro("duration", &ir::OffroadCondition::duration);
+
+    nb::class_<ir::RelativeClearanceCondition, ir::Condition>(m, "RelativeClearanceCondition")
+        .def(nb::init<ir::TriggeringEntities, bool, bool, double, double, std::vector<std::string>,
+                      std::vector<ir::RelativeLaneRange>>(),
+             "triggering_entities"_a, "free_space"_a, "opposite_lanes"_a,
+             "distance_backward"_a = 0.0, "distance_forward"_a = 0.0,
+             "entity_refs"_a = std::vector<std::string>{},
+             "lane_ranges"_a = std::vector<ir::RelativeLaneRange>{})
+        .def_prop_ro("triggering_entities", &ir::RelativeClearanceCondition::triggering_entities)
+        .def_prop_ro("free_space", &ir::RelativeClearanceCondition::free_space)
+        .def_prop_ro("opposite_lanes", &ir::RelativeClearanceCondition::opposite_lanes)
+        .def_prop_ro("distance_backward", &ir::RelativeClearanceCondition::distance_backward)
+        .def_prop_ro("distance_forward", &ir::RelativeClearanceCondition::distance_forward)
+        .def_prop_ro("entity_refs", &ir::RelativeClearanceCondition::entity_refs)
+        .def_prop_ro("lane_ranges", &ir::RelativeClearanceCondition::lane_ranges);
 
     // Trigger model (§7.6.1): a Trigger is an OR over ConditionGroups,
     // each an AND over TriggerConditions.

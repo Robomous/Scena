@@ -51,10 +51,10 @@ TEST(Obb2Test, DisjointDistanceIsExactForAlignedBoxes) {
 
 TEST(Obb2Test, PointDistanceInsideIsZeroOutsideIsExact) {
     const Obb2 unit = aligned(0.0, 0.0, 1.0, 1.0);
-    EXPECT_EQ(point_obb_distance(0.0, 0.0, unit), 0.0);  // center: inside
-    EXPECT_EQ(point_obb_distance(1.0, 0.5, unit), 0.0);  // on the boundary
-    EXPECT_EQ(point_obb_distance(4.0, 0.0, unit), 3.0);  // beyond the +x edge
-    EXPECT_EQ(point_obb_distance(4.0, 5.0, unit), 5.0);  // beyond the +x,+y corner
+    EXPECT_EQ(point_obb_distance(0.0, 0.0, unit), 0.0); // center: inside
+    EXPECT_EQ(point_obb_distance(1.0, 0.5, unit), 0.0); // on the boundary
+    EXPECT_EQ(point_obb_distance(4.0, 0.0, unit), 3.0); // beyond the +x edge
+    EXPECT_EQ(point_obb_distance(4.0, 5.0, unit), 5.0); // beyond the +x,+y corner
 }
 
 TEST(Obb2Test, ProjectionIntervalIsExactOnBodyAxes) {

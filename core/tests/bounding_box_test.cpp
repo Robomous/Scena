@@ -112,8 +112,7 @@ TEST(BoundingBoxTest, EngineThreadsBoxToKinematicsFacet) {
     // The box authored on ego reaches the facet the condition reads, values
     // intact, at the t = 0 evaluation.
     Engine engine;
-    ASSERT_EQ(engine.init(probe_scenario(vehicle_box(),
-                                         std::make_shared<BoxProbe>("ego", 4.0))),
+    ASSERT_EQ(engine.init(probe_scenario(vehicle_box(), std::make_shared<BoxProbe>("ego", 4.0))),
               Status::Ok);
     EXPECT_TRUE(probe_fired(engine));
 }
@@ -122,8 +121,7 @@ TEST(BoundingBoxTest, AbsentBoxLeavesFacetGeometryEmpty) {
     // No box authored ⇒ the facet reports no geometry, so a box-reading
     // condition is false.
     Engine engine;
-    ASSERT_EQ(engine.init(probe_scenario(std::nullopt,
-                                         std::make_shared<BoxProbe>("ego", 4.0))),
+    ASSERT_EQ(engine.init(probe_scenario(std::nullopt, std::make_shared<BoxProbe>("ego", 4.0))),
               Status::Ok);
     EXPECT_FALSE(probe_fired(engine));
 }
