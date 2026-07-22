@@ -66,7 +66,7 @@ public:
         }
         const auto& record = it->second;
         return ir::EntityKinematics{record.state, record.acceleration, record.traveled_distance,
-                                    record.standstill_seconds};
+                                    record.standstill_seconds, record.bounding_box};
     }
 
     [[nodiscard]] std::optional<double> date_time_seconds() const override {
@@ -602,6 +602,24 @@ Status Engine::init(ir::Scenario scenario) {
             continue;
         }
         it->second.mode = entity.control_mode;
+        // Geometry is copied once and is immutable at runtime. A zero-size box
+        // is a valid degenerate point, so only NaN/negative dimensions or a
+        // NaN center are content defects (per ASAM OpenSCENARIO XML 1.4.0
+        // BoundingBox; dimensions and center are the only fields freespace
+        // math consumes this phase).
+        if (entity.bounding_box.has_value()) {
+            const ir::BoundingBox& box = *entity.bounding_box;
+            const bool bad_dimensions =
+                !(box.length >= 0.0) || !(box.width >= 0.0) || !(box.height >= 0.0);
+            const bool bad_center =
+                std::isnan(box.center_x) || std::isnan(box.center_y) || std::isnan(box.center_z);
+            if (bad_dimensions || bad_center) {
+                error(diagnostics_, Status::ValidationError,
+                      "entity '" + entity.id + "' has an invalid bounding box",
+                      "entities/" + entity.id);
+            }
+            it->second.bounding_box = entity.bounding_box;
+        }
     }
     std::size_t init_action_index = 0;
     for (const std::shared_ptr<ir::Action>& action : scenario.init_actions) {

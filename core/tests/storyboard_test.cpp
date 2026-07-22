@@ -66,8 +66,10 @@ Story make_story(std::string name, std::string act_name,
 Scenario make_base_scenario() {
     Scenario scenario;
     scenario.name = "storyboard-test";
-    scenario.entities.push_back({"ego", "ego vehicle", ControlMode::EngineControlled});
-    scenario.entities.push_back({"lead", "lead vehicle", ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "ego", .name = "ego vehicle", .control_mode = ControlMode::EngineControlled});
+    scenario.entities.push_back(
+        {.id = "lead", .name = "lead vehicle", .control_mode = ControlMode::EngineControlled});
     return scenario;
 }
 

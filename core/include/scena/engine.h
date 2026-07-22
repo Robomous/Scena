@@ -186,6 +186,11 @@ private:
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
+        // Optional geometry (p5-s3), copied once from the scenario at init and
+        // immutable at runtime. The interaction conditions read it through the
+        // entity-kinematics facet for freespace math; absent ⇒ freespace
+        // metrics are a deterministic false.
+        std::optional<ir::BoundingBox> bounding_box;
         // Derived observation state for the by-entity conditions (p5-s2),
         // written only by init seeding and the phase-2b refresh. Every member
         // is default-initialized: an uninitialized read would be a determinism
