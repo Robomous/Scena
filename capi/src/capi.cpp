@@ -11,10 +11,15 @@
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
+#include "scena/entity_visibility.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/controller.h"
+#include "scena/ir/coordinate_system.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/route.h"
 #include "scena/ir/scenario.h"
+#include "scena/ir/trajectory.h"
 #include "scena/status.h"
 #include "scena/version.h"
 
@@ -153,6 +158,59 @@ static_assert(static_cast<int>(scena::ir::DynamicsDimension::Time) == SCN_DYNAMI
 static_assert(static_cast<int>(scena::ir::DynamicsDimension::Rate) == SCN_DYNAMICS_DIMENSION_RATE);
 static_assert(static_cast<int>(scena::ir::FollowingMode::Position) == SCN_FOLLOWING_MODE_POSITION);
 static_assert(static_cast<int>(scena::ir::FollowingMode::Follow) == SCN_FOLLOWING_MODE_FOLLOW);
+
+// The p5-s5 enums mirror the IR enumerations 1:1 and in order.
+static_assert(static_cast<int>(scena::ir::CoordinateSystem::Entity) ==
+              SCN_COORDINATE_SYSTEM_ENTITY);
+static_assert(static_cast<int>(scena::ir::CoordinateSystem::World) == SCN_COORDINATE_SYSTEM_WORLD);
+static_assert(static_cast<int>(scena::ir::LongitudinalDisplacement::Any) ==
+              SCN_LONGITUDINAL_DISPLACEMENT_ANY);
+static_assert(static_cast<int>(scena::ir::LongitudinalDisplacement::LeadingReferencedEntity) ==
+              SCN_LONGITUDINAL_DISPLACEMENT_LEADING);
+static_assert(static_cast<int>(scena::ir::RouteStrategy::Fastest) == SCN_ROUTE_STRATEGY_FASTEST);
+static_assert(static_cast<int>(scena::ir::RouteStrategy::Shortest) == SCN_ROUTE_STRATEGY_SHORTEST);
+static_assert(static_cast<int>(scena::ir::ReferenceContext::Absolute) ==
+              SCN_REFERENCE_CONTEXT_ABSOLUTE);
+static_assert(static_cast<int>(scena::ir::ReferenceContext::Relative) ==
+              SCN_REFERENCE_CONTEXT_RELATIVE);
+static_assert(static_cast<int>(scena::ir::ControllerType::Lateral) == SCN_CONTROLLER_TYPE_LATERAL);
+static_assert(static_cast<int>(scena::ir::ControllerType::Movement) ==
+              SCN_CONTROLLER_TYPE_MOVEMENT);
+static_assert(static_cast<int>(scena::ir::ControllerType::All) == SCN_CONTROLLER_TYPE_ALL);
+
+/* A negative value on the ABI means "unspecified" for the [0..inf[ fields of
+ * DynamicConstraints, matching the scn_performance rate-limit convention. */
+std::optional<double> from_c_optional_limit(double value) {
+    if (value >= 0.0) {
+        return value;
+    }
+    return std::nullopt;
+}
+
+scena::ir::DynamicConstraints from_c_constraints(const scn_dynamic_constraints& constraints) {
+    scena::ir::DynamicConstraints out;
+    out.max_acceleration = from_c_optional_limit(constraints.max_acceleration);
+    out.max_acceleration_rate = from_c_optional_limit(constraints.max_acceleration_rate);
+    out.max_deceleration = from_c_optional_limit(constraints.max_deceleration);
+    out.max_deceleration_rate = from_c_optional_limit(constraints.max_deceleration_rate);
+    out.max_speed = from_c_optional_limit(constraints.max_speed);
+    return out;
+}
+
+/* Tri-state activation flag: negative is "no change", zero deactivates,
+ * positive activates. */
+std::optional<bool> from_c_tristate(int value) {
+    if (value < 0) {
+        return std::nullopt;
+    }
+    return value > 0;
+}
+
+/* The record of a live entity, or nullptr when the engine is not initialized
+ * or the id is unknown. */
+bool engine_has_entity(const scn_engine* engine, const char* id) {
+    return engine->engine.state(id).has_value();
+}
 
 /* Maps and range-checks the priority enum arriving across the ABI. */
 bool to_ir_priority(scn_event_priority priority, scena::ir::EventPriority& out) {
@@ -450,6 +508,325 @@ scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }
+}
+
+scn_status scn_engine_add_longitudinal_distance_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double distance,
+    double time_gap, int freespace, int continuous, scn_coordinate_system coordinate_system,
+    scn_longitudinal_displacement displacement, const scn_dynamic_constraints* constraints,
+    double at_time, scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    // Exactly one of the two targets: on the ABI "not used" is a negative
+    // value, since both are Range [0..inf[ in the standard.
+    const bool has_distance = distance >= 0.0;
+    const bool has_time_gap = time_gap >= 0.0;
+    if (engine == nullptr || entity_id == nullptr || reference_entity_id == nullptr ||
+        maximum_execution_count < 0 || has_distance == has_time_gap ||
+        !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(coordinate_system) >
+            static_cast<unsigned>(SCN_COORDINATE_SYSTEM_WORLD) ||
+        static_cast<unsigned>(displacement) >
+            static_cast<unsigned>(SCN_LONGITUDINAL_DISPLACEMENT_LEADING)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        std::optional<scena::ir::DynamicConstraints> ir_constraints;
+        if (constraints != nullptr) {
+            ir_constraints = from_c_constraints(*constraints);
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::LongitudinalDistanceAction>(
+                                    entity_id, reference_entity_id,
+                                    has_distance ? std::optional<double>(distance) : std::nullopt,
+                                    has_time_gap ? std::optional<double>(time_gap) : std::nullopt,
+                                    freespace != 0, continuous != 0,
+                                    static_cast<scena::ir::CoordinateSystem>(coordinate_system),
+                                    static_cast<scena::ir::LongitudinalDisplacement>(displacement),
+                                    std::move(ir_constraints)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_assign_route_action(scn_engine* engine, const char* entity_id,
+                                              const char* name, const scn_waypoint* waypoints,
+                                              size_t waypoint_count, int closed, double at_time,
+                                              scn_event_priority priority,
+                                              int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || waypoints == nullptr || waypoint_count < 2 ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    for (size_t index = 0; index < waypoint_count; ++index) {
+        if (static_cast<unsigned>(waypoints[index].strategy) >
+            static_cast<unsigned>(SCN_ROUTE_STRATEGY_SHORTEST)) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+    }
+    try {
+        scena::ir::Route route;
+        route.name = name != nullptr ? name : "";
+        route.closed = closed != 0;
+        route.waypoints.reserve(waypoint_count);
+        for (size_t index = 0; index < waypoint_count; ++index) {
+            route.waypoints.push_back(scena::ir::Waypoint{
+                scena::ir::WorldPosition{waypoints[index].x, waypoints[index].y,
+                                         waypoints[index].z},
+                static_cast<scena::ir::RouteStrategy>(waypoints[index].strategy)});
+        }
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::AssignRouteAction>(entity_id, std::move(route)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_acquire_position_action(scn_engine* engine, const char* entity_id,
+                                                  double x, double y, double z, double at_time,
+                                                  scn_event_priority priority,
+                                                  int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::AcquirePositionAction>(
+                                    entity_id, scena::ir::WorldPosition{x, y, z}));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_follow_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name,
+    const scn_trajectory_vertex* vertices, size_t vertex_count, int closed,
+    scn_following_mode following_mode, const scn_timing* timing, double initial_distance_offset,
+    double at_time, scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || vertices == nullptr || vertex_count < 2 ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(following_mode) > static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW) ||
+        (timing != nullptr && static_cast<unsigned>(timing->domain) >
+                                  static_cast<unsigned>(SCN_REFERENCE_CONTEXT_RELATIVE))) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Trajectory trajectory;
+        trajectory.name = name != nullptr ? name : "";
+        trajectory.closed = closed != 0;
+        trajectory.vertices.reserve(vertex_count);
+        for (size_t index = 0; index < vertex_count; ++index) {
+            trajectory.vertices.push_back(scena::ir::TrajectoryVertex{
+                scena::ir::WorldPosition{vertices[index].x, vertices[index].y, vertices[index].z},
+                vertices[index].has_time != 0 ? std::optional<double>(vertices[index].time)
+                                              : std::nullopt});
+        }
+        std::optional<scena::ir::Timing> ir_timing;
+        if (timing != nullptr) {
+            ir_timing = scena::ir::Timing{static_cast<scena::ir::ReferenceContext>(timing->domain),
+                                          timing->scale, timing->offset};
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::FollowTrajectoryAction>(
+                                    entity_id, std::move(trajectory),
+                                    static_cast<scena::ir::FollowingMode>(following_mode),
+                                    ir_timing, initial_distance_offset));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_assign_controller_action(
+    scn_engine* engine, const char* entity_id, const char* name,
+    scn_controller_type controller_type, const char* const* property_names,
+    const char* const* property_values, size_t property_count, int activate_lateral,
+    int activate_longitudinal, double at_time, scn_event_priority priority,
+    int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || name == nullptr ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(controller_type) > static_cast<unsigned>(SCN_CONTROLLER_TYPE_ALL) ||
+        (property_count > 0 && (property_names == nullptr || property_values == nullptr))) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    for (size_t index = 0; index < property_count; ++index) {
+        if (property_names[index] == nullptr || property_values[index] == nullptr) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+    }
+    try {
+        scena::ir::Controller controller;
+        controller.name = name;
+        controller.type = static_cast<scena::ir::ControllerType>(controller_type);
+        controller.properties.reserve(property_count);
+        for (size_t index = 0; index < property_count; ++index) {
+            controller.properties.push_back(
+                scena::ir::Property{property_names[index], property_values[index]});
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::AssignControllerAction>(
+                                    entity_id, std::move(controller),
+                                    from_c_tristate(activate_lateral),
+                                    from_c_tristate(activate_longitudinal)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_activate_controller_action(scn_engine* engine, const char* entity_id,
+                                                     int lateral, int longitudinal, double at_time,
+                                                     scn_event_priority priority,
+                                                     int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::ActivateControllerAction>(
+                entity_id, from_c_tristate(lateral), from_c_tristate(longitudinal)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_visibility_action(scn_engine* engine, const char* entity_id, int graphics,
+                                            int sensors, int traffic, double at_time,
+                                            scn_event_priority priority,
+                                            int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::VisibilityAction>(
+                                    entity_id, graphics != 0, sensors != 0, traffic != 0));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_visibility(scn_engine* engine, const char* id,
+                                        scn_entity_visibility* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    const std::optional<scena::EntityVisibility> visibility = engine->engine.visibility_of(id);
+    if (!visibility.has_value()) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    out->graphics = visibility->graphics ? 1 : 0;
+    out->sensors = visibility->sensors ? 1 : 0;
+    out->traffic = visibility->traffic ? 1 : 0;
+    return SCN_OK;
+}
+
+scn_status scn_engine_entity_controller_activation(scn_engine* engine, const char* id,
+                                                   scn_controller_activation* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    const std::optional<scena::ControllerActivation> activation =
+        engine->engine.controller_activation_of(id);
+    if (!activation.has_value()) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    out->lateral = activation->lateral ? 1 : 0;
+    out->longitudinal = activation->longitudinal ? 1 : 0;
+    return SCN_OK;
+}
+
+scn_status scn_engine_entity_controller_type(scn_engine* engine, const char* id,
+                                             scn_controller_type* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (!engine_has_entity(engine, id)) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    const scena::ir::Controller* controller = engine->engine.assigned_controller_of(id);
+    if (controller == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT; // no controller assigned
+    }
+    *out = static_cast<scn_controller_type>(controller->type);
+    return SCN_OK;
+}
+
+scn_status scn_engine_entity_controller_name(scn_engine* engine, const char* id, const char** out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (!engine_has_entity(engine, id)) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    const scena::ir::Controller* controller = engine->engine.assigned_controller_of(id);
+    if (controller == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        // Borrowed through the handle's buffer, like scn_engine_get_variable.
+        engine->value_buffer = controller->name;
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_route_info(scn_engine* engine, const char* id,
+                                        size_t* out_waypoint_count, int* out_closed) {
+    if (engine == nullptr || id == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (!engine_has_entity(engine, id)) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    const scena::ir::Route* route = engine->engine.route_of(id);
+    if (route == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT; // no route assigned
+    }
+    if (out_waypoint_count != nullptr) {
+        *out_waypoint_count = route->waypoints.size();
+    }
+    if (out_closed != nullptr) {
+        *out_closed = route->closed ? 1 : 0;
+    }
+    return SCN_OK;
+}
+
+scn_status scn_engine_entity_route_waypoint_at(scn_engine* engine, const char* id, size_t index,
+                                               scn_waypoint* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (!engine_has_entity(engine, id)) {
+        return SCN_ERROR_UNKNOWN_ENTITY;
+    }
+    const scena::ir::Route* route = engine->engine.route_of(id);
+    if (route == nullptr || index >= route->waypoints.size()) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    const scena::ir::Waypoint& waypoint = route->waypoints[index];
+    out->x = waypoint.position.x;
+    out->y = waypoint.position.y;
+    out->z = waypoint.position.z;
+    out->strategy = static_cast<scn_route_strategy>(waypoint.strategy);
+    return SCN_OK;
 }
 
 scn_status scn_engine_init(scn_engine* engine) {
