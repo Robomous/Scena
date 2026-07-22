@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "scena/engine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <map>
@@ -642,15 +643,40 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
 /// dynamics value carries a time [s], distance [m] or rate [delta/s] and must be
 /// finite and in range [0..inf[ (per ASAM OpenSCENARIO XML 1.4.0
 /// §TransitionDynamics); the standard defines no asam.net rule id, so the
-/// diagnostic cites the section only.
+/// diagnostic cites the section only. A relative target (§RelativeTargetSpeed)
+/// additionally requires a resolvable reference entity, and a continuous target
+/// must not be combined with a time- or distance-dimensioned transition (§7.5.3).
+template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
-                             DiagnosticSink& sink) {
+                             const Records& records, DiagnosticSink& sink) {
     if (const auto* speed = dynamic_cast<const ir::SpeedAction*>(&action)) {
         const ir::TransitionDynamics& td = speed->dynamics();
         if (!std::isfinite(td.value) || td.value < 0.0) {
             error(sink, Status::ValidationError,
                   "speed action transition dynamics value must be finite and in range [0..inf[",
                   path);
+        }
+        if (speed->is_relative()) {
+            const ir::RelativeTargetSpeed& rel = *speed->relative_target();
+            if (records.find(rel.entity_ref) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "speed action reference entity '" + rel.entity_ref + "' is unknown", path);
+            }
+            if (!std::isfinite(rel.value)) {
+                error(sink, Status::ValidationError, "relative speed target value must be finite",
+                      path);
+            }
+            // §RelativeTargetSpeed: "This may not be used together with
+            // Dynamics.time or Dynamics.distance." (§7.5.3). A positive time or
+            // distance defines exactly such a transition.
+            if (rel.continuous && td.value > 0.0 &&
+                (td.dimension == ir::DynamicsDimension::Time ||
+                 td.dimension == ir::DynamicsDimension::Distance)) {
+                error(sink, Status::ValidationError,
+                      "continuous relative speed target must not use a time- or "
+                      "distance-dimensioned transition",
+                      path);
+            }
         }
         return;
     }
@@ -755,7 +781,7 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                                       "action targets unknown entity '" + action->entity_id() + "'",
                                       action_path);
                             }
-                            validate_action_content(*action, action_path, sink);
+                            validate_action_content(*action, action_path, records, sink);
                         }
                     }
                 }
@@ -862,7 +888,7 @@ Status Engine::init(ir::Scenario scenario) {
             error(diagnostics_, Status::SemanticError,
                   "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
-        validate_action_content(*action, action_path, diagnostics_);
+        validate_action_content(*action, action_path, records, diagnostics_);
     }
     validate_storyboard(scenario.storyboard, records, scenario.parameters, scenario.variables,
                         diagnostics_);
@@ -1181,10 +1207,50 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             return runtime::ActionOutcome::Complete;
         }
         EntityRecord& record = it->second;
-        if (record.active_longitudinal_action == &action) {
-            // Owning action's re-poll: the controller argument is unused.
+
+        // A longitudinal action superseded by a newer one, re-polled while still
+        // in its event's running set: retire it. It completes so its event can
+        // end (§8.4.2) and never reinstalls itself to fight the current owner.
+        const auto retired = std::find(record.retired_longitudinal.begin(),
+                                       record.retired_longitudinal.end(), &action);
+        if (retired != record.retired_longitudinal.end()) {
+            record.retired_longitudinal.erase(retired);
+            return runtime::ActionOutcome::Complete;
+        }
+
+        const bool is_owner = record.active_longitudinal_action == &action;
+
+        // Continuous relative speed (§7.5.3): a controller keeps matching the
+        // reference entity's speed and the action never ends by itself. Modeled
+        // as a re-polled action that reports Running indefinitely; the tracking
+        // ends only when a later longitudinal action supersedes it or a
+        // stopTransition releases it. This branch handles both the first fire
+        // and every re-poll (is_owner already true).
+        if (speed_action != nullptr && speed_action->is_relative() &&
+            speed_action->relative_target()->continuous) {
+            if (!is_owner) {
+                supersede_longitudinal(record, &action);
+            }
+            record.longitudinal.reset(); // continuous uses no finite controller
+            record.continuous_speed = *speed_action->relative_target();
+            record.active_longitudinal_action = &action;
+            double target = resolve_relative_speed(*record.continuous_speed, record);
+            if (record.performance.has_value() && record.performance->max_speed > 0.0 &&
+                target > record.performance->max_speed) {
+                target = record.performance->max_speed;
+            }
+            record.state.speed = target;
+            return runtime::ActionOutcome::Running;
+        }
+
+        if (is_owner) {
+            // Owning finite controller's re-poll: the controller argument is unused.
             return drive_longitudinal(action, record, runtime::LongitudinalController{});
         }
+        // First application, or a finite longitudinal action superseding whatever
+        // drove this entity — including a running continuous relative target.
+        supersede_longitudinal(record, &action);
+        record.continuous_speed.reset();
         return drive_longitudinal(action, record,
                                   speed_action != nullptr
                                       ? build_speed_controller(*speed_action, record)
@@ -1248,9 +1314,14 @@ runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAc
     seg.from = record.state.speed;
     seg.shape = td.shape;
 
+    // A non-continuous relative target (§RelativeTargetSpeed) is resolved once,
+    // against the reference entity's speed now, then reached through `td` exactly
+    // like an absolute target. The continuous case never reaches this builder —
+    // it is handled in apply() and re-matched every step.
+    double target = action.is_relative() ? resolve_relative_speed(*action.relative_target(), record)
+                                         : action.target_speed();
     // Clamp the target to the entity's maximum speed (§Performance). Only a
     // positive maxSpeed constrains; other targets pass through.
-    double target = action.target_speed();
     if (perf.has_value() && perf->max_speed > 0.0 && target > perf->max_speed) {
         target = perf->max_speed;
     }
@@ -1282,6 +1353,37 @@ runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAc
     runtime::LongitudinalController controller;
     controller.segments.push_back(seg);
     return controller;
+}
+
+void Engine::supersede_longitudinal(EntityRecord& record, const ir::Action* incoming) {
+    const ir::Action* outgoing = record.active_longitudinal_action;
+    if (outgoing == nullptr || outgoing == incoming) {
+        return;
+    }
+    // The outgoing owner is still Running in its own event; mark it so its next
+    // re-poll reports Complete rather than reinstalling itself. Guard against a
+    // duplicate entry (a paranoid check — a given action owns the entity once).
+    if (std::find(record.retired_longitudinal.begin(), record.retired_longitudinal.end(),
+                  outgoing) == record.retired_longitudinal.end()) {
+        record.retired_longitudinal.push_back(outgoing);
+    }
+}
+
+double Engine::resolve_relative_speed(const ir::RelativeTargetSpeed& target,
+                                      const EntityRecord& record) const {
+    // The reference is validated to exist at init; the fallback to the actor's
+    // own speed is defensive (yields a no-op delta / identity factor) and never
+    // taken on a validated scenario.
+    const auto it = entities_.find(target.entity_ref); // heterogeneous lookup
+    const double reference_speed =
+        it != entities_.end() ? it->second.state.speed : record.state.speed;
+    switch (target.value_type) {
+    case ir::SpeedTargetValueType::Delta:
+        return reference_speed + target.value;
+    case ir::SpeedTargetValueType::Factor:
+        return reference_speed * target.value;
+    }
+    return reference_speed;
 }
 
 runtime::LongitudinalController
@@ -1326,7 +1428,12 @@ void Engine::finalize_longitudinal(const ir::Action& action, EntityRecord& recor
         // §8.5: init actions are instantaneous — jump to the terminal target.
         record.state.speed = record.longitudinal->segments.back().to;
     }
+    // A continuous relative target used as an init action has already set the
+    // resolved speed in apply(); §8.5 makes it instantaneous, so just release
+    // the tracking rather than leaving it live into the run.
     record.longitudinal.reset();
+    record.continuous_speed.reset();
+    record.retired_longitudinal.clear();
     record.active_longitudinal_action = nullptr;
 }
 

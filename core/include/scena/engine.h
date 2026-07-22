@@ -11,6 +11,7 @@
 
 #include "scena/diagnostic.h"
 #include "scena/entity_state.h"
+#include "scena/ir/action.h"
 #include "scena/ir/date_time.h"
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
@@ -209,6 +210,21 @@ private:
         // dereferenced for ordering), so it does not reach results.
         std::optional<runtime::LongitudinalController> longitudinal;
         const ir::Action* active_longitudinal_action = nullptr;
+        // Active continuous relative speed target (p5-s4, §7.5.3): a
+        // SpeedAction with a continuous RelativeTargetSpeed installs this and
+        // no finite controller; each re-poll re-matches the reference entity's
+        // speed. Mutually exclusive with `longitudinal`; both share
+        // active_longitudinal_action so a new longitudinal action supersedes
+        // either. Present ⇒ the action never completes on its own.
+        std::optional<ir::RelativeTargetSpeed> continuous_speed;
+        // Longitudinal actions superseded by a newer one on this entity but
+        // still in their event's running set (p5-s4). On its next re-poll a
+        // retired action reports Complete instead of reinstalling itself, so a
+        // superseded ramp/continuous target does not fight the current owner
+        // (§7.5.1 minimal single-domain conflict resolution; the full priority
+        // catalog is #51). Membership is tested by identity only — never
+        // iterated for a result — so it does not reach the determinism contract.
+        std::vector<const ir::Action*> retired_longitudinal;
         // Derived observation state for the by-entity conditions (p5-s2),
         // written only by init seeding and the phase-2b refresh. Every member
         // is default-initialized: an uninitialized read would be a determinism
@@ -230,11 +246,26 @@ private:
     runtime::ActionOutcome drive_longitudinal(const ir::Action& action, EntityRecord& record,
                                               runtime::LongitudinalController controller);
 
+    /// Retires the longitudinal action currently owning `record` when a
+    /// different `incoming` action supersedes it, so the outgoing action reports
+    /// Complete on its next re-poll instead of fighting for the entity (p5-s4,
+    /// §7.5.1 minimal conflict resolution). No-op when nothing is owned or the
+    /// owner is `incoming` itself.
+    void supersede_longitudinal(EntityRecord& record, const ir::Action* incoming);
+
     /// Builds the controller for a SpeedAction from `record`'s current speed,
     /// clamped by its Performance envelope (max speed and per-shape peak
     /// acceleration).
     [[nodiscard]] runtime::LongitudinalController
     build_speed_controller(const ir::SpeedAction& action, const EntityRecord& record) const;
+
+    /// Resolves a RelativeTargetSpeed against its reference entity's current
+    /// speed: delta ⇒ ref + value, factor ⇒ ref * value (§RelativeTargetSpeed).
+    /// The reference is read from the entity table at call time — deterministic
+    /// given the fixed storyboard/scheduler order (validated to exist at init).
+    /// No Performance clamp is applied here; callers clamp as needed.
+    [[nodiscard]] double resolve_relative_speed(const ir::RelativeTargetSpeed& target,
+                                                const EntityRecord& record) const;
 
     /// Builds the controller for a SpeedProfileAction: one linear
     /// (position-mode) segment per entry, chained from `record`'s current
