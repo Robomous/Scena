@@ -34,6 +34,10 @@ enum class Status {
     /// with no VariableDeclaration. Host API misuse, like UnknownEntity, not
     /// a defect in scenario content.
     UnknownName,
+    /// Scenario content uses a construct the standard deprecated (e.g. a
+    /// ReachPositionCondition). Reported as a warning diagnostic; the
+    /// construct is still executed.
+    DeprecatedFeature,
 };
 
 } // namespace scena

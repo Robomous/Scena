@@ -49,6 +49,8 @@ scn_status to_c_status(scena::Status status) {
         return SCN_ERROR_UNSUPPORTED_FEATURE;
     case scena::Status::UnknownName:
         return SCN_ERROR_UNKNOWN_NAME;
+    case scena::Status::DeprecatedFeature:
+        return SCN_ERROR_DEPRECATED_FEATURE;
     }
     return SCN_ERROR_INTERNAL;
 }

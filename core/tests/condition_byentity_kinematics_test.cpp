@@ -13,16 +13,20 @@
 
 #include <gtest/gtest.h>
 
+#include "scena/engine.h"
 #include "scena/entity_state.h"
+#include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
+#include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/scheduler.h"
+#include "scena/status.h"
 
 namespace ir = scena::ir;
 using ir::DirectionalDimension;
@@ -30,7 +34,9 @@ using ir::EntityKinematics;
 using ir::Rule;
 using ir::TriggeringEntities;
 using ir::TriggeringEntitiesRule;
+using scena::Engine;
 using scena::EntityState;
+using scena::Status;
 using scena::runtime::ActionOutcome;
 using scena::runtime::Scheduler;
 
@@ -101,6 +107,109 @@ TriggeringEntities ego_only() {
 
 bool holds(const ir::Condition& condition, const ir::EvaluationContext& context) {
     return condition.evaluate(context);
+}
+
+// --- Engine-driven helpers --------------------------------------------------
+
+/// A gateway that serves programmed states for host-controlled entities.
+class FakeGateway final : public scena::gateway::ISimulatorGateway {
+public:
+    void set_state(std::string id, EntityState state) { states_[std::move(id)] = state; }
+
+    void publish_state(const std::string& /*id*/, const EntityState& /*state*/) override {}
+
+    bool poll_state(const std::string& id, EntityState& out) override {
+        const auto it = states_.find(id);
+        if (it == states_.end()) {
+            return false;
+        }
+        out = it->second;
+        return true;
+    }
+
+    scena::gateway::IRoadQuery* road_query() override { return nullptr; }
+
+private:
+    std::map<std::string, EntityState> states_;
+};
+
+struct EntitySpec {
+    std::string id;
+    ir::ControlMode mode = ir::ControlMode::HostControlled;
+};
+
+/// Scenario with the given entities plus an engine-controlled "probe": one
+/// event whose start trigger wraps `condition` sets the probe's speed to a
+/// marker, so a firing shows up as a non-zero probe speed. `init_speed`
+/// entries seed init-action speeds (the observation baseline).
+ir::Scenario byentity_scenario(std::vector<EntitySpec> entities,
+                               std::shared_ptr<ir::Condition> condition,
+                               std::vector<std::pair<std::string, double>> init_speed = {},
+                               ir::ConditionEdge edge = ir::ConditionEdge::None) {
+    ir::Scenario scenario;
+    scenario.name = "byentity";
+    for (const EntitySpec& spec : entities) {
+        ir::Entity entity;
+        entity.id = spec.id;
+        entity.name = spec.id;
+        entity.control_mode = spec.mode;
+        scenario.entities.push_back(std::move(entity));
+    }
+    ir::Entity probe;
+    probe.id = "probe";
+    probe.name = "probe";
+    probe.control_mode = ir::ControlMode::EngineControlled;
+    scenario.entities.push_back(std::move(probe));
+
+    for (const auto& [id, speed] : init_speed) {
+        scenario.init_actions.push_back(std::make_shared<ir::SpeedAction>(id, speed));
+    }
+
+    ir::Event event;
+    event.name = "event";
+    ir::Trigger trigger;
+    ir::ConditionGroup group;
+    ir::TriggerCondition trigger_condition;
+    trigger_condition.expression = std::move(condition);
+    trigger_condition.edge = edge;
+    group.conditions.push_back(std::move(trigger_condition));
+    trigger.groups.push_back(std::move(group));
+    event.start_trigger = std::move(trigger);
+    event.actions.push_back(std::make_shared<ir::SpeedAction>("probe", 99.0));
+
+    ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(event));
+    ir::ManeuverGroup mgroup;
+    mgroup.name = "group";
+    mgroup.maneuvers.push_back(std::move(maneuver));
+    ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(mgroup));
+    ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+bool probe_fired(const Engine& engine) {
+    const auto state = engine.state("probe");
+    return state.has_value() && state->speed != 0.0;
+}
+
+std::shared_ptr<ir::Condition> speed_at_least(double value) {
+    return std::make_shared<ir::SpeedCondition>(ego_only(), value, Rule::GreaterOrEqual);
+}
+
+int diagnostic_count(const Engine& engine, scena::Severity severity, Status code) {
+    int count = 0;
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        if (diagnostic.severity == severity && diagnostic.code == code) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 } // namespace
@@ -404,4 +513,266 @@ TEST(ReachPositionConditionTest, ToleranceZeroNeedsExactXy) {
                       KinematicsContext{{{"ego", at_xy(5.0, 5.0)}}}));
     EXPECT_FALSE(holds(ir::ReachPositionCondition{ego_only(), target, 0.0},
                        KinematicsContext{{{"ego", at_xy(5.0, 5.001)}}}));
+}
+
+// ---------------------------------------------------------------------------
+// Engine-driven derived observations (phase 2b, §7.6.5.1)
+// ---------------------------------------------------------------------------
+
+TEST(ByEntityEngineTest, InitBaselineHasNoPhantomAccelerationOrDistance) {
+    // An init-action speed is the observation baseline: at t = 0 acceleration
+    // is absent and the odometer is 0, so neither an Acceleration nor a
+    // TraveledDistance condition holds yet.
+    Engine engine;
+    auto scenario = byentity_scenario(
+        {{"ego", ir::ControlMode::HostControlled}},
+        std::make_shared<ir::AccelerationCondition>(ego_only(), -1e9, Rule::GreaterThan),
+        {{"ego", 10.0}});
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_FALSE(probe_fired(engine)); // acceleration absent at t = 0
+}
+
+TEST(ByEntityEngineTest, AccelerationIsFiniteDifferenceOverReportedSpeed) {
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario(
+                  {{"ego", ir::ControlMode::HostControlled}},
+                  std::make_shared<ir::AccelerationCondition>(ego_only(), 3.0, Rule::GreaterThan))),
+              Status::Ok);
+    EXPECT_FALSE(probe_fired(engine)); // t = 0: absent
+
+    EntityState moving;
+    moving.speed = 4.0;
+    ASSERT_EQ(engine.report_state("ego", moving), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // accel = (4 - 0) / 1 = 4 > 3
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, OdometerAccruesPathLengthNotDisplacement) {
+    // An L-shaped host path: 3 m east then 4 m north. Path length 7 m,
+    // straight-line displacement 5 m. A 6 m threshold fires only for path
+    // length.
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario(
+                  {{"ego", ir::ControlMode::HostControlled}},
+                  std::make_shared<ir::TraveledDistanceCondition>(ego_only(), 6.0))),
+              Status::Ok);
+
+    EntityState east;
+    east.x = 3.0;
+    ASSERT_EQ(engine.report_state("ego", east), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // odometer 3
+    EXPECT_FALSE(probe_fired(engine));
+
+    EntityState north = east;
+    north.y = 4.0;
+    ASSERT_EQ(engine.report_state("ego", north), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // odometer 7 (>= 6); displacement is 5
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, EngineControlledAccrualLagsByOneStep) {
+    // Engine integration is phase 4, after the phase-2b refresh, so the
+    // odometer at step k reflects motion up to step k-1. ego cruises at 10 m/s.
+    Engine engine;
+    ASSERT_EQ(
+        engine.init(byentity_scenario(
+            {{"ego", ir::ControlMode::EngineControlled}},
+            std::make_shared<ir::TraveledDistanceCondition>(ego_only(), 5.0), {{"ego", 10.0}})),
+        Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // 2b sees x=0 (pre-integration); odometer 0
+    EXPECT_FALSE(probe_fired(engine));
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // 2b sees x=10 from step 1; odometer 10 >= 5
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, StandStillDurationZeroHoldsAtRestFromTimeZero) {
+    Engine engine;
+    ASSERT_EQ(
+        engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                      std::make_shared<ir::StandStillCondition>(ego_only(), 0.0))),
+        Status::Ok);
+    EXPECT_TRUE(probe_fired(engine)); // stationary at t = 0, duration 0 holds
+}
+
+TEST(ByEntityEngineTest, StandStillAccumulatesWhileAtRest) {
+    Engine engine;
+    ASSERT_EQ(
+        engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                      std::make_shared<ir::StandStillCondition>(ego_only(), 2.0))),
+        Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // standstill 1
+    EXPECT_FALSE(probe_fired(engine));
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // standstill 2 >= 2
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, StandStillResetsOnMotion) {
+    // Rest 1.5 s, move (reset), rest 1.5 s again: a 2 s threshold never holds,
+    // because the timer resets rather than summing to 3.
+    Engine engine;
+    ASSERT_EQ(
+        engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                      std::make_shared<ir::StandStillCondition>(ego_only(), 2.0))),
+        Status::Ok);
+    ASSERT_EQ(engine.step(1.5), Status::Ok); // standstill 1.5
+    EntityState moving;
+    moving.speed = 5.0;
+    ASSERT_EQ(engine.report_state("ego", moving), Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // moving ⇒ reset to 0
+    EntityState stopped;
+    ASSERT_EQ(engine.report_state("ego", stopped), Status::Ok);
+    ASSERT_EQ(engine.step(1.5), Status::Ok); // standstill 1.5 again
+    EXPECT_FALSE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, ZeroDtStepFreezesAccumulatorsWithoutNaN) {
+    // A dt == 0 step must not recompute derived state (no 0/0 NaN) but the
+    // live state stays visible.
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario(
+                  {{"ego", ir::ControlMode::HostControlled}},
+                  std::make_shared<ir::AccelerationCondition>(ego_only(), 10.0, Rule::EqualTo))),
+              Status::Ok);
+    EntityState moving;
+    moving.speed = 10.0;
+    ASSERT_EQ(engine.report_state("ego", moving), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // accel = 10
+    EXPECT_TRUE(probe_fired(engine));
+
+    // A zero-dt step leaves acceleration exactly 10 (not NaN): the equalTo
+    // condition still holds, which a NaN would break.
+    ASSERT_EQ(engine.step(0.0), Status::Ok);
+    ASSERT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, HostObservationViaGatewayPoll) {
+    FakeGateway gateway;
+    Engine engine{&gateway};
+    ASSERT_EQ(engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                            speed_at_least(5.0))),
+              Status::Ok);
+    EXPECT_FALSE(probe_fired(engine)); // ego at rest
+
+    EntityState fast;
+    fast.speed = 6.0;
+    gateway.set_state("ego", fast);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // polled 6 >= 5
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, MixedAllAcrossHostAndEngineEntities) {
+    // All-reduction over a host and an engine entity: holds only once both
+    // are fast enough. The engine entity cruises at 8 from init; the host
+    // entity is reported fast only later.
+    const TriggeringEntities both = triggering(TriggeringEntitiesRule::All, {"host", "auto"});
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario(
+                  {{"host", ir::ControlMode::HostControlled},
+                   {"auto", ir::ControlMode::EngineControlled}},
+                  std::make_shared<ir::SpeedCondition>(both, 5.0, Rule::GreaterOrEqual),
+                  {{"auto", 8.0}})),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // host still 0 ⇒ All false
+    EXPECT_FALSE(probe_fired(engine));
+
+    EntityState fast;
+    fast.speed = 6.0;
+    ASSERT_EQ(engine.report_state("host", fast), Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // both >= 5 ⇒ All holds
+    EXPECT_TRUE(probe_fired(engine));
+}
+
+// ---------------------------------------------------------------------------
+// Validation (engine.cpp validate_condition_expression)
+// ---------------------------------------------------------------------------
+
+TEST(ByEntityValidationTest, DanglingTriggeringEntityFailsInit) {
+    Engine engine;
+    auto scenario = byentity_scenario(
+        {{"ego", ir::ControlMode::HostControlled}},
+        std::make_shared<ir::SpeedCondition>(triggering(TriggeringEntitiesRule::Any, {"ghost"}),
+                                             1.0, Rule::GreaterThan));
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
+    // Entity-reference resolvability has no rule id (actor precedent).
+    EXPECT_GE(diagnostic_count(engine, scena::Severity::Error, Status::SemanticError), 1);
+}
+
+TEST(ByEntityValidationTest, DanglingRelativeReferenceFailsInit) {
+    Engine engine;
+    auto scenario = byentity_scenario(
+        {{"ego", ir::ControlMode::HostControlled}},
+        std::make_shared<ir::RelativeSpeedCondition>(ego_only(), "ghost", 0.0, Rule::GreaterThan));
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
+}
+
+TEST(ByEntityValidationTest, NanAndNegativeRangesFailInit) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    {
+        Engine engine;
+        EXPECT_EQ(engine.init(byentity_scenario(
+                      {{"ego", ir::ControlMode::HostControlled}},
+                      std::make_shared<ir::SpeedCondition>(ego_only(), nan, Rule::EqualTo))),
+                  Status::ValidationError);
+    }
+    {
+        Engine engine;
+        EXPECT_EQ(engine.init(byentity_scenario(
+                      {{"ego", ir::ControlMode::HostControlled}},
+                      std::make_shared<ir::StandStillCondition>(ego_only(), -1.0))),
+                  Status::ValidationError);
+    }
+    {
+        Engine engine;
+        EXPECT_EQ(engine.init(byentity_scenario(
+                      {{"ego", ir::ControlMode::HostControlled}},
+                      std::make_shared<ir::TraveledDistanceCondition>(ego_only(), -5.0))),
+                  Status::ValidationError);
+    }
+    {
+        Engine engine;
+        EXPECT_EQ(engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                                std::make_shared<ir::ReachPositionCondition>(
+                                                    ego_only(), ir::WorldPosition{}, -2.0))),
+                  Status::ValidationError);
+    }
+}
+
+TEST(ByEntityValidationTest, ReachPositionEmitsDeprecationWarningButInitSucceeds) {
+    Engine engine;
+    ASSERT_EQ(
+        engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                      std::make_shared<ir::ReachPositionCondition>(
+                                          ego_only(), ir::WorldPosition{1.0, 2.0, 0.0}, 1.0))),
+        Status::Ok);
+    EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::DeprecatedFeature), 1);
+}
+
+TEST(ByEntityEngineTest, RisingEdgeAlreadyTrueAtArmNeverFires) {
+    // §7.6.4: an expression already true when its element enters standbyState
+    // produces no rising edge — the first check is false and it never
+    // transitions false->true afterwards.
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                            speed_at_least(5.0), {{"ego", 10.0}},
+                                            ir::ConditionEdge::Rising)),
+              Status::Ok);
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(engine.step(0.1), Status::Ok); // ego stays fast, never rises
+    }
+    EXPECT_FALSE(probe_fired(engine));
+}
+
+TEST(ByEntityEngineTest, RisingEdgeFiresWhenSpeedCrossesThreshold) {
+    Engine engine;
+    ASSERT_EQ(engine.init(byentity_scenario({{"ego", ir::ControlMode::HostControlled}},
+                                            speed_at_least(5.0), {}, ir::ConditionEdge::Rising)),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // ego slow: below threshold
+    EXPECT_FALSE(probe_fired(engine));
+
+    EntityState fast;
+    fast.speed = 6.0;
+    ASSERT_EQ(engine.report_state("ego", fast), Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok); // false -> true: rising edge fires
+    EXPECT_TRUE(probe_fired(engine));
 }

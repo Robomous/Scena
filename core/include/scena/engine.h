@@ -83,6 +83,13 @@ public:
     /// Advances simulation time by dt seconds (dt >= 0). Order within a step:
     ///  1. the clock advances to t' = t + dt;
     ///  2. host-controlled entity states are polled from the gateway, if any;
+    ///  2b. derived observations are refreshed for every entity (both control
+    ///     modes) from the snapshots conditions actually observe: acceleration
+    ///     = (speed - prev_speed)/dt, the odometer accrues the Euclidean
+    ///     displacement, and the standstill timer accumulates dt while speed is
+    ///     exactly 0.0 and resets otherwise. Skipped entirely when dt == 0 (no
+    ///     0/0, prev_sample untouched). This feeds the by-entity conditions
+    ///     (§7.6.5.1); it is an addition to this list, not a reordering.
     ///  3. the storyboard is evaluated at t': the stop trigger is checked,
     ///     standby elements whose start condition holds enter runningState
     ///     (their events fire actions), and completion propagates;
@@ -179,6 +186,15 @@ private:
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
+        // Derived observation state for the by-entity conditions (p5-s2),
+        // written only by init seeding and the phase-2b refresh. Every member
+        // is default-initialized: an uninitialized read would be a determinism
+        // bug.
+        bool has_prev_sample = false;
+        EntityState prev_sample;            ///< Snapshot the previous evaluation observed.
+        std::optional<double> acceleration; ///< m/s^2; absent until the first dt>0 refresh.
+        double traveled_distance = 0.0;     ///< m, cumulative path length since init.
+        double standstill_seconds = 0.0;    ///< s, contiguous time at speed == 0.0.
     };
 
     runtime::ActionOutcome apply(const ir::Action& action);
@@ -187,12 +203,19 @@ private:
     /// when no time-of-day anchor has been set.
     [[nodiscard]] std::optional<double> current_date_time_seconds(double simulation_time) const;
 
+    /// Phase-2b refresh of the derived observations (acceleration, odometer,
+    /// standstill timer) for every entity from the current vs. previous
+    /// snapshot, over `dt` (> 0). See step()'s documentation for the invariant.
+    void refresh_observations(double dt);
+
     gateway::ISimulatorGateway* gateway_ = nullptr;
     ir::Scenario scenario_;
     runtime::Clock clock_;
     runtime::Scheduler scheduler_;
     // std::map (not unordered_map) so per-step iteration order is deterministic.
-    std::map<std::string, EntityRecord> entities_;
+    // std::less<> gives heterogeneous string_view lookup for the entity
+    // facet without changing the (sorted) iteration order.
+    std::map<std::string, EntityRecord, std::less<>> entities_;
     // Runtime variable store, seeded from scenario_.variables at init and
     // mutable through set_variable during the run (§6.12). std::less<> gives
     // heterogeneous lookup on a string_view. Cleared by close().

@@ -45,7 +45,8 @@ NB_MODULE(_scena, m) {
         .value("ValidationError", scena::Status::ValidationError)
         .value("SemanticError", scena::Status::SemanticError)
         .value("UnsupportedFeature", scena::Status::UnsupportedFeature)
-        .value("UnknownName", scena::Status::UnknownName);
+        .value("UnknownName", scena::Status::UnknownName)
+        .value("DeprecatedFeature", scena::Status::DeprecatedFeature);
 
     nb::enum_<scena::Severity>(m, "Severity")
         .value("Info", scena::Severity::Info)
