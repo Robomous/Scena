@@ -42,6 +42,10 @@ constexpr const char* kRuleResolvableStoryboardElement =
     "asam.net:xosc:1.0.0:reference_control.resolvable_storyboard_element_ref";
 constexpr const char* kRuleDistancesNotNegative =
     "asam.net:xosc:1.1.0:data_type.distances_are_not_negative";
+constexpr const char* kRuleTrajectoryTiming =
+    "asam.net:xosc:1.0.0:routing.trajectory_timing_exists_if_requested";
+constexpr const char* kRuleTrajectoryOffset =
+    "asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -642,6 +646,38 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
     }
 }
 
+/// Straight-line length between two world positions, in metres. Three
+/// dimensional: a trajectory may climb, and the arc length has to match the
+/// geometry the follower interpolates. Fixed operand order; sqrt is IEEE-exact.
+double segment_length(const ir::WorldPosition& from, const ir::WorldPosition& to) {
+    const double dx = to.x - from.x;
+    const double dy = to.y - from.y;
+    const double dz = to.z - from.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/// Linear interpolation between two world positions at fraction `t` in [0, 1].
+/// Written as `from + (to - from) * t` so t == 0 and t == 1 reproduce the
+/// endpoints exactly.
+ir::WorldPosition interpolate_position(const ir::WorldPosition& from, const ir::WorldPosition& to,
+                                       double t) {
+    return ir::WorldPosition{from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t,
+                             from.z + (to.z - from.z) * t};
+}
+
+/// Index of the segment containing `value` in the ascending vector `bounds`
+/// (`bounds[i] <= value <= bounds[i+1]`), clamped to the first and last
+/// segment. A linear scan, not std::lower_bound: the vertex counts are small
+/// and a fixed scan keeps the search order obvious.
+std::size_t segment_index(const std::vector<double>& bounds, double value) {
+    const std::size_t last_segment = bounds.size() - 2;
+    std::size_t index = 0;
+    while (index < last_segment && bounds[index + 1] < value) {
+        ++index;
+    }
+    return index;
+}
+
 /// Validates action content beyond target existence. A SpeedAction's transition
 /// dynamics value carries a time [s], distance [m] or rate [delta/s] and must be
 /// finite and in range [0..inf[ (per ASAM OpenSCENARIO XML 1.4.0
@@ -765,6 +801,104 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                  "road-based coordinate system needs a road network (§6.4); the longitudinal "
                  "distance action completes immediately",
                  path);
+        }
+        return;
+    }
+    if (const auto* assign_route = dynamic_cast<const ir::AssignRouteAction*>(&action)) {
+        // §Route: "At least two waypoints are needed to define a route."
+        const ir::Route& route = assign_route->route();
+        if (route.waypoints.size() < 2) {
+            error(sink, Status::ValidationError, "route needs at least two waypoints", path);
+        }
+        std::size_t waypoint_index = 0;
+        for (const ir::Waypoint& waypoint : route.waypoints) {
+            if (!std::isfinite(waypoint.position.x) || !std::isfinite(waypoint.position.y) ||
+                !std::isfinite(waypoint.position.z)) {
+                error(sink, Status::ValidationError, "route waypoint position must be finite",
+                      path + "/waypoint[" + std::to_string(waypoint_index) + "]");
+            }
+            ++waypoint_index;
+        }
+        return;
+    }
+    if (const auto* acquire = dynamic_cast<const ir::AcquirePositionAction*>(&action)) {
+        const ir::WorldPosition& position = acquire->position();
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+            !std::isfinite(position.z)) {
+            error(sink, Status::ValidationError, "acquire position action position must be finite",
+                  path);
+        }
+        return;
+    }
+    if (const auto* follow = dynamic_cast<const ir::FollowTrajectoryAction*>(&action)) {
+        const ir::Trajectory& trajectory = follow->trajectory();
+        // §Polyline: an ordered chain of at least two vertices.
+        if (trajectory.vertices.size() < 2) {
+            error(sink, Status::ValidationError, "trajectory needs at least two vertices", path);
+            return;
+        }
+        double arc_length = 0.0;
+        bool finite_geometry = true;
+        for (std::size_t index = 0; index < trajectory.vertices.size(); ++index) {
+            const ir::WorldPosition& position = trajectory.vertices[index].position;
+            if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+                !std::isfinite(position.z)) {
+                error(sink, Status::ValidationError, "trajectory vertex position must be finite",
+                      path + "/vertex[" + std::to_string(index) + "]");
+                finite_geometry = false;
+                continue;
+            }
+            if (index > 0) {
+                arc_length += segment_length(trajectory.vertices[index - 1].position, position);
+            }
+        }
+        if (follow->time_reference().has_value()) {
+            const ir::Timing& timing = *follow->time_reference();
+            // §Timing: scale is Range ]0..inf[, offset is finite.
+            if (!(timing.scale > 0.0) || !std::isfinite(timing.scale) ||
+                !std::isfinite(timing.offset)) {
+                error(sink, Status::ValidationError,
+                      "trajectory timing needs a positive finite scale and a finite offset", path);
+            }
+            // per rule asam.net:xosc:1.0.0:routing.trajectory_timing_exists_if_requested
+            std::optional<double> previous;
+            for (std::size_t index = 0; index < trajectory.vertices.size(); ++index) {
+                const std::optional<double>& time = trajectory.vertices[index].time;
+                if (!time.has_value() || !std::isfinite(*time)) {
+                    error(sink, Status::ValidationError,
+                          "trajectory timing requires a time on every vertex",
+                          path + "/vertex[" + std::to_string(index) + "]", kRuleTrajectoryTiming);
+                    break;
+                }
+                if (previous.has_value() && !(*time > *previous)) {
+                    error(sink, Status::ValidationError,
+                          "trajectory vertex times must be strictly increasing",
+                          path + "/vertex[" + std::to_string(index) + "]");
+                    break;
+                }
+                previous = time;
+            }
+        }
+        // per rule asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length
+        const double offset = follow->initial_distance_offset();
+        if (!std::isfinite(offset) || offset < 0.0 || (finite_geometry && offset > arc_length)) {
+            error(sink, Status::ValidationError,
+                  "trajectory initialDistanceOffset must be in range [0..arclength]", path,
+                  kRuleTrajectoryOffset);
+        }
+        if (trajectory.closed) {
+            // §Trajectory: a closed trajectory loops and the action then has no
+            // regular ending. The loop needs the other shapes' machinery, so it
+            // is deferred to p2-s5 and the open path is followed instead.
+            warn(sink, Status::UnsupportedFeature,
+                 "closed trajectories are not implemented yet (§6.9); the open path is followed",
+                 path);
+        }
+        if (follow->following_mode() == ir::FollowingMode::Follow) {
+            // ADR-0011 precedent: follow is accepted and executed as position
+            // until a steering controller exists (p2-s5).
+            warn(sink, Status::UnsupportedFeature,
+                 "trajectoryFollowingMode 'follow' is executed as 'position' (§6.9)", path);
         }
     }
 }
@@ -1081,6 +1215,13 @@ Status Engine::init(ir::Scenario scenario) {
         entities_, current_date_time_seconds(0.0), diagnostics_, warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
+    // The init phase has no integrate stage, so a follower that placed an
+    // entity at t = 0 must not make the first step skip its integration.
+    for (auto& [id, record] : entities_) {
+        (void)id;
+        record.trajectory_moved = false;
+    }
+
     return Status::Ok;
 }
 
@@ -1131,6 +1272,14 @@ Status Engine::step(double dt) {
     for (auto& [id, record] : entities_) {
         (void)id;
         if (record.mode == ir::ControlMode::EngineControlled) {
+            if (record.trajectory_moved) {
+                // A trajectory follower already placed this entity for this
+                // step (§6.9): its position comes from the path, not from the
+                // straight-line model. Only the source of the integrate phase
+                // changes — the phase order of step() is untouched (ADR-0014).
+                record.trajectory_moved = false;
+                continue;
+            }
             // Straight-line kinematics: placeholder physics for this phase.
             // det_sincos, not libm, so the integration is bit-identical across
             // platforms (see scena/runtime/detmath.h and the determinism
@@ -1187,6 +1336,14 @@ std::optional<EntityState> Engine::state(const std::string& entity_id) const {
         return std::nullopt;
     }
     return it->second.state;
+}
+
+const ir::Route* Engine::route_of(const std::string& entity_id) const {
+    const auto it = entities_.find(entity_id);
+    if (it == entities_.end() || !it->second.route.has_value()) {
+        return nullptr;
+    }
+    return &*it->second.route;
 }
 
 Status Engine::report_state(const std::string& entity_id, const EntityState& state) {
@@ -1357,10 +1514,10 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         // A longitudinal action superseded by a newer one, re-polled while still
         // in its event's running set: retire it. It completes so its event can
         // end (§8.4.2) and never reinstalls itself to fight the current owner.
-        const auto retired = std::find(record.retired_longitudinal.begin(),
-                                       record.retired_longitudinal.end(), &action);
-        if (retired != record.retired_longitudinal.end()) {
-            record.retired_longitudinal.erase(retired);
+        const auto retired =
+            std::find(record.retired_actions.begin(), record.retired_actions.end(), &action);
+        if (retired != record.retired_actions.end()) {
+            record.retired_actions.erase(retired);
             return runtime::ActionOutcome::Complete;
         }
 
@@ -1434,6 +1591,57 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         // A host-controlled entity's reported state overwrites this on the next
         // poll; the formal host round-trip for teleport is p2-s4.
         return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* assign_route = dynamic_cast<const ir::AssignRouteAction*>(&action)) {
+        // §AssignRouteAction: installs routing intent and completes immediately
+        // (Annex A Table 10). It "does not override any action that controls
+        // either lateral or longitudinal domain" (§7.4.1.4), so it deliberately
+        // does not touch the domain ownership. Route-following motion needs a
+        // road network (p3-s4); until then the route is state a host can read.
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        found->route = assign_route->route(); // overwrites any prior route (§6.8.2)
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* acquire = dynamic_cast<const ir::AcquirePositionAction*>(&action)) {
+        // §7.4.1.4: "a route with two waypoints is created: current position as
+        // first and specified position as last waypoint". The entity "aims to
+        // take the shortest distance", hence the Shortest strategy. The current
+        // position is read at apply time, so when the action fires matters.
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        ir::Route route;
+        route.closed = false;
+        route.waypoints.push_back(
+            ir::Waypoint{ir::WorldPosition{found->state.x, found->state.y, found->state.z},
+                         ir::RouteStrategy::Shortest});
+        route.waypoints.push_back(ir::Waypoint{acquire->position(), ir::RouteStrategy::Shortest});
+        found->route = std::move(route);
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* follow = dynamic_cast<const ir::FollowTrajectoryAction*>(&action)) {
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        EntityRecord& record = *found;
+        // A follower superseded by a newer trajectory (or by a longitudinal
+        // action, for a timing-mode one) still gets re-polled by its event:
+        // retire it rather than let it reinstall itself.
+        const auto retired =
+            std::find(record.retired_actions.begin(), record.retired_actions.end(), &action);
+        if (retired != record.retired_actions.end()) {
+            record.retired_actions.erase(retired);
+            return runtime::ActionOutcome::Complete;
+        }
+        return drive_trajectory(*follow, record);
     }
 
     // An action kind the engine does not implement yet. A parser must never
@@ -1614,6 +1822,181 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     return runtime::ActionOutcome::Running;
 }
 
+runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction& action,
+                                                EntityRecord& record) {
+    const bool timing = action.time_reference().has_value();
+
+    // --- install, on the first fire -------------------------------------
+    if (!record.trajectory.has_value() || record.trajectory->action != &action) {
+        const std::vector<ir::TrajectoryVertex>& vertices = action.trajectory().vertices;
+        if (vertices.size() < 2) {
+            // init() rejects this; defensive, so a hand-built scenario cannot
+            // walk off the end of the vertex list.
+            warn(diagnostics_, Status::UnsupportedFeature,
+                 "trajectory needs at least two vertices; action completed",
+                 "entities/" + action.entity_id());
+            return runtime::ActionOutcome::Complete;
+        }
+        // A new trajectory supersedes whatever was following before, and a
+        // timing-mode one additionally takes the longitudinal domain (Table 10:
+        // timeReference=timing assigns a longitudinal control strategy).
+        if (record.trajectory.has_value() && record.trajectory->action != nullptr) {
+            const ir::Action* outgoing = record.trajectory->action;
+            if (std::find(record.retired_actions.begin(), record.retired_actions.end(), outgoing) ==
+                record.retired_actions.end()) {
+                record.retired_actions.push_back(outgoing);
+            }
+        }
+        if (timing) {
+            supersede_longitudinal(record, &action);
+            record.longitudinal.reset();
+            record.continuous_speed.reset();
+            record.active_longitudinal_action = &action;
+        }
+
+        TrajectoryFollower follower;
+        follower.action = &action;
+        follower.timing = timing;
+        follower.points.reserve(vertices.size());
+        follower.arc.reserve(vertices.size());
+        double arc_length = 0.0;
+        for (std::size_t index = 0; index < vertices.size(); ++index) {
+            if (index > 0) {
+                arc_length +=
+                    segment_length(vertices[index - 1].position, vertices[index].position);
+            }
+            follower.points.push_back(vertices[index].position);
+            follower.arc.push_back(arc_length);
+            if (timing && vertices[index].time.has_value()) {
+                // §Timing: effective time = time * scale + offset, measured from
+                // the action's start (relative) or from simulation time zero.
+                const ir::Timing& adjustment = *action.time_reference();
+                double effective = *vertices[index].time * adjustment.scale + adjustment.offset;
+                if (adjustment.domain == ir::ReferenceContext::Relative) {
+                    effective += clock_.now();
+                }
+                follower.times.push_back(effective);
+            }
+        }
+        // §initialDistanceOffset: the trajectory is logically truncated so it
+        // starts at that arc length. "Where a timing TimeReference is provided,
+        // the time that would be taken to reach this point is deducted from all
+        // calculated waypoint time values" — which is exactly what dropping the
+        // skipped vertices and keeping the first time does.
+        const double offset = action.initial_distance_offset();
+        if (offset > 0.0 && offset < arc_length) {
+            const std::size_t index = segment_index(follower.arc, offset);
+            const double span = follower.arc[index + 1] - follower.arc[index];
+            const double fraction = span > 0.0 ? (offset - follower.arc[index]) / span : 0.0;
+            const ir::WorldPosition start =
+                interpolate_position(follower.points[index], follower.points[index + 1], fraction);
+            const double start_time =
+                follower.times.empty() ? 0.0
+                                       : follower.times.front(); // the deducted origin (see above)
+            follower.points.erase(follower.points.begin(),
+                                  follower.points.begin() + static_cast<std::ptrdiff_t>(index));
+            follower.arc.erase(follower.arc.begin(),
+                               follower.arc.begin() + static_cast<std::ptrdiff_t>(index));
+            follower.points.front() = start;
+            follower.arc.front() = offset;
+            if (!follower.times.empty()) {
+                follower.times.erase(follower.times.begin(),
+                                     follower.times.begin() + static_cast<std::ptrdiff_t>(index));
+                follower.times.front() = start_time;
+            }
+        }
+        // Per-segment headings: the single det_atan2 site, resolved once so a
+        // step only reads them back.
+        follower.heading.reserve(follower.points.size() - 1);
+        for (std::size_t index = 0; index + 1 < follower.points.size(); ++index) {
+            follower.heading.push_back(
+                runtime::det_atan2(follower.points[index + 1].y - follower.points[index].y,
+                                   follower.points[index + 1].x - follower.points[index].x));
+        }
+        follower.traveled = follower.arc.front();
+        record.trajectory = std::move(follower);
+    }
+
+    TrajectoryFollower& follower = *record.trajectory;
+    const std::size_t last = follower.points.size() - 1;
+    const double arc_end = follower.arc[last];
+
+    // Writes the pose the follower has decided on and marks the step so the
+    // straight-line integrator leaves this entity alone.
+    const auto place = [&record](const ir::WorldPosition& position, double heading) {
+        record.state.x = position.x;
+        record.state.y = position.y;
+        record.state.z = position.z;
+        record.state.heading = heading;
+        record.trajectory_moved = true;
+    };
+    // Ends the action at the final vertex (Table 10: "by reaching the end of
+    // the trajectory"), snapping exactly onto it.
+    const auto finish = [&](double speed) {
+        place(follower.points[last], follower.heading[last - 1]);
+        if (follower.timing) {
+            record.state.speed = speed;
+            record.active_longitudinal_action = nullptr;
+        }
+        record.trajectory.reset();
+        return runtime::ActionOutcome::Complete;
+    };
+
+    if (!follower.timing) {
+        // timeReference=none: the trajectory is pure geometry and the entity's
+        // own longitudinal control sets the pace (Table 10 assigns no
+        // longitudinal strategy). §6.9.1: on start the entity teleports to the
+        // beginning of the trajectory.
+        if (!follower.started) {
+            follower.started = true;
+            std::size_t index = segment_index(follower.arc, follower.traveled);
+            place(follower.points.front(), follower.heading[index]);
+            return runtime::ActionOutcome::Running;
+        }
+        follower.traveled += record.state.speed * last_dt_;
+        if (follower.traveled >= arc_end) {
+            return finish(record.state.speed);
+        }
+        const std::size_t index = segment_index(follower.arc, follower.traveled);
+        const double span = follower.arc[index + 1] - follower.arc[index];
+        const double fraction = span > 0.0 ? (follower.traveled - follower.arc[index]) / span : 0.0;
+        place(interpolate_position(follower.points[index], follower.points[index + 1], fraction),
+              follower.heading[index]);
+        return runtime::ActionOutcome::Running;
+    }
+
+    // timeReference=timing: the vertex times drive the motion, so the action
+    // owns the longitudinal domain too.
+    const double now = clock_.now();
+    if (now < follower.times.front()) {
+        // §6.9.2: the action has started but its first time reference is still
+        // in the future — "the entity keeps moving as before until t1".
+        return runtime::ActionOutcome::Running;
+    }
+    if (now >= follower.times[last]) {
+        // §6.9.3 in the limit: at or past the last time reference the entity is
+        // at the end of the trajectory.
+        const double final_span = follower.times[last] - follower.times[last - 1];
+        const double final_length = follower.arc[last] - follower.arc[last - 1];
+        return finish(final_span > 0.0 ? final_length / final_span : 0.0);
+    }
+    // §6.9.2 / §6.9.3: at t1 (or already past it) the entity is placed on the
+    // time-interpolated point of the trajectory and continues from there.
+    follower.started = true;
+    const std::size_t index = segment_index(follower.times, now);
+    const double span = follower.times[index + 1] - follower.times[index];
+    const double fraction = span > 0.0 ? (now - follower.times[index]) / span : 0.0;
+    place(interpolate_position(follower.points[index], follower.points[index + 1], fraction),
+          follower.heading[index]);
+    follower.traveled =
+        follower.arc[index] + (follower.arc[index + 1] - follower.arc[index]) * fraction;
+    // The speed the timed segment implies, so a trace and the by-entity
+    // conditions see a consistent state (deterministic division).
+    const double length = follower.arc[index + 1] - follower.arc[index];
+    record.state.speed = span > 0.0 ? length / span : 0.0;
+    return runtime::ActionOutcome::Running;
+}
+
 runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAction& action,
                                                                const EntityRecord& record) const {
     const ir::TransitionDynamics& td = action.dynamics();
@@ -1672,9 +2055,15 @@ void Engine::supersede_longitudinal(EntityRecord& record, const ir::Action* inco
     // The outgoing owner is still Running in its own event; mark it so its next
     // re-poll reports Complete rather than reinstalling itself. Guard against a
     // duplicate entry (a paranoid check — a given action owns the entity once).
-    if (std::find(record.retired_longitudinal.begin(), record.retired_longitudinal.end(),
-                  outgoing) == record.retired_longitudinal.end()) {
-        record.retired_longitudinal.push_back(outgoing);
+    if (std::find(record.retired_actions.begin(), record.retired_actions.end(), outgoing) ==
+        record.retired_actions.end()) {
+        record.retired_actions.push_back(outgoing);
+    }
+    // A timing-mode trajectory owns the longitudinal domain through its
+    // follower, so superseding it must also stop the follower — otherwise the
+    // path would keep writing positions the new owner knows nothing about.
+    if (record.trajectory.has_value() && record.trajectory->action == outgoing) {
+        record.trajectory.reset();
     }
 }
 
@@ -1742,8 +2131,12 @@ void Engine::finalize_longitudinal(const ir::Action& action, EntityRecord& recor
     // the tracking rather than leaving it live into the run.
     record.longitudinal.reset();
     record.continuous_speed.reset();
-    record.retired_longitudinal.clear();
+    record.retired_actions.clear();
     record.active_longitudinal_action = nullptr;
+    // A trajectory follower installed by an init action has already placed the
+    // entity on the path; §8.5 makes that instantaneous, so the follower is
+    // released rather than left live into the run.
+    record.trajectory.reset();
 }
 
 } // namespace scena

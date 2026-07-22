@@ -109,6 +109,14 @@ public:
     /// the engine is not initialized.
     [[nodiscard]] std::optional<EntityState> state(const std::string& entity_id) const;
 
+    /// The route currently assigned to an entity (§6.8.2), or nullptr when it
+    /// has none, the id is unknown, or the engine is not initialized. A route
+    /// is installed by an AssignRouteAction or an AcquirePositionAction and
+    /// stays until another routing action overwrites it. The pointer is
+    /// borrowed and is invalidated by the next routing action on that entity,
+    /// by close(), and by init().
+    [[nodiscard]] const ir::Route* route_of(const std::string& entity_id) const;
+
     /// Reports the authoritative state of a host-controlled entity. Fails with
     /// InvalidControlMode for engine-controlled entities.
     Status report_state(const std::string& entity_id, const EntityState& state);
@@ -191,6 +199,25 @@ public:
     Status close();
 
 private:
+    /// The precomputed state of an entity following a polyline trajectory
+    /// (§6.9), built once when the FollowTrajectoryAction starts.
+    ///
+    /// Everything the follower needs is resolved at install time — the segment
+    /// lengths, the cumulative arc length, the per-segment heading (the one
+    /// det_atan2 site), the effective vertex times — so a step only
+    /// interpolates. `action` is compared by identity and never dereferenced
+    /// for ordering, exactly like active_longitudinal_action.
+    struct TrajectoryFollower {
+        const ir::Action* action = nullptr;
+        std::vector<ir::WorldPosition> points; ///< Vertices, after the initial-offset truncation.
+        std::vector<double> arc;               ///< Cumulative arc length at each vertex [m].
+        std::vector<double> heading;           ///< Heading of each segment [rad], size points-1.
+        std::vector<double> times; ///< Effective vertex times [s]; empty without Timing.
+        bool timing = false;       ///< True ⇒ the vertex times drive the motion.
+        bool started = false;      ///< The entity has been placed on the trajectory.
+        double traveled = 0.0;     ///< Arc length covered [m] (time-free mode).
+    };
+
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
@@ -217,14 +244,29 @@ private:
         // active_longitudinal_action so a new longitudinal action supersedes
         // either. Present ⇒ the action never completes on its own.
         std::optional<ir::RelativeTargetSpeed> continuous_speed;
-        // Longitudinal actions superseded by a newer one on this entity but
-        // still in their event's running set (p5-s4). On its next re-poll a
-        // retired action reports Complete instead of reinstalling itself, so a
-        // superseded ramp/continuous target does not fight the current owner
-        // (§7.5.1 minimal single-domain conflict resolution; the full priority
-        // catalog is #51). Membership is tested by identity only — never
-        // iterated for a result — so it does not reach the determinism contract.
-        std::vector<const ir::Action*> retired_longitudinal;
+        // Actions superseded by a newer one on this entity but still in their
+        // event's running set (p5-s4). On its next re-poll a retired action
+        // reports Complete instead of reinstalling itself, so a superseded
+        // ramp, continuous target or trajectory does not fight the current
+        // owner (§7.5.1 minimal single-domain conflict resolution; the full
+        // priority catalog is #51). Membership is tested by identity only —
+        // never iterated for a result — so it does not reach the determinism
+        // contract.
+        std::vector<const ir::Action*> retired_actions;
+        // The route assigned by the last AssignRouteAction or
+        // AcquirePositionAction, which persists "until another action
+        // overwrites them" (§6.8.2). Stored, not yet followed: route-following
+        // motion needs a road network (p3-s4).
+        std::optional<ir::Route> route;
+        // Active trajectory follower (§6.9). Present ⇒ this entity's position
+        // comes from the trajectory and the straight-line integrator is skipped
+        // for the step the follower wrote.
+        std::optional<TrajectoryFollower> trajectory;
+        // Set when the trajectory follower wrote this entity's position during
+        // the current step's storyboard evaluation, and consumed by the
+        // integrate phase of that same step. It is the one-step hand-off that
+        // keeps the phase order of step() intact (ADR-0014).
+        bool trajectory_moved = false;
         // Derived observation state for the by-entity conditions (p5-s2),
         // written only by init seeding and the phase-2b refresh. Every member
         // is default-initialized: an uninitialized read would be a determinism
@@ -254,6 +296,14 @@ private:
     /// a continuous one returns Running forever (§7.5.3).
     runtime::ActionOutcome drive_distance_keeping(const ir::LongitudinalDistanceAction& action,
                                                   EntityRecord& record);
+
+    /// Drives one step of a FollowTrajectoryAction on `record`: installs the
+    /// follower on the first fire (resolving segment lengths, headings and
+    /// effective vertex times) and writes the entity's position and heading
+    /// from it on every fire. Returns Complete at the end of the trajectory
+    /// (Annex A Table 10).
+    runtime::ActionOutcome drive_trajectory(const ir::FollowTrajectoryAction& action,
+                                            EntityRecord& record);
 
     /// Installs or advances the default longitudinal controller for a
     /// longitudinal action on `record`, returning its outcome (§7.4.1.2).
