@@ -20,6 +20,7 @@
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
@@ -682,6 +683,31 @@ TEST(TimeOfDayConditionTest, TimeOfDayAdvancesWithSimulationTime) {
     ASSERT_TRUE(engine.date_time().has_value());
     EXPECT_DOUBLE_EQ(*engine.date_time(),
                      DateTime({2000, 1, 1, 12, 0, 5, 0, 0}).to_epoch_seconds());
+}
+
+TEST(TimeOfDayConditionTest, FrozenAnchorHoldsTheConditionFalseForever) {
+    // The condition itself is unchanged by p5-s6: it reads whatever instant
+    // the context reports. What an EnvironmentAction with
+    // §TimeOfDay animation="false" changes is that the instant stops moving,
+    // so a reference in the future is never reached (docs/user-guide/
+    // global-actions.md).
+    Engine engine;
+    scena::ir::Environment environment;
+    environment.time_of_day =
+        scena::ir::TimeOfDay{/*animation=*/false, DateTime{2000, 1, 1, 12, 0, 0, 0, 0}};
+    scena::ir::Scenario scenario =
+        make_scenario(time_of_day(DateTime{2000, 1, 1, 12, 0, 5, 0, 0}, Rule::GreaterOrEqual));
+    scenario.init_actions.push_back(
+        std::make_shared<scena::ir::EnvironmentAction>(std::move(environment)));
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+
+    ASSERT_TRUE(engine.date_time().has_value());
+    const double anchor = *engine.date_time();
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+        EXPECT_EQ(*engine.date_time(), anchor); // bit-identical every step
+        EXPECT_FALSE(ego_fired(engine));
+    }
 }
 
 TEST(TimeOfDayConditionTest, TimeOfDayRuleFamilyAtBoundary) {

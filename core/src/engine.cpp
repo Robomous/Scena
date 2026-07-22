@@ -49,6 +49,7 @@ constexpr const char* kRuleControllerActivation =
     "asam.net:xosc:1.2.0:scenario_logic.controller_activation";
 constexpr const char* kRuleTrajectoryOffset =
     "asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length";
+constexpr const char* kRuleTimeFormat = "asam.net:xosc:1.0.0:data_type.time_format";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -709,6 +710,69 @@ template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
                              const Records& records, const NamedValueStore& parameters,
                              const NamedValueStore& variables, DiagnosticSink& sink) {
+    if (const auto* environment = dynamic_cast<const ir::EnvironmentAction*>(&action)) {
+        const ir::Environment& update = environment->environment();
+        if (update.time_of_day.has_value() && !update.time_of_day->date_time.valid()) {
+            // per rule asam.net:xosc:1.0.0:data_type.time_format — the IR
+            // fields are already parsed, so what is checkable here is that
+            // they describe a real instant.
+            error(sink, Status::ValidationError,
+                  "environment action time of day has an invalid date-time", path, kRuleTimeFormat);
+        }
+        if (update.road_condition.has_value()) {
+            const double friction = update.road_condition->friction_scale_factor;
+            // §RoadCondition frictionScaleFactor: Range [0..inf[. The negated
+            // comparison rejects NaN too.
+            if (!(friction >= 0.0) || !std::isfinite(friction)) {
+                error(sink, Status::ValidationError,
+                      "environment road condition frictionScaleFactor must be finite and in "
+                      "range [0..inf[",
+                      path);
+            }
+        }
+        if (update.weather.has_value()) {
+            const ir::Weather& weather = *update.weather;
+            const auto in_range = [](const std::optional<double>& value, double low, double high) {
+                return !value.has_value() || (*value >= low && *value <= high);
+            };
+            const auto non_negative = [](double value) {
+                return value >= 0.0 && std::isfinite(value);
+            };
+            bool valid = true;
+            if (weather.sun.has_value()) {
+                const ir::Sun& sun = *weather.sun;
+                valid = valid && std::isfinite(sun.azimuth) && std::isfinite(sun.elevation) &&
+                        non_negative(sun.illuminance);
+            }
+            if (weather.fog.has_value()) {
+                valid = valid && non_negative(weather.fog->visual_range);
+            }
+            if (weather.precipitation.has_value()) {
+                valid = valid && non_negative(weather.precipitation->intensity);
+            }
+            if (weather.wind.has_value()) {
+                valid = valid && std::isfinite(weather.wind->direction) &&
+                        non_negative(weather.wind->speed);
+            }
+            // §Weather ranges: temperature [170..340] K, atmospheric pressure
+            // [80000..120000] Pa.
+            valid = valid && in_range(weather.temperature, 170.0, 340.0) &&
+                    in_range(weather.atmospheric_pressure, 80000.0, 120000.0);
+            if (!valid) {
+                error(sink, Status::ValidationError,
+                      "environment action weather value is outside its documented range (§Weather)",
+                      path);
+            }
+            // §FractionalCloudCover [1.2]: zeroOktas..nineOktas.
+            if (weather.fractional_cloud_cover_oktas.has_value() &&
+                (*weather.fractional_cloud_cover_oktas < 0 ||
+                 *weather.fractional_cloud_cover_oktas > 9)) {
+                error(sink, Status::ValidationError,
+                      "environment action fractionalCloudCover must be 0..9 oktas", path);
+            }
+        }
+        return;
+    }
     if (const auto* add = dynamic_cast<const ir::AddEntityAction*>(&action)) {
         // §EntityAction: "Entities to be added or deleted must be defined in
         // the Entities section." The standard names no checker rule for it.
@@ -1297,9 +1361,14 @@ Status Engine::init(ir::Scenario scenario) {
     // them before init so they are visible at the t = 0 evaluation, and they
     // persist across init() until close().
     variables_ = scenario_.variables;
-    // The deprecated parameter overlay is per-run state, not host state: a
-    // fresh init starts from the declared §9.1 values.
+    // The deprecated parameter overlay and the environment store are per-run
+    // state, not host state: a fresh init starts from the declared §9.1 values
+    // and an empty environment. The time-of-day anchor is host state and
+    // deliberately survives (a host may stage it before init), but its
+    // animation flag goes back to the host setter's meaning.
     parameter_overrides_.clear();
+    environment_ = ir::Environment{};
+    date_time_animated_ = true;
     warned_values_.clear();
     clock_.reset();
     initialized_ = true;
@@ -1595,11 +1664,18 @@ Status Engine::set_date_time(const ir::DateTime& date_time) {
     }
     // Anchor the given instant to the current simulation time; it advances
     // one-for-one from there. Settable before init (anchor_sim = 0) so a
-    // pre-staged time of day is visible at the t = 0 evaluation.
+    // pre-staged time of day is visible at the t = 0 evaluation. The host
+    // setter always means an advancing clock — only an EnvironmentAction can
+    // freeze it (§TimeOfDay animation="false").
     date_time_anchor_epoch_ = date_time.to_epoch_seconds();
     date_time_anchor_sim_ = clock_.now();
     date_time_set_ = true;
+    date_time_animated_ = true;
     return Status::Ok;
+}
+
+const ir::Environment& Engine::environment() const noexcept {
+    return environment_;
 }
 
 std::optional<double> Engine::date_time() const {
@@ -1611,8 +1687,10 @@ std::optional<double> Engine::current_date_time_seconds(double simulation_time) 
         return std::nullopt;
     }
     // Fixed IEEE expression, no wall clock: the simulated instant is the
-    // anchor plus the simulation time elapsed since the anchor was set.
-    return date_time_anchor_epoch_ + (simulation_time - date_time_anchor_sim_);
+    // anchor plus the simulation time elapsed since the anchor was set — or
+    // just the anchor, when a §TimeOfDay with animation="false" froze it.
+    return date_time_anchor_epoch_ +
+           (date_time_animated_ ? (simulation_time - date_time_anchor_sim_) : 0.0);
 }
 
 std::optional<runtime::ElementState>
@@ -1661,6 +1739,8 @@ Status Engine::close() {
     // staged.
     user_defined_values_.clear();
     date_time_set_ = false;
+    date_time_animated_ = true;
+    environment_ = ir::Environment{};
     warned_values_.clear();
     scenario_ = ir::Scenario{};
     initialized_ = false;
@@ -1820,6 +1900,51 @@ std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::Glob
         modify_named_value(parameter_overrides_, parameter_modify->parameter_ref(),
                            parameter_modify->op(), parameter_modify->value(),
                            "parameters/" + parameter_modify->parameter_ref() + "/modify");
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* environment = dynamic_cast<const ir::EnvironmentAction*>(&action)) {
+        // §Environment: "If one of the conditions is missing it means that it
+        // doesn't change" — so the update is a member-wise merge, at both
+        // levels (the Environment's members, and the Weather's within it).
+        const ir::Environment& update = environment->environment();
+        if (!update.name.empty()) {
+            environment_.name = update.name;
+        }
+        if (update.road_condition.has_value()) {
+            environment_.road_condition = update.road_condition;
+        }
+        if (update.weather.has_value()) {
+            const ir::Weather& incoming = *update.weather;
+            ir::Weather& current = environment_.weather.has_value()
+                                       ? *environment_.weather
+                                       : environment_.weather.emplace();
+            const auto merge = [](auto& target, const auto& source) {
+                if (source.has_value()) {
+                    target = source;
+                }
+            };
+            merge(current.sun, incoming.sun);
+            merge(current.fog, incoming.fog);
+            merge(current.precipitation, incoming.precipitation);
+            merge(current.wind, incoming.wind);
+            merge(current.temperature, incoming.temperature);
+            merge(current.atmospheric_pressure, incoming.atmospheric_pressure);
+            merge(current.fractional_cloud_cover_oktas, incoming.fractional_cloud_cover_oktas);
+        }
+        if (update.time_of_day.has_value()) {
+            const ir::TimeOfDay& time_of_day = *update.time_of_day;
+            environment_.time_of_day = time_of_day;
+            // The one member with runtime meaning: it re-anchors the same
+            // simulated clock Engine::set_date_time drives, and decides
+            // whether that clock advances (§TimeOfDay animation).
+            if (time_of_day.date_time.valid()) {
+                date_time_anchor_epoch_ = time_of_day.date_time.to_epoch_seconds();
+                date_time_anchor_sim_ = clock_.now();
+                date_time_set_ = true;
+                date_time_animated_ = time_of_day.animation;
+            }
+        }
         return runtime::ActionOutcome::Complete;
     }
 

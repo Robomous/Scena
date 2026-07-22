@@ -10,6 +10,7 @@
 #include "scena/ir/controller.h"
 #include "scena/ir/coordinate_system.h"
 #include "scena/ir/dynamics.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/position.h"
 #include "scena/ir/route.h"
 #include "scena/ir/trajectory.h"
@@ -573,6 +574,27 @@ private:
     std::string parameter_ref_;
     ModifyOperator op_;
     double value_;
+};
+
+/// Sets weather state, road conditions and the time of day, per
+/// §EnvironmentAction. Completes immediately (Annex A Table 11).
+///
+/// §Environment gives the merge its semantics: an absent member "doesn't
+/// change", so the action updates only what it carries and the engine keeps
+/// the rest. The catalog-reference form of the action (§EnvironmentAction is a
+/// union of an inline Environment and a CatalogReference) arrives with
+/// catalogs (P4).
+class EnvironmentAction final : public GlobalAction {
+public:
+    explicit EnvironmentAction(Environment environment);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The environment update to merge in.
+    [[nodiscard]] const Environment& environment() const;
+
+private:
+    Environment environment_;
 };
 
 /// Adds a declared entity to the running scenario at a position, per

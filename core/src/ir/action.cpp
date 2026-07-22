@@ -341,6 +341,17 @@ double ParameterModifyAction::value() const noexcept {
     return value_;
 }
 
+EnvironmentAction::EnvironmentAction(Environment environment)
+    : environment_(std::move(environment)) {}
+
+std::string_view EnvironmentAction::kind() const noexcept {
+    return "EnvironmentAction";
+}
+
+const Environment& EnvironmentAction::environment() const {
+    return environment_;
+}
+
 AddEntityAction::AddEntityAction(std::string entity_ref, WorldPosition position)
     : entity_ref_(std::move(entity_ref)), position_(position) {}
 

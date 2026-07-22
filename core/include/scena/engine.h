@@ -191,13 +191,26 @@ public:
     /// current simulation instant and advances one-for-one with simulation
     /// time thereafter (TimeOfDayCondition). Rejected with InvalidArgument
     /// when the DateTime is out of range. May be set before or after init and
-    /// persists across init(); close() clears it. p5-s6's EnvironmentAction
-    /// will feed the same anchor.
+    /// persists across init(); close() clears it.
+    ///
+    /// The host setter always anchors an *advancing* clock. An
+    /// EnvironmentAction feeds the same anchor and may freeze it instead
+    /// (§TimeOfDay animation), which is the one difference between the two
+    /// routes to the simulated instant.
     Status set_date_time(const ir::DateTime& date_time);
 
     /// The current simulated instant as seconds since the Unix epoch, or
-    /// std::nullopt when no time-of-day anchor has been set.
+    /// std::nullopt when no time-of-day anchor has been set. Frozen at the
+    /// anchor while a non-animated §TimeOfDay is in force.
     [[nodiscard]] std::optional<double> date_time() const;
+
+    /// The environment state accumulated by the EnvironmentActions applied so
+    /// far (§Environment). Every member starts absent and an action merges in
+    /// only what it carries, so an absent member means "never set", which is
+    /// the same thing the standard's "doesn't change" amounts to at t = 0.
+    /// The reference is borrowed and is invalidated by the next
+    /// EnvironmentAction, by init(), and by close().
+    [[nodiscard]] const ir::Environment& environment() const noexcept;
 
     /// Lifecycle state of a storyboard element, addressed by its name path
     /// from the story down, joined with '/'
@@ -493,11 +506,16 @@ private:
     // cleared at init().
     std::set<std::string> warned_values_;
     // Time-of-day anchor: the simulated instant `anchor_epoch` (epoch seconds)
-    // holds at simulation time `anchor_sim`, advancing one-for-one after that.
-    // Persists across init(); cleared by close().
+    // holds at simulation time `anchor_sim`, advancing one-for-one after that
+    // while `animated` is true and standing still while it is false
+    // (§TimeOfDay animation). Persists across init(); cleared by close().
     bool date_time_set_ = false;
     double date_time_anchor_epoch_ = 0.0;
     double date_time_anchor_sim_ = 0.0;
+    bool date_time_animated_ = true;
+    // Environment state (§Environment), merged member by member by every
+    // EnvironmentAction. Per-run state: cleared by init() and close().
+    ir::Environment environment_;
     DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };

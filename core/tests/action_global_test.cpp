@@ -25,9 +25,11 @@
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
+#include "scena/ir/date_time.h"
 #include "scena/ir/dynamics.h"
 #include "scena/ir/entity.h"
 #include "scena/ir/entity_condition.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/position.h"
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
@@ -44,11 +46,15 @@ using scena::ir::Act;
 using scena::ir::Action;
 using scena::ir::AddEntityAction;
 using scena::ir::ControlMode;
+using scena::ir::DateTime;
 using scena::ir::DeleteEntityAction;
 using scena::ir::DynamicsDimension;
 using scena::ir::DynamicsShape;
 using scena::ir::Entity;
+using scena::ir::Environment;
+using scena::ir::EnvironmentAction;
 using scena::ir::Event;
+using scena::ir::Fog;
 using scena::ir::LongitudinalDistanceAction;
 using scena::ir::make_trigger;
 using scena::ir::Maneuver;
@@ -57,7 +63,10 @@ using scena::ir::ModifyOperator;
 using scena::ir::ParameterCondition;
 using scena::ir::ParameterModifyAction;
 using scena::ir::ParameterSetAction;
+using scena::ir::Precipitation;
+using scena::ir::PrecipitationType;
 using scena::ir::RelativeTargetSpeed;
+using scena::ir::RoadCondition;
 using scena::ir::Rule;
 using scena::ir::Scenario;
 using scena::ir::SimulationTimeCondition;
@@ -66,6 +75,8 @@ using scena::ir::SpeedCondition;
 using scena::ir::SpeedTargetValueType;
 using scena::ir::Story;
 using scena::ir::TeleportAction;
+using scena::ir::TimeOfDay;
+using scena::ir::TimeOfDayCondition;
 using scena::ir::TransitionDynamics;
 using scena::ir::TraveledDistanceCondition;
 using scena::ir::TriggeringEntities;
@@ -73,6 +84,8 @@ using scena::ir::TriggeringEntitiesRule;
 using scena::ir::VariableCondition;
 using scena::ir::VariableModifyAction;
 using scena::ir::VariableSetAction;
+using scena::ir::Weather;
+using scena::ir::Wind;
 using scena::ir::WorldPosition;
 
 constexpr double kTol = 1e-9;
@@ -677,6 +690,218 @@ TEST(GlobalActionTest, EntityActionUnknownRefFailsInit) {
     Engine delete_engine;
     EXPECT_EQ(delete_engine.init(std::move(delete_scenario)), Status::SemanticError);
     EXPECT_TRUE(has_diagnostic(delete_engine, Severity::Error, "undeclared entity 'ghost'"));
+}
+
+// --- EnvironmentAction (§Environment, the merge and the clock) -------------
+
+TEST(GlobalActionTest, EnvironmentActionMergesPartialUpdate) {
+    // §Environment / §Weather: "If one of the conditions is missing it means
+    // that it doesn't change." Two partial updates must compose, not replace.
+    Scenario scenario = make_scenario();
+
+    Environment first;
+    first.name = "dusk";
+    Weather weather;
+    weather.fog = Fog{120.0};
+    weather.temperature = 288.0;
+    first.weather = weather;
+    first.road_condition = RoadCondition{0.8};
+    add_event(scenario, "dusk", 1.0, std::make_shared<EnvironmentAction>(first));
+
+    Environment second;
+    Weather rain;
+    rain.precipitation = Precipitation{PrecipitationType::Rain, 4.5};
+    rain.temperature = 281.0; // this member does change
+    second.weather = rain;
+    add_event(scenario, "rain", 2.0, std::make_shared<EnvironmentAction>(second));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_FALSE(engine.environment().weather.has_value()); // nothing set yet
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    ASSERT_TRUE(engine.environment().weather.has_value());
+    ASSERT_TRUE(engine.environment().weather->fog.has_value());
+    EXPECT_NEAR(engine.environment().weather->fog->visual_range, 120.0, kTol);
+    ASSERT_TRUE(engine.environment().road_condition.has_value());
+    EXPECT_NEAR(engine.environment().road_condition->friction_scale_factor, 0.8, kTol);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    const scena::ir::Environment& merged = engine.environment();
+    // Carried over from the first action.
+    EXPECT_EQ(merged.name, "dusk");
+    ASSERT_TRUE(merged.weather->fog.has_value());
+    EXPECT_NEAR(merged.weather->fog->visual_range, 120.0, kTol);
+    ASSERT_TRUE(merged.road_condition.has_value());
+    EXPECT_NEAR(merged.road_condition->friction_scale_factor, 0.8, kTol);
+    // Added and updated by the second.
+    ASSERT_TRUE(merged.weather->precipitation.has_value());
+    EXPECT_EQ(merged.weather->precipitation->type, PrecipitationType::Rain);
+    EXPECT_NEAR(merged.weather->precipitation->intensity, 4.5, kTol);
+    ASSERT_TRUE(merged.weather->temperature.has_value());
+    EXPECT_NEAR(*merged.weather->temperature, 281.0, kTol);
+    // Never mentioned by either action.
+    EXPECT_FALSE(merged.weather->wind.has_value());
+    EXPECT_FALSE(merged.weather->sun.has_value());
+}
+
+TEST(GlobalActionTest, EnvironmentTimeOfDayAnimatedFeedsTimeOfDayCondition) {
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+
+    Environment environment;
+    environment.time_of_day =
+        TimeOfDay{/*animation=*/true, DateTime{2026, 7, 22, 11, 59, 58, 0, 0}};
+    scenario.init_actions.push_back(std::make_shared<EnvironmentAction>(environment));
+
+    Event noon;
+    noon.name = "noon";
+    noon.start_trigger = make_trigger(std::make_shared<TimeOfDayCondition>(
+        DateTime{2026, 7, 22, 12, 0, 0, 0, 0}, Rule::GreaterOrEqual));
+    noon.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(noon));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_TRUE(engine.date_time().has_value());
+    const double anchor = *engine.date_time();
+    EXPECT_EQ(engine.variable("seen"), "no");
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(*engine.date_time(), anchor + 1.0, kTol); // advances one-for-one
+    EXPECT_EQ(engine.variable("seen"), "no");
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "yes"); // crossed noon
+}
+
+TEST(GlobalActionTest, EnvironmentTimeOfDayFrozenHoldsClock) {
+    // §TimeOfDay animation="false": the simulated instant does not move, so a
+    // TimeOfDayCondition past it never becomes true no matter how long the
+    // scenario runs.
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+
+    Environment environment;
+    environment.time_of_day =
+        TimeOfDay{/*animation=*/false, DateTime{2026, 7, 22, 11, 59, 58, 0, 0}};
+    scenario.init_actions.push_back(std::make_shared<EnvironmentAction>(environment));
+
+    Event noon;
+    noon.name = "noon";
+    noon.start_trigger = make_trigger(std::make_shared<TimeOfDayCondition>(
+        DateTime{2026, 7, 22, 12, 0, 0, 0, 0}, Rule::GreaterOrEqual));
+    noon.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(noon));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_TRUE(engine.date_time().has_value());
+    const double anchor = *engine.date_time();
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+        EXPECT_EQ(*engine.date_time(), anchor); // bit-identical, never moves
+    }
+    EXPECT_EQ(engine.variable("seen"), "no");
+}
+
+TEST(GlobalActionTest, HostDateTimeSetterResumesAnimationAfterAFrozenAnchor) {
+    // The host setter always means an advancing clock, so it un-freezes an
+    // anchor a non-animated TimeOfDay pinned.
+    Scenario scenario = make_scenario();
+    Environment environment;
+    environment.time_of_day = TimeOfDay{/*animation=*/false, DateTime{2026, 7, 22, 8, 0, 0, 0, 0}};
+    scenario.init_actions.push_back(std::make_shared<EnvironmentAction>(environment));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    const double frozen = *engine.date_time();
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(*engine.date_time(), frozen);
+
+    ASSERT_EQ(engine.set_date_time(DateTime{2026, 7, 22, 9, 0, 0, 0, 0}), Status::Ok);
+    const double resumed = *engine.date_time();
+    ASSERT_EQ(engine.step(2.0), Status::Ok);
+    EXPECT_NEAR(*engine.date_time(), resumed + 2.0, kTol);
+}
+
+TEST(GlobalActionTest, EnvironmentInvalidDateTimeFailsInitC24) {
+    Scenario scenario = make_scenario();
+    Environment environment;
+    // February 30 does not exist in any year.
+    environment.time_of_day = TimeOfDay{true, DateTime{2026, 2, 30, 12, 0, 0, 0, 0}};
+    add_event(scenario, "bad-time", 1.0, std::make_shared<EnvironmentAction>(environment));
+
+    Engine engine;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::ValidationError);
+    bool cited = false;
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        if (diagnostic.rule_id == "asam.net:xosc:1.0.0:data_type.time_format") {
+            cited = true;
+        }
+    }
+    EXPECT_TRUE(cited);
+}
+
+TEST(GlobalActionTest, EnvironmentOutOfRangeWeatherFailsInit) {
+    const auto reject = [](Environment environment) {
+        Scenario scenario = make_scenario();
+        add_event(scenario, "weather", 1.0,
+                  std::make_shared<EnvironmentAction>(std::move(environment)));
+        Engine engine;
+        return engine.init(std::move(scenario));
+    };
+
+    Environment cold;
+    Weather cold_weather;
+    cold_weather.temperature = 100.0; // below the §Weather range [170..340] K
+    cold.weather = cold_weather;
+    EXPECT_EQ(reject(cold), Status::ValidationError);
+
+    Environment oktas;
+    Weather cloudy;
+    cloudy.fractional_cloud_cover_oktas = 12; // §FractionalCloudCover is 0..9
+    oktas.weather = cloudy;
+    EXPECT_EQ(reject(oktas), Status::ValidationError);
+
+    Environment fog;
+    Weather foggy;
+    foggy.fog = Fog{-5.0}; // §Fog visualRange is [0..inf[
+    fog.weather = foggy;
+    EXPECT_EQ(reject(fog), Status::ValidationError);
+
+    Environment road;
+    road.road_condition = RoadCondition{-1.0}; // [0..inf[
+    EXPECT_EQ(reject(road), Status::ValidationError);
+}
+
+TEST(GlobalActionTest, EnvironmentStoreIsClearedByInitAndClose) {
+    Scenario scenario = make_scenario();
+    Environment environment;
+    environment.name = "storm";
+    Weather weather;
+    weather.wind = Wind{1.5, 22.0};
+    environment.weather = weather;
+    scenario.init_actions.push_back(std::make_shared<EnvironmentAction>(environment));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_EQ(engine.environment().name, "storm");
+    ASSERT_EQ(engine.close(), Status::Ok);
+    EXPECT_TRUE(engine.environment().name.empty());
+    EXPECT_FALSE(engine.environment().weather.has_value());
+
+    // A scenario with no environment action leaves the store empty.
+    ASSERT_EQ(engine.init(make_scenario()), Status::Ok);
+    EXPECT_TRUE(engine.environment().name.empty());
 }
 
 TEST(GlobalActionTest, UnknownGlobalKindWarnsWithActionPath) {
