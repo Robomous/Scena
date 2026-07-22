@@ -904,6 +904,9 @@ Status Engine::step(double dt) {
             const runtime::SinCos hs = runtime::det_sincos(record.state.heading);
             record.state.x += record.state.speed * hs.cos * dt;
             record.state.y += record.state.speed * hs.sin * dt;
+            // z, pitch, and roll are left untouched: the ground-plane
+            // straight-line model integrates position from speed and heading
+            // only. A host-controlled entity may carry any pose via report_state.
         }
     }
 

@@ -43,6 +43,8 @@ void expect_bit_identical(const Engine& a, const Engine& b, const std::string& e
     ASSERT_EQ(state_a->y, state_b->y);
     ASSERT_EQ(state_a->z, state_b->z);
     ASSERT_EQ(state_a->heading, state_b->heading);
+    ASSERT_EQ(state_a->pitch, state_b->pitch);
+    ASSERT_EQ(state_a->roll, state_b->roll);
     ASSERT_EQ(state_a->speed, state_b->speed);
 }
 
@@ -534,4 +536,46 @@ TEST(DeterminismTest, RotatedBoxFreespaceDistanceIsHexPinned) {
     const Obb2 ego{0.0, 0.0, a.cos, a.sin, 2.0, 1.0};
     const Obb2 lead{8.0, 1.0, b.cos, b.sin, 2.0, 1.0};
     EXPECT_EQ(hex_bits(obb_distance(ego, lead)), "400e2b4cc750362f");
+}
+
+TEST(DeterminismTest, PoseBearingHostReportsStayBitIdentical) {
+    // A host may report a full pose (pitch/roll); it must survive the
+    // report_state -> state round-trip and stay bit-identical across two runs
+    // fed the same sequence. Guards the new EntityState pose fields against any
+    // nondeterminism in the host path.
+    const auto make = [] {
+        scena::ir::Scenario s;
+        s.name = "pose";
+        scena::ir::Entity ego;
+        ego.id = "ego";
+        ego.name = "ego";
+        ego.control_mode = scena::ir::ControlMode::HostControlled;
+        s.entities.push_back(std::move(ego));
+        return s;
+    };
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make()), Status::Ok);
+
+    for (int i = 0; i < 10; ++i) {
+        scena::EntityState pose;
+        pose.x = 0.5 * i;
+        pose.heading = 0.1 * i;
+        pose.pitch = 0.05 * i;
+        pose.roll = -0.03 * i;
+        pose.speed = 2.0;
+        ASSERT_EQ(engine_a.report_state("ego", pose), Status::Ok);
+        ASSERT_EQ(engine_b.report_state("ego", pose), Status::Ok);
+        ASSERT_EQ(engine_a.step(0.02), Status::Ok);
+        ASSERT_EQ(engine_b.step(0.02), Status::Ok);
+        SCOPED_TRACE(i);
+        expect_bit_identical(engine_a, engine_b, "ego");
+    }
+
+    // The reported pose actually reached the state (guards a dead assertion).
+    const auto ego = engine_a.state("ego");
+    ASSERT_TRUE(ego.has_value());
+    EXPECT_EQ(ego->pitch, 0.05 * 9);
+    EXPECT_EQ(ego->roll, -0.03 * 9);
 }
