@@ -4,6 +4,7 @@
 #include <cmath>
 #include <optional>
 #include <utility>
+#include <variant>
 
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
@@ -71,7 +72,8 @@ struct DistanceSpec {
 /// order; the only trig is det_sincos inside make_obb / projection_axis.
 std::optional<double> measure_distance(const EntityKinematics& trigger,
                                        const EntityKinematics* target_entity,
-                                       const WorldPosition& target_point, const DistanceSpec& spec) {
+                                       const WorldPosition& target_point,
+                                       const DistanceSpec& spec) {
     if (spec.cs == CoordinateSystem::Lane || spec.cs == CoordinateSystem::Road ||
         spec.cs == CoordinateSystem::Trajectory) {
         return std::nullopt; // deferred: no road network (p3-s4)
@@ -134,6 +136,60 @@ std::optional<double> measure_distance(const EntityKinematics& trigger,
         runtime::obb_project(*target_obb, ux, uy, b_lo, b_hi);
     }
     return std::fmax(0.0, std::fmax(b_lo - a_hi, a_lo - b_hi));
+}
+
+/// The closing speed (rate at which the separation shrinks, positive when
+/// approaching) between the triggering entity and its target, in the effective
+/// coordinate system + relative-distance type, per TimeToCollisionCondition.
+/// Planar velocity is speed·(cos_h, sin_h) per entity (det_sincos); a position
+/// target is stationary. The axis is frozen at the evaluation instant (no
+/// yaw-rate term). Returns std::nullopt when the reference points coincide
+/// (division would be undefined) — TTC is then false. Reference-point closing
+/// speed is used for freespace too (the spec ties the relative speed to the
+/// coordinate system, not to the freespace gap; ADR-0009).
+std::optional<double> closing_speed(const EntityKinematics& trigger,
+                                    const EntityKinematics* target_entity,
+                                    const WorldPosition& target_point, const DistanceSpec& spec) {
+    const runtime::SinCos a = runtime::det_sincos(trigger.state.heading);
+    const double vax = trigger.state.speed * a.cos;
+    const double vay = trigger.state.speed * a.sin;
+    double vbx = 0.0;
+    double vby = 0.0;
+    if (target_entity != nullptr) {
+        const runtime::SinCos b = runtime::det_sincos(target_entity->state.heading);
+        vbx = target_entity->state.speed * b.cos;
+        vby = target_entity->state.speed * b.sin;
+    }
+
+    const double tx = target_entity != nullptr ? target_entity->state.x : target_point.x;
+    const double ty = target_entity != nullptr ? target_entity->state.y : target_point.y;
+    const double tz = target_entity != nullptr ? target_entity->state.z : target_point.z;
+    const double rx = tx - trigger.state.x;
+    const double ry = ty - trigger.state.y;
+
+    const bool euclidean = spec.rdt == RelativeDistanceType::EuclidianDistance ||
+                           spec.rdt == RelativeDistanceType::CartesianDistance;
+    if (euclidean) {
+        const double rz = tz - trigger.state.z;
+        const double d_ref = std::sqrt(rx * rx + ry * ry + rz * rz);
+        if (d_ref == 0.0) {
+            return std::nullopt; // coincident reference points
+        }
+        // Rate of approach along the line of sight; the z relative velocity is
+        // zero in the scalar-velocity model. Fixed operand order.
+        return (rx * (vax - vbx) + ry * (vay - vby)) / d_ref;
+    }
+
+    // Longitudinal/lateral: the component of relative velocity that reduces the
+    // signed axis separation s = u·r.
+    double ux = 0.0;
+    double uy = 0.0;
+    projection_axis(spec.cs, spec.rdt, trigger.state.heading, ux, uy);
+    const double s = rx * ux + ry * uy;
+    if (s == 0.0) {
+        return std::nullopt; // coincident along the axis
+    }
+    return -std::copysign(1.0, s) * ((vbx - vax) * ux + (vby - vay) * uy);
 }
 
 } // namespace
@@ -272,6 +328,184 @@ const std::optional<RoutingAlgorithm>& RelativeDistanceCondition::routing_algori
 
 CoordinateSystem RelativeDistanceCondition::effective_coordinate_system() const {
     return coordinate_system_.value_or(CoordinateSystem::Entity);
+}
+
+// --- TimeHeadwayCondition ---------------------------------------------------
+
+TimeHeadwayCondition::TimeHeadwayCondition(
+    TriggeringEntities triggering, std::string entity_ref, double value, bool freespace, Rule rule,
+    std::optional<CoordinateSystem> coordinate_system,
+    std::optional<RelativeDistanceType> relative_distance_type,
+    std::optional<RoutingAlgorithm> routing_algorithm, std::optional<bool> along_route)
+    : ByEntityCondition(std::move(triggering)), entity_ref_(std::move(entity_ref)), value_(value),
+      freespace_(freespace), rule_(rule), coordinate_system_(coordinate_system),
+      relative_distance_type_(relative_distance_type), routing_algorithm_(routing_algorithm),
+      along_route_(along_route) {}
+
+bool TimeHeadwayCondition::evaluate_for_entity(const EvaluationContext& context,
+                                               std::string_view entity_id) const {
+    const std::optional<EntityKinematics> trigger = context.entity_kinematics(entity_id);
+    const std::optional<EntityKinematics> reference = context.entity_kinematics(entity_ref_);
+    if (!trigger.has_value() || !reference.has_value()) {
+        return false;
+    }
+    const DistanceSpec spec{effective_coordinate_system(), effective_relative_distance_type(),
+                            freespace_};
+    const std::optional<double> distance =
+        measure_distance(*trigger, &reference.value(), WorldPosition{}, spec);
+    if (!distance.has_value()) {
+        return false;
+    }
+    // Only the triggering entity's speed counts (§ TimeHeadwayCondition). A
+    // stopped or reversing follower never reaches the reference position; the
+    // negated `> 0` also rejects NaN.
+    const double s_trig = trigger->state.speed;
+    if (!(s_trig > 0.0)) {
+        return false;
+    }
+    return compare(*distance / s_trig, rule_, value_);
+}
+
+const std::string& TimeHeadwayCondition::entity_ref() const {
+    return entity_ref_;
+}
+
+double TimeHeadwayCondition::value() const {
+    return value_;
+}
+
+bool TimeHeadwayCondition::freespace() const {
+    return freespace_;
+}
+
+Rule TimeHeadwayCondition::rule() const {
+    return rule_;
+}
+
+const std::optional<CoordinateSystem>& TimeHeadwayCondition::coordinate_system() const {
+    return coordinate_system_;
+}
+
+const std::optional<RelativeDistanceType>& TimeHeadwayCondition::relative_distance_type() const {
+    return relative_distance_type_;
+}
+
+const std::optional<RoutingAlgorithm>& TimeHeadwayCondition::routing_algorithm() const {
+    return routing_algorithm_;
+}
+
+const std::optional<bool>& TimeHeadwayCondition::along_route() const {
+    return along_route_;
+}
+
+CoordinateSystem TimeHeadwayCondition::effective_coordinate_system() const {
+    if (coordinate_system_.has_value()) {
+        return *coordinate_system_;
+    }
+    if (!relative_distance_type_.has_value() && along_route_.value_or(false)) {
+        return CoordinateSystem::Road;
+    }
+    return CoordinateSystem::Entity;
+}
+
+RelativeDistanceType TimeHeadwayCondition::effective_relative_distance_type() const {
+    return relative_distance_type_.value_or(RelativeDistanceType::EuclidianDistance);
+}
+
+// --- TimeToCollisionCondition -----------------------------------------------
+
+TimeToCollisionCondition::TimeToCollisionCondition(
+    TriggeringEntities triggering, TimeToCollisionTarget target, double value, bool freespace,
+    Rule rule, std::optional<CoordinateSystem> coordinate_system,
+    std::optional<RelativeDistanceType> relative_distance_type,
+    std::optional<RoutingAlgorithm> routing_algorithm, std::optional<bool> along_route)
+    : ByEntityCondition(std::move(triggering)), target_(std::move(target)), value_(value),
+      freespace_(freespace), rule_(rule), coordinate_system_(coordinate_system),
+      relative_distance_type_(relative_distance_type), routing_algorithm_(routing_algorithm),
+      along_route_(along_route) {}
+
+bool TimeToCollisionCondition::evaluate_for_entity(const EvaluationContext& context,
+                                                   std::string_view entity_id) const {
+    const std::optional<EntityKinematics> trigger = context.entity_kinematics(entity_id);
+    if (!trigger.has_value()) {
+        return false;
+    }
+    // Resolve the target (holds_alternative/get rather than std::visit to keep
+    // MSVC /W4 quiet). An entity target that is absent makes this false.
+    std::optional<EntityKinematics> reference;
+    const EntityKinematics* target_entity = nullptr;
+    WorldPosition target_point{};
+    if (std::holds_alternative<std::string>(target_)) {
+        reference = context.entity_kinematics(std::get<std::string>(target_));
+        if (!reference.has_value()) {
+            return false;
+        }
+        target_entity = &reference.value();
+    } else {
+        target_point = std::get<WorldPosition>(target_);
+    }
+
+    const DistanceSpec spec{effective_coordinate_system(), effective_relative_distance_type(),
+                            freespace_};
+    const std::optional<double> distance =
+        measure_distance(*trigger, target_entity, target_point, spec);
+    if (!distance.has_value()) {
+        return false;
+    }
+    const std::optional<double> cs = closing_speed(*trigger, target_entity, target_point, spec);
+    // No collision predicted when moving apart, stationary relative motion, or
+    // coincident reference points (nullopt); the negated `> 0` rejects NaN.
+    if (!cs.has_value() || !(*cs > 0.0)) {
+        return false;
+    }
+    return compare(*distance / *cs, rule_, value_);
+}
+
+const TimeToCollisionTarget& TimeToCollisionCondition::target() const {
+    return target_;
+}
+
+double TimeToCollisionCondition::value() const {
+    return value_;
+}
+
+bool TimeToCollisionCondition::freespace() const {
+    return freespace_;
+}
+
+Rule TimeToCollisionCondition::rule() const {
+    return rule_;
+}
+
+const std::optional<CoordinateSystem>& TimeToCollisionCondition::coordinate_system() const {
+    return coordinate_system_;
+}
+
+const std::optional<RelativeDistanceType>&
+TimeToCollisionCondition::relative_distance_type() const {
+    return relative_distance_type_;
+}
+
+const std::optional<RoutingAlgorithm>& TimeToCollisionCondition::routing_algorithm() const {
+    return routing_algorithm_;
+}
+
+const std::optional<bool>& TimeToCollisionCondition::along_route() const {
+    return along_route_;
+}
+
+CoordinateSystem TimeToCollisionCondition::effective_coordinate_system() const {
+    if (coordinate_system_.has_value()) {
+        return *coordinate_system_;
+    }
+    if (!relative_distance_type_.has_value() && along_route_.value_or(false)) {
+        return CoordinateSystem::Road;
+    }
+    return CoordinateSystem::Entity;
+}
+
+RelativeDistanceType TimeToCollisionCondition::effective_relative_distance_type() const {
+    return relative_distance_type_.value_or(RelativeDistanceType::EuclidianDistance);
 }
 
 } // namespace scena::ir

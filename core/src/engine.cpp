@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
@@ -457,6 +458,48 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
             warn_interaction_modes(sink, condition_path,
                                    relative_distance->effective_coordinate_system(),
                                    relative_distance->relative_distance_type(), std::nullopt);
+        } else if (const auto* headway =
+                       dynamic_cast<const ir::TimeHeadwayCondition*>(expression)) {
+            // A time value in [0..inf[; the standard defines no rule id for the
+            // headway range, so the diagnostic cites the section only. The
+            // negated >= rejects NaN.
+            if (!(headway->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "time headway condition value is negative or NaN (§ TimeHeadwayCondition)",
+                      condition_path);
+            }
+            if (records.find(headway->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "reference entity '" + headway->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+            warn_interaction_modes(sink, condition_path, headway->effective_coordinate_system(),
+                                   headway->relative_distance_type(), headway->along_route());
+        } else if (const auto* ttc =
+                       dynamic_cast<const ir::TimeToCollisionCondition*>(expression)) {
+            if (!(ttc->value() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "time to collision condition value is negative or NaN "
+                      "(§ TimeToCollisionCondition)",
+                      condition_path);
+            }
+            // The target is an entity XOR a position (holds_alternative rather
+            // than std::visit to keep MSVC /W4 quiet).
+            if (std::holds_alternative<std::string>(ttc->target())) {
+                const std::string& target_ref = std::get<std::string>(ttc->target());
+                if (records.find(target_ref) == records.end()) {
+                    error(sink, Status::SemanticError,
+                          "target entity '" + target_ref + "' is unknown", condition_path);
+                }
+            } else {
+                const ir::WorldPosition& position = std::get<ir::WorldPosition>(ttc->target());
+                if (std::isnan(position.x) || std::isnan(position.y) || std::isnan(position.z)) {
+                    error(sink, Status::ValidationError,
+                          "time to collision condition target position is NaN", condition_path);
+                }
+            }
+            warn_interaction_modes(sink, condition_path, ttc->effective_coordinate_system(),
+                                   ttc->relative_distance_type(), ttc->along_route());
         }
     }
 }

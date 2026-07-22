@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "scena/ir/entity_condition.h"
@@ -57,6 +58,11 @@ struct RelativeLaneRange {
     std::optional<int> from;
     std::optional<int> to;
 };
+
+/// The target of a TimeToCollisionCondition, per TimeToCollisionConditionTarget
+/// (§ TimeToCollisionCondition): either a reference entity (its name) XOR an
+/// explicit world position.
+using TimeToCollisionTarget = std::variant<std::string, WorldPosition>;
 
 /// Base for the interaction subset of ByEntityCondition (§7.6.5.1): the
 /// two-entity and entity-to-position metrics (distance, headway, collision).
@@ -149,6 +155,91 @@ private:
     Rule rule_;
     std::optional<CoordinateSystem> coordinate_system_;
     std::optional<RoutingAlgorithm> routing_algorithm_;
+};
+
+/// Compares the headway time between the triggering entity and a reference
+/// entity to `value` under `rule`, per TimeHeadwayCondition. The reference is
+/// assumed leading; the headway is the distance (full §6.4 matrix, including
+/// freespace) divided by the *triggering entity's* speed only — the time for
+/// the trailing entity to reach the reference's current position. A stopped or
+/// reversing triggering entity (speed <= 0) never covers the gap ⇒ false.
+class TimeHeadwayCondition final : public ByEntityCondition {
+public:
+    TimeHeadwayCondition(TriggeringEntities triggering, std::string entity_ref, double value,
+                         bool freespace, Rule rule,
+                         std::optional<CoordinateSystem> coordinate_system = std::nullopt,
+                         std::optional<RelativeDistanceType> relative_distance_type = std::nullopt,
+                         std::optional<RoutingAlgorithm> routing_algorithm = std::nullopt,
+                         std::optional<bool> along_route = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_ref() const;
+    [[nodiscard]] double value() const;
+    [[nodiscard]] bool freespace() const;
+    [[nodiscard]] Rule rule() const;
+    [[nodiscard]] const std::optional<CoordinateSystem>& coordinate_system() const;
+    [[nodiscard]] const std::optional<RelativeDistanceType>& relative_distance_type() const;
+    [[nodiscard]] const std::optional<RoutingAlgorithm>& routing_algorithm() const;
+    [[nodiscard]] const std::optional<bool>& along_route() const;
+
+    [[nodiscard]] CoordinateSystem effective_coordinate_system() const;
+    [[nodiscard]] RelativeDistanceType effective_relative_distance_type() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    std::string entity_ref_;
+    double value_;
+    bool freespace_;
+    Rule rule_;
+    std::optional<CoordinateSystem> coordinate_system_;
+    std::optional<RelativeDistanceType> relative_distance_type_;
+    std::optional<RoutingAlgorithm> routing_algorithm_;
+    std::optional<bool> along_route_;
+};
+
+/// Compares the predicted time to collision between the triggering entity and a
+/// target (a reference entity XOR a fixed position) to `value` under `rule`,
+/// per TimeToCollisionCondition. TTC is the distance divided by the relative
+/// (closing) speed, using the same coordinate system and relative-distance type
+/// as the distance; acceleration is ignored. A non-positive closing speed (the
+/// entities move apart, or a coincident reference point) means no collision is
+/// predicted ⇒ false.
+class TimeToCollisionCondition final : public ByEntityCondition {
+public:
+    TimeToCollisionCondition(
+        TriggeringEntities triggering, TimeToCollisionTarget target, double value, bool freespace,
+        Rule rule, std::optional<CoordinateSystem> coordinate_system = std::nullopt,
+        std::optional<RelativeDistanceType> relative_distance_type = std::nullopt,
+        std::optional<RoutingAlgorithm> routing_algorithm = std::nullopt,
+        std::optional<bool> along_route = std::nullopt);
+
+    [[nodiscard]] const TimeToCollisionTarget& target() const;
+    [[nodiscard]] double value() const;
+    [[nodiscard]] bool freespace() const;
+    [[nodiscard]] Rule rule() const;
+    [[nodiscard]] const std::optional<CoordinateSystem>& coordinate_system() const;
+    [[nodiscard]] const std::optional<RelativeDistanceType>& relative_distance_type() const;
+    [[nodiscard]] const std::optional<RoutingAlgorithm>& routing_algorithm() const;
+    [[nodiscard]] const std::optional<bool>& along_route() const;
+
+    [[nodiscard]] CoordinateSystem effective_coordinate_system() const;
+    [[nodiscard]] RelativeDistanceType effective_relative_distance_type() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    TimeToCollisionTarget target_;
+    double value_;
+    bool freespace_;
+    Rule rule_;
+    std::optional<CoordinateSystem> coordinate_system_;
+    std::optional<RelativeDistanceType> relative_distance_type_;
+    std::optional<RoutingAlgorithm> routing_algorithm_;
+    std::optional<bool> along_route_;
 };
 
 } // namespace scena::ir

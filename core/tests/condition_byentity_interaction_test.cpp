@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -38,6 +39,9 @@ using ir::EntityKinematics;
 using ir::RelativeDistanceCondition;
 using ir::RelativeDistanceType;
 using ir::Rule;
+using ir::TimeHeadwayCondition;
+using ir::TimeToCollisionCondition;
+using ir::TimeToCollisionTarget;
 using ir::TriggeringEntities;
 using ir::TriggeringEntitiesRule;
 using ir::WorldPosition;
@@ -92,6 +96,14 @@ BoundingBox centered_box(double half_length, double half_width) {
     return box;
 }
 
+/// Kinematics at a pose with a speed along the heading (for headway/TTC).
+EntityKinematics moving(double x, double y, double heading, double speed,
+                        std::optional<BoundingBox> box = std::nullopt) {
+    EntityKinematics k = pose(x, y, 0.0, heading, box);
+    k.state.speed = speed;
+    return k;
+}
+
 bool holds(const ir::Condition& condition, const ir::EvaluationContext& context) {
     return condition.evaluate(context);
 }
@@ -101,7 +113,8 @@ bool holds(const ir::Condition& condition, const ir::EvaluationContext& context)
 /// A scenario whose event fires on `condition`; validation diagnostics are
 /// inspected via engine.diagnostics(). Entities: a host `ego`, optional host
 /// `lead`, plus an engine-controlled probe.
-ir::Scenario interaction_scenario(std::shared_ptr<ir::Condition> condition, bool with_lead = false) {
+ir::Scenario interaction_scenario(std::shared_ptr<ir::Condition> condition,
+                                  bool with_lead = false) {
     ir::Scenario scenario;
     scenario.name = "interaction";
     for (const char* id : {"ego"}) {
@@ -178,9 +191,10 @@ TEST(DistanceConditionTest, EntityLongitudinalAndLateralProject) {
     // |Δy| (§6.4.4).
     const KinematicsContext context{{{"ego", pose(0.0, 0.0)}}};
     const WorldPosition target{3.0, 4.0, 0.0};
-    EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 3.0, false, Rule::EqualTo,
-                                        CoordinateSystem::Entity, RelativeDistanceType::Longitudinal},
-                      context));
+    EXPECT_TRUE(
+        holds(DistanceCondition{ego_only(), target, 3.0, false, Rule::EqualTo,
+                                CoordinateSystem::Entity, RelativeDistanceType::Longitudinal},
+              context));
     EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 4.0, false, Rule::EqualTo,
                                         CoordinateSystem::Entity, RelativeDistanceType::Lateral},
                       context));
@@ -191,9 +205,10 @@ TEST(DistanceConditionTest, WorldLongitudinalIgnoresHeading) {
     // entity's heading, unlike the Entity CS which rotates with it.
     const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 1.0)}}};
     const WorldPosition target{3.0, 4.0, 0.0};
-    EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 3.0, false, Rule::EqualTo,
-                                        CoordinateSystem::World, RelativeDistanceType::Longitudinal},
-                      context));
+    EXPECT_TRUE(
+        holds(DistanceCondition{ego_only(), target, 3.0, false, Rule::EqualTo,
+                                CoordinateSystem::World, RelativeDistanceType::Longitudinal},
+              context));
     EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 4.0, false, Rule::EqualTo,
                                         CoordinateSystem::World, RelativeDistanceType::Lateral},
                       context));
@@ -210,17 +225,18 @@ TEST(DistanceConditionTest, FreespaceEuclideanUsesBoundingBox) {
 TEST(DistanceConditionTest, FreespaceLongitudinalIsAxisGap) {
     const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
     const WorldPosition target{3.0, 0.0, 0.0};
-    EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 2.0, true, Rule::EqualTo,
-                                        CoordinateSystem::Entity, RelativeDistanceType::Longitudinal},
-                      context));
+    EXPECT_TRUE(
+        holds(DistanceCondition{ego_only(), target, 2.0, true, Rule::EqualTo,
+                                CoordinateSystem::Entity, RelativeDistanceType::Longitudinal},
+              context));
 }
 
 TEST(DistanceConditionTest, FreespaceWithoutBoundingBoxIsFalse) {
     // freespace requested but ego has no geometry ⇒ per-entity false, silently.
     const KinematicsContext context{{{"ego", pose(0.0, 0.0)}}};
     const WorldPosition target{3.0, 0.0, 0.0};
-    EXPECT_FALSE(holds(DistanceCondition{ego_only(), target, 0.0, true, Rule::GreaterOrEqual},
-                       context));
+    EXPECT_FALSE(
+        holds(DistanceCondition{ego_only(), target, 0.0, true, Rule::GreaterOrEqual}, context));
 }
 
 TEST(DistanceConditionTest, RoadCoordinateSystemEvaluatesFalse) {
@@ -236,15 +252,16 @@ TEST(DistanceConditionTest, RoadCoordinateSystemEvaluatesFalse) {
 TEST(DistanceConditionTest, CartesianDistanceIsTreatedAsEuclidean) {
     const KinematicsContext context{{{"ego", pose(0.0, 0.0)}}};
     const WorldPosition target{3.0, 4.0, 0.0};
-    EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 5.0, false, Rule::EqualTo,
-                                        std::nullopt, RelativeDistanceType::CartesianDistance},
+    EXPECT_TRUE(holds(DistanceCondition{ego_only(), target, 5.0, false, Rule::EqualTo, std::nullopt,
+                                        RelativeDistanceType::CartesianDistance},
                       context));
 }
 
 TEST(DistanceConditionTest, EffectiveCoordinateSystemHonorsAlongRouteRule) {
     // Neither CS nor RDT authored, alongRoute true ⇒ effective CS is Road.
-    const DistanceCondition promoted{ego_only(),   WorldPosition{}, 1.0, false, Rule::LessThan,
-                                     std::nullopt, std::nullopt,    std::nullopt, true};
+    const DistanceCondition promoted{ego_only(),   WorldPosition{}, 1.0,
+                                     false,        Rule::LessThan,  std::nullopt,
+                                     std::nullopt, std::nullopt,    true};
     EXPECT_EQ(promoted.effective_coordinate_system(), CoordinateSystem::Road);
     // alongRoute is ignored once relativeDistanceType is set ⇒ default Entity.
     const DistanceCondition ignored{ego_only(),
@@ -265,10 +282,10 @@ TEST(DistanceConditionTest, EffectiveCoordinateSystemHonorsAlongRouteRule) {
 
 TEST(RelativeDistanceConditionTest, EuclideanBetweenEntities) {
     const KinematicsContext context{{{"ego", pose(0.0, 0.0)}, {"lead", pose(6.0, 8.0)}}};
-    EXPECT_TRUE(holds(RelativeDistanceCondition{ego_only(), "lead", 10.0, false,
-                                                RelativeDistanceType::EuclidianDistance,
-                                                Rule::EqualTo},
-                      context));
+    EXPECT_TRUE(
+        holds(RelativeDistanceCondition{ego_only(), "lead", 10.0, false,
+                                        RelativeDistanceType::EuclidianDistance, Rule::EqualTo},
+              context));
 }
 
 TEST(RelativeDistanceConditionTest, LongitudinalProjection) {
@@ -279,14 +296,13 @@ TEST(RelativeDistanceConditionTest, LongitudinalProjection) {
 }
 
 TEST(RelativeDistanceConditionTest, FreespaceUsesBothBoundingBoxes) {
-    const KinematicsContext context{
-        {{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
-         {"lead", pose(5.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"lead", pose(5.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
     // Gap between the two unit boxes 5 m apart: 5 - 1 - 1 = 3.
-    EXPECT_TRUE(holds(RelativeDistanceCondition{ego_only(), "lead", 3.0, true,
-                                                RelativeDistanceType::EuclidianDistance,
-                                                Rule::EqualTo},
-                      context));
+    EXPECT_TRUE(
+        holds(RelativeDistanceCondition{ego_only(), "lead", 3.0, true,
+                                        RelativeDistanceType::EuclidianDistance, Rule::EqualTo},
+              context));
 }
 
 TEST(RelativeDistanceConditionTest, AbsentReferenceIsFalse) {
@@ -295,6 +311,96 @@ TEST(RelativeDistanceConditionTest, AbsentReferenceIsFalse) {
                                                  RelativeDistanceType::EuclidianDistance,
                                                  Rule::GreaterOrEqual},
                        context));
+}
+
+// ---------------------------------------------------------------------------
+// TimeHeadwayCondition (§ TimeHeadwayCondition)
+// ---------------------------------------------------------------------------
+
+TEST(TimeHeadwayConditionTest, DistanceOverTriggeringSpeed) {
+    // ego at 5 m/s, lead 10 m ahead: headway = 10 / 5 = 2 s. Only the
+    // triggering entity's speed matters, so the lead's motion is irrelevant.
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, 5.0)}, {"lead", pose(10.0, 0.0)}}};
+    EXPECT_TRUE(
+        holds(TimeHeadwayCondition{ego_only(), "lead", 2.0, false, Rule::EqualTo}, context));
+    EXPECT_TRUE(
+        holds(TimeHeadwayCondition{ego_only(), "lead", 1.0, false, Rule::GreaterThan}, context));
+}
+
+TEST(TimeHeadwayConditionTest, StoppedOrReversingFollowerIsFalse) {
+    const KinematicsContext stopped{
+        {{"ego", moving(0.0, 0.0, 0.0, 0.0)}, {"lead", pose(10.0, 0.0)}}};
+    EXPECT_FALSE(
+        holds(TimeHeadwayCondition{ego_only(), "lead", 100.0, false, Rule::LessThan}, stopped));
+    const KinematicsContext reversing{
+        {{"ego", moving(0.0, 0.0, 0.0, -5.0)}, {"lead", pose(10.0, 0.0)}}};
+    EXPECT_FALSE(
+        holds(TimeHeadwayCondition{ego_only(), "lead", 100.0, false, Rule::LessThan}, reversing));
+}
+
+// ---------------------------------------------------------------------------
+// TimeToCollisionCondition (§ TimeToCollisionCondition)
+// ---------------------------------------------------------------------------
+
+TEST(TimeToCollisionConditionTest, ApproachingEntityHasFiniteTtc) {
+    // ego at 10 m/s toward a stationary lead 20 m ahead: closing speed 10,
+    // distance 20, TTC = 2 s.
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, 10.0)}, {"lead", moving(20.0, 0.0, 0.0, 0.0)}}};
+    EXPECT_TRUE(
+        holds(TimeToCollisionCondition{ego_only(), TimeToCollisionTarget{std::string{"lead"}}, 2.0,
+                                       false, Rule::EqualTo},
+              context));
+}
+
+TEST(TimeToCollisionConditionTest, MovingApartIsFalse) {
+    // Negative closing speed ⇒ no predicted collision (§ TimeToCollisionCondition).
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, -10.0)}, {"lead", moving(20.0, 0.0, 0.0, 0.0)}}};
+    EXPECT_FALSE(
+        holds(TimeToCollisionCondition{ego_only(), TimeToCollisionTarget{std::string{"lead"}},
+                                       100.0, false, Rule::LessThan},
+              context));
+}
+
+TEST(TimeToCollisionConditionTest, BothEntitiesClosingSumsRelativeSpeed) {
+    // ego +5 m/s, lead reversing at -5 m/s (toward ego): closing speed 10,
+    // distance 20, TTC = 2 s.
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, 5.0)}, {"lead", moving(20.0, 0.0, 0.0, -5.0)}}};
+    EXPECT_TRUE(
+        holds(TimeToCollisionCondition{ego_only(), TimeToCollisionTarget{std::string{"lead"}}, 2.0,
+                                       false, Rule::EqualTo},
+              context));
+}
+
+TEST(TimeToCollisionConditionTest, PositionTargetIsStationary) {
+    const KinematicsContext context{{{"ego", moving(0.0, 0.0, 0.0, 10.0)}}};
+    EXPECT_TRUE(holds(TimeToCollisionCondition{ego_only(),
+                                               TimeToCollisionTarget{WorldPosition{20.0, 0.0, 0.0}},
+                                               2.0, false, Rule::EqualTo},
+                      context));
+}
+
+TEST(TimeToCollisionConditionTest, CoincidentReferencePointIsFalse) {
+    const KinematicsContext context{{{"ego", moving(0.0, 0.0, 0.0, 10.0)}}};
+    EXPECT_FALSE(holds(TimeToCollisionCondition{ego_only(),
+                                                TimeToCollisionTarget{WorldPosition{0.0, 0.0, 0.0}},
+                                                100.0, false, Rule::GreaterOrEqual},
+                       context));
+}
+
+TEST(TimeToCollisionConditionTest, LongitudinalClosingSpeed) {
+    // Longitudinal RDT, Entity CS: distance = |Δx| = 20, closing speed along
+    // x̂ = 10, TTC = 2. The lead's lateral offset does not change the axis TTC.
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, 10.0)}, {"lead", moving(20.0, 5.0, 0.0, 0.0)}}};
+    EXPECT_TRUE(
+        holds(TimeToCollisionCondition{ego_only(), TimeToCollisionTarget{std::string{"lead"}}, 2.0,
+                                       false, Rule::EqualTo, CoordinateSystem::Entity,
+                                       RelativeDistanceType::Longitudinal},
+              context));
 }
 
 // ---------------------------------------------------------------------------
@@ -334,9 +440,10 @@ TEST(InteractionValidationTest, RelativeDistanceUnknownReferenceFailsInit) {
 
 TEST(InteractionValidationTest, RoadCoordinateSystemWarnsButInitSucceeds) {
     Engine engine;
-    ASSERT_EQ(engine.init(interaction_scenario(std::make_shared<DistanceCondition>(
-                  ego_only(), WorldPosition{}, 1.0, false, Rule::LessThan, CoordinateSystem::Road))),
-              Status::Ok);
+    ASSERT_EQ(
+        engine.init(interaction_scenario(std::make_shared<DistanceCondition>(
+            ego_only(), WorldPosition{}, 1.0, false, Rule::LessThan, CoordinateSystem::Road))),
+        Status::Ok);
     EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::UnsupportedFeature), 1);
 }
 
@@ -370,4 +477,46 @@ TEST(InteractionValidationTest, CartesianDistanceDeprecationWarns) {
                   RelativeDistanceType::CartesianDistance))),
               Status::Ok);
     EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::DeprecatedFeature), 1);
+}
+
+TEST(InteractionValidationTest, NegativeHeadwayOrTtcValueFailsInit) {
+    {
+        Engine engine;
+        EXPECT_EQ(
+            engine.init(interaction_scenario(std::make_shared<TimeHeadwayCondition>(
+                                                 ego_only(), "lead", -1.0, false, Rule::LessThan),
+                                             /*with_lead=*/true)),
+            Status::ValidationError);
+    }
+    {
+        Engine engine;
+        EXPECT_EQ(
+            engine.init(interaction_scenario(std::make_shared<TimeToCollisionCondition>(
+                ego_only(), TimeToCollisionTarget{WorldPosition{}}, -1.0, false, Rule::LessThan))),
+            Status::ValidationError);
+    }
+}
+
+TEST(InteractionValidationTest, HeadwayUnknownReferenceFailsInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(interaction_scenario(std::make_shared<TimeHeadwayCondition>(
+                  ego_only(), "ghost", 1.0, false, Rule::LessThan))),
+              Status::SemanticError);
+}
+
+TEST(InteractionValidationTest, TtcUnknownEntityTargetFailsInit) {
+    Engine engine;
+    EXPECT_EQ(
+        engine.init(interaction_scenario(std::make_shared<TimeToCollisionCondition>(
+            ego_only(), TimeToCollisionTarget{std::string{"ghost"}}, 1.0, false, Rule::LessThan))),
+        Status::SemanticError);
+}
+
+TEST(InteractionValidationTest, TtcNanPositionTargetFailsInit) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Engine engine;
+    EXPECT_EQ(engine.init(interaction_scenario(std::make_shared<TimeToCollisionCondition>(
+                  ego_only(), TimeToCollisionTarget{WorldPosition{nan, 0.0, 0.0}}, 1.0, false,
+                  Rule::LessThan))),
+              Status::ValidationError);
 }
