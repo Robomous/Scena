@@ -67,13 +67,128 @@ typedef enum scn_event_priority {
     SCN_PRIORITY_SKIP = 2      /* does not start while another event runs */
 } scn_event_priority;
 
+/* Transparent struct: the layout is frozen ABI. Append fields only; never
+ * reorder or remove. pitch/roll were appended after speed — a caller compiled
+ * against an older header (without them) must be recompiled against this one so
+ * it allocates the full struct. */
 typedef struct scn_entity_state {
     double x;       /* world position, meters */
     double y;       /* world position, meters */
     double z;       /* world position, meters */
     double heading; /* yaw around +Z, radians; 0 points along +X */
     double speed;   /* longitudinal speed along the heading, m/s */
+    double pitch;   /* pitch around the entity's +Y, radians */
+    double roll;    /* roll around the entity's +X, radians */
 } scn_entity_state;
+
+/* Entity taxonomy (§7.2.2). The category/type enums mirror the C++
+ * scena::ir enumerations one-for-one and in the same order; values are ABI,
+ * append new enumerators at the end. */
+
+typedef enum scn_object_type {
+    SCN_OBJECT_VEHICLE = 0,
+    SCN_OBJECT_PEDESTRIAN = 1,
+    SCN_OBJECT_MISC = 2
+} scn_object_type;
+
+/* Mirrors scena::ir::VehicleCategory (§VehicleCategory). */
+typedef enum scn_vehicle_category {
+    SCN_VEHICLE_AIRCRAFT = 0,
+    SCN_VEHICLE_BICYCLE = 1,
+    SCN_VEHICLE_BUS = 2,
+    SCN_VEHICLE_CAR = 3,
+    SCN_VEHICLE_HEAVY_TRUCK = 4,
+    SCN_VEHICLE_LAND_VEHICLE = 5,
+    SCN_VEHICLE_MICROMOBILITY_DEVICE = 6,
+    SCN_VEHICLE_MOTORBIKE = 7, /* DEPRECATED in 1.4: use SCN_VEHICLE_MOTORCYCLE */
+    SCN_VEHICLE_MOTORCYCLE = 8,
+    SCN_VEHICLE_OTHER = 9,
+    SCN_VEHICLE_SEMITRACTOR = 10,
+    SCN_VEHICLE_SEMITRAILER = 11,
+    SCN_VEHICLE_STANDUP_SCOOTER = 12,
+    SCN_VEHICLE_TRAILER = 13,
+    SCN_VEHICLE_TRAIN = 14,
+    SCN_VEHICLE_TRAM = 15,
+    SCN_VEHICLE_TRUCK = 16, /* DEPRECATED in 1.4: use HEAVY_TRUCK/SEMITRACTOR */
+    SCN_VEHICLE_VAN = 17,
+    SCN_VEHICLE_WATERCRAFT = 18,
+    SCN_VEHICLE_WHEELCHAIR = 19,
+    SCN_VEHICLE_WORK_MACHINE = 20
+} scn_vehicle_category;
+
+/* Mirrors scena::ir::PedestrianCategory (§PedestrianCategory). */
+typedef enum scn_pedestrian_category {
+    SCN_PEDESTRIAN_ANIMAL = 0,
+    SCN_PEDESTRIAN_PEDESTRIAN = 1,
+    SCN_PEDESTRIAN_WHEELCHAIR = 2 /* DEPRECATED in 1.4 */
+} scn_pedestrian_category;
+
+/* Mirrors scena::ir::MiscObjectCategory (§MiscObjectCategory). */
+typedef enum scn_misc_object_category {
+    SCN_MISC_BARRIER = 0,
+    SCN_MISC_BUILDING = 1,
+    SCN_MISC_CROSSWALK = 2,
+    SCN_MISC_GANTRY = 3,
+    SCN_MISC_NONE = 4,
+    SCN_MISC_OBSTACLE = 5,
+    SCN_MISC_PARKING_SPACE = 6,
+    SCN_MISC_PATCH = 7,
+    SCN_MISC_POLE = 8,
+    SCN_MISC_RAILING = 9,
+    SCN_MISC_ROAD_MARK = 10,
+    SCN_MISC_SOUND_BARRIER = 11,
+    SCN_MISC_STREET_LAMP = 12,
+    SCN_MISC_TRAFFIC_ISLAND = 13,
+    SCN_MISC_TREE = 14,
+    SCN_MISC_VEGETATION = 15,
+    SCN_MISC_WIND = 16 /* DEPRECATED in 1.4 */
+} scn_misc_object_category;
+
+/* Mirrors scena::ir::Role (§Role); the default when unspecified is SCN_ROLE_NONE. */
+typedef enum scn_role {
+    SCN_ROLE_NONE = 0,
+    SCN_ROLE_AGRICULTURE = 1,
+    SCN_ROLE_AMBULANCE = 2,
+    SCN_ROLE_CIVIL = 3,
+    SCN_ROLE_CONSTRUCTION = 4,
+    SCN_ROLE_DANGEROUS_GOODS_TRANSPORT = 5,
+    SCN_ROLE_FIRE = 6, /* DEPRECATED in 1.4: use SCN_ROLE_FIRE_BRIGADE */
+    SCN_ROLE_FIRE_BRIGADE = 7,
+    SCN_ROLE_FREIGHT_TRANSPORT = 8,
+    SCN_ROLE_GARBAGE_COLLECTION = 9,
+    SCN_ROLE_MILITARY = 10,
+    SCN_ROLE_OTHER = 11,
+    SCN_ROLE_POLICE = 12,
+    SCN_ROLE_PUBLIC_TRANSPORT = 13,
+    SCN_ROLE_ROAD_ASSISTANCE = 14, /* DEPRECATED in 1.4: use ROADSIDE_ASSISTANCE */
+    SCN_ROLE_ROADSIDE_ASSISTANCE = 15,
+    SCN_ROLE_SPECIAL_TRANSPORT = 16,
+    SCN_ROLE_TRAFFIC_CONTROL = 17
+} scn_role;
+
+/* A three-dimensional bounding box (§BoundingBox): the geometric center in the
+ * entity body frame plus the length/width/height dimensions. Transparent
+ * struct; append fields only. */
+typedef struct scn_bounding_box {
+    double center_x; /* m, entity frame, +x forward */
+    double center_y; /* m, entity frame, +y left */
+    double center_z; /* m, entity frame, +z up */
+    double length;   /* m, extent along the body x axis */
+    double width;    /* m, extent along the body y axis */
+    double height;   /* m, extent along the body z axis */
+} scn_bounding_box;
+
+/* Vehicle performance limits (§Performance). The rate limits are optional in
+ * the standard (absent ⇒ infinite): pass a negative value to mean "unspecified"
+ * on a builder, and read back a negative value when the limit is absent.
+ * Transparent struct; append fields only. */
+typedef struct scn_performance {
+    double max_speed;              /* m/s, Range [0..inf[ */
+    double max_acceleration;       /* m/s^2, Range [0..inf[ */
+    double max_deceleration;       /* m/s^2, Range [0..inf[ */
+    double max_acceleration_rate;  /* m/s^3; negative ⇒ unspecified (infinite) */
+    double max_deceleration_rate;  /* m/s^3; negative ⇒ unspecified (infinite) */
+} scn_performance;
 
 /* One structured diagnostic read back from the engine.
  *
@@ -113,6 +228,26 @@ SCN_API void scn_engine_destroy(scn_engine* engine);
 /* Scenario building (before scn_engine_init). */
 SCN_API scn_status scn_engine_add_entity(scn_engine* engine, const char* id, const char* name,
                                          scn_control_mode control_mode);
+
+/* Adds a classified entity — a ScenarioObject whose EntityObject is a Vehicle,
+ * Pedestrian, or MiscObject (§7.2.2). `bounding_box` is required (non-NULL);
+ * `performance` is required for a vehicle. A NULL required pointer or a
+ * category outside its enumeration returns SCN_ERROR_INVALID_ARGUMENT and adds
+ * nothing. Role defaults to None and mass is left unspecified; the richer
+ * fields (role, mass, axles, properties) are reachable from C++ / Python. */
+SCN_API scn_status scn_engine_add_vehicle(scn_engine* engine, const char* id, const char* name,
+                                          scn_control_mode control_mode,
+                                          scn_vehicle_category category,
+                                          const scn_bounding_box* bounding_box,
+                                          const scn_performance* performance);
+SCN_API scn_status scn_engine_add_pedestrian(scn_engine* engine, const char* id, const char* name,
+                                             scn_control_mode control_mode,
+                                             scn_pedestrian_category category,
+                                             const scn_bounding_box* bounding_box);
+SCN_API scn_status scn_engine_add_misc_object(scn_engine* engine, const char* id, const char* name,
+                                              scn_control_mode control_mode,
+                                              scn_misc_object_category category,
+                                              const scn_bounding_box* bounding_box);
 
 /* Adds a storyboard entry: a SpeedAction on `entity_id` triggered by a
  * SimulationTimeCondition at `at_time` seconds. Equivalent to
@@ -159,6 +294,18 @@ SCN_API scn_status scn_engine_get_state(scn_engine* engine, const char* entity_i
                                         scn_entity_state* out);
 SCN_API scn_status scn_engine_report_state(scn_engine* engine, const char* entity_id,
                                            const scn_entity_state* state);
+
+/* Entity metadata queries (§7.2.2). Each reads the authored scenario, so it is
+ * valid before and after init. An unknown id returns SCN_ERROR_UNKNOWN_ENTITY;
+ * a known entity that lacks the requested metadata (no classified object, or —
+ * for performance — a non-vehicle) returns SCN_ERROR_INVALID_ARGUMENT. On any
+ * error *out is left untouched. */
+SCN_API scn_status scn_engine_entity_object_type(scn_engine* engine, const char* id,
+                                                 scn_object_type* out);
+SCN_API scn_status scn_engine_entity_bounding_box(scn_engine* engine, const char* id,
+                                                  scn_bounding_box* out);
+SCN_API scn_status scn_engine_entity_performance(scn_engine* engine, const char* id,
+                                                 scn_performance* out);
 
 /* Named values (by-value conditions).
  *
