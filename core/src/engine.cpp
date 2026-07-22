@@ -788,6 +788,25 @@ Status Engine::init(ir::Scenario scenario) {
             }
             it->second.bounding_box = box_opt;
         }
+        // Performance limits, present only on a Vehicle. The standard ranges
+        // are [0..inf[ for maxSpeed / maxAcceleration / maxDeceleration and the
+        // optional rate limits, so a negative, NaN, or non-finite value is a
+        // content defect (per ASAM OpenSCENARIO XML 1.4.0 §Performance). A zero
+        // maxDeceleration is spec-permitted though degenerate; the default
+        // controller (p2-s2) handles that, so it is not rejected here.
+        if (const ir::Performance* perf = ir::performance_of(entity)) {
+            const auto invalid = [](double value) { return !std::isfinite(value) || value < 0.0; };
+            const auto invalid_opt = [&](const std::optional<double>& value) {
+                return value.has_value() && invalid(*value);
+            };
+            if (invalid(perf->max_speed) || invalid(perf->max_acceleration) ||
+                invalid(perf->max_deceleration) || invalid_opt(perf->max_acceleration_rate) ||
+                invalid_opt(perf->max_deceleration_rate)) {
+                error(diagnostics_, Status::ValidationError,
+                      "entity '" + entity.id + "' has invalid performance limits",
+                      "entities/" + entity.id);
+            }
+        }
     }
     std::size_t init_action_index = 0;
     for (const std::shared_ptr<ir::Action>& action : scenario.init_actions) {
