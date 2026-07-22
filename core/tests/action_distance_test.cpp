@@ -470,4 +470,107 @@ TEST(DistanceKeepingValidationTest, FreespaceWithoutGeometryCompletesWithAWarnin
     EXPECT_TRUE(warned);
 }
 
+// --- GS-4: traffic-jam approach -------------------------------------------
+
+/// GS-4 from docs/roadmap/golden-scenarios.md: the lead vehicle decelerates to
+/// near standstill; the ego approaches until a TimeToCollisionCondition arms a
+/// strong SpeedAction deceleration; a freespace LongitudinalDistanceAction then
+/// holds the gap; a timed trigger dissolves the jam and the ego tracks the lead
+/// back up.
+///
+/// Both vehicles are 5 m long boxes centred on their reference points, so the
+/// freespace gap is the reference-point gap minus 5 m.
+scena::ir::Scenario make_gs4_scenario() {
+    const Performance lead_envelope{40.0, 3.0, 6.0, std::nullopt, std::nullopt};
+    const Performance ego_envelope{40.0, 3.0, 8.0, std::nullopt, std::nullopt};
+
+    std::vector<scena::ir::Event> events;
+    // The jam forms: the lead brakes from 25 m/s to a crawl over 8 s.
+    events.push_back(timed_event(
+        "jam-forms", 2.0,
+        std::make_shared<SpeedAction>(
+            "lead", 0.5, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 8.0})));
+
+    // The ego brakes hard when the freespace time to collision drops below 6 s.
+    scena::ir::Event brake;
+    brake.name = "ego-brakes";
+    brake.start_trigger = scena::ir::make_trigger(
+        std::make_shared<scena::ir::TimeToCollisionCondition>(
+            scena::ir::TriggeringEntities{scena::ir::TriggeringEntitiesRule::Any, {"ego"}},
+            scena::ir::TimeToCollisionTarget{std::string("lead")}, 6.0, /*freespace=*/true,
+            scena::ir::Rule::LessThan, CoordinateSystem::Entity,
+            scena::ir::RelativeDistanceType::Longitudinal),
+        scena::ir::ConditionEdge::None, 0.0);
+    brake.actions.push_back(std::make_shared<SpeedAction>(
+        "ego", 2.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 5.0}));
+    events.push_back(std::move(brake));
+
+    // Once the braking event has ended, distance keeping takes over: a
+    // continuous freespace gap of 8 m to the lead.
+    scena::ir::Event keep;
+    keep.name = "ego-keeps-gap";
+    keep.start_trigger =
+        scena::ir::make_trigger(std::make_shared<scena::ir::StoryboardElementStateCondition>(
+                                    scena::ir::StoryboardElementType::Event, "ego-brakes",
+                                    scena::ir::StoryboardElementState::CompleteState),
+                                scena::ir::ConditionEdge::None, 0.0);
+    keep.actions.push_back(std::make_shared<LongitudinalDistanceAction>(
+        "ego", "lead", 8.0, std::nullopt, /*freespace=*/true, /*continuous=*/true));
+    events.push_back(std::move(keep));
+
+    // The jam dissolves: the lead accelerates away and the ego follows it.
+    events.push_back(
+        timed_event("jam-dissolves", 40.0,
+                    std::make_shared<SpeedAction>(
+                        "lead", 20.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 8.0})));
+
+    Scenario scenario = make_following_scenario(vehicle_entity("ego", 5.0, ego_envelope),
+                                                vehicle_entity("lead", 5.0, lead_envelope),
+                                                /*lead_x=*/150.0, /*ego_speed=*/25.0,
+                                                /*lead_speed=*/25.0, std::move(events));
+    scenario.name = "gs4-traffic-jam-approach";
+    return scenario;
+}
+
+/// Freespace bumper-to-bumper gap for the GS-4 geometry (5 m boxes).
+double gs4_freespace_gap(const Engine& engine) {
+    return gap_of(engine) - 5.0;
+}
+
+TEST(GoldenScenarioTest, GS4TrafficJamApproachHoldsTheGap) {
+    Engine engine;
+    ASSERT_EQ(engine.init(make_gs4_scenario()), Status::Ok);
+
+    // Pass criteria (golden-scenarios.md GS-4): the minimum gap never drops
+    // below the declared floor and the boxes never intersect.
+    constexpr double kGapFloor = 1.0;
+    double minimum_gap = gs4_freespace_gap(engine);
+    bool braked = false;
+    for (int i = 0; i < 600; ++i) { // 60 s at 0.1 s steps
+        SCOPED_TRACE(i);
+        ASSERT_EQ(engine.step(0.1), Status::Ok);
+        const double gap = gs4_freespace_gap(engine);
+        minimum_gap = std::fmin(minimum_gap, gap);
+        EXPECT_GT(gap, 0.0); // no collision: the boxes never touch
+        braked = braked || engine.state("ego")->speed < 5.0;
+    }
+    EXPECT_GT(minimum_gap, kGapFloor);
+    EXPECT_TRUE(braked); // the TTC trigger really did arm the deceleration
+
+    const std::string base = "story/act/group/maneuver/";
+    EXPECT_EQ(*engine.storyboard_element_state(base + "jam-forms"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_EQ(*engine.storyboard_element_state(base + "ego-brakes"),
+              scena::runtime::ElementState::Complete);
+    // Continuous distance keeping has no regular ending (§7.5.3).
+    EXPECT_EQ(*engine.storyboard_element_state(base + "ego-keeps-gap"),
+              scena::runtime::ElementState::Running);
+
+    // After the jam dissolves the ego tracks the lead again: it is back up to
+    // speed and holding the commanded gap.
+    EXPECT_NEAR(engine.state("ego")->speed, engine.state("lead")->speed, 0.5);
+    EXPECT_NEAR(gs4_freespace_gap(engine), 8.0, 0.5);
+}
+
 } // namespace

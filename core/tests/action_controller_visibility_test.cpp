@@ -41,9 +41,9 @@ using scena::Severity;
 using scena::Status;
 using scena::ir::ActivateControllerAction;
 using scena::ir::AssignControllerAction;
-using scena::ir::ControlMode;
 using scena::ir::Controller;
 using scena::ir::ControllerType;
+using scena::ir::ControlMode;
 using scena::ir::DynamicsDimension;
 using scena::ir::DynamicsShape;
 using scena::ir::Entity;
@@ -232,11 +232,11 @@ TEST(ControllerActionTest, ActivatingADomainTheControllerTypeLacksIsRejected) {
 
 TEST(ControllerActionTest, ALightingControllerMayNotActivateAMovementDomain) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("assign", 0.0,
-                                 std::make_shared<AssignControllerAction>(
-                                     "ego", make_controller(ControllerType::Lighting),
-                                     /*activate_lateral=*/std::nullopt,
-                                     /*activate_longitudinal=*/true)));
+    events.push_back(timed_event(
+        "assign", 0.0,
+        std::make_shared<AssignControllerAction>("ego", make_controller(ControllerType::Lighting),
+                                                 /*activate_lateral=*/std::nullopt,
+                                                 /*activate_longitudinal=*/true)));
     Engine engine;
     EXPECT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::ValidationError);
 }
@@ -245,11 +245,11 @@ TEST(ControllerActionTest, DeactivationIsAlwaysAllowedRegardlessOfControllerType
     // The rule constrains activation only; switching a domain off never
     // references a domain the controller claims.
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("assign", 0.0,
-                                 std::make_shared<AssignControllerAction>(
-                                     "ego", make_controller(ControllerType::Lighting),
-                                     /*activate_lateral=*/false,
-                                     /*activate_longitudinal=*/false)));
+    events.push_back(timed_event(
+        "assign", 0.0,
+        std::make_shared<AssignControllerAction>("ego", make_controller(ControllerType::Lighting),
+                                                 /*activate_lateral=*/false,
+                                                 /*activate_longitudinal=*/false)));
     Engine engine;
     EXPECT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
 }
@@ -258,10 +258,11 @@ TEST(ControllerActionTest, DeactivationIsAlwaysAllowedRegardlessOfControllerType
 
 TEST(ActivateControllerTest, DeactivatingLongitudinalRetiresTheRunningOwnerAndHoldsSpeed) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "ramp", 0.0,
-        std::make_shared<SpeedAction>(
-            "ego", 30.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 20.0})));
+    events.push_back(
+        timed_event("ramp", 0.0,
+                    std::make_shared<SpeedAction>(
+                        "ego", 30.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 20.0})));
     events.push_back(timed_event("off", 4.0,
                                  std::make_shared<ActivateControllerAction>(
                                      "ego", /*lateral=*/std::nullopt, /*longitudinal=*/false)));
@@ -310,12 +311,12 @@ TEST(ActivateControllerTest, ALongitudinalActionFiredWhileInactiveIsSkippedWithA
 
 TEST(ActivateControllerTest, ReactivationResumesNormalDispatch) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event("off", 1.0,
-                                 std::make_shared<ActivateControllerAction>(
-                                     "ego", std::nullopt, /*longitudinal=*/false)));
-    events.push_back(timed_event("on", 2.0,
-                                 std::make_shared<ActivateControllerAction>(
-                                     "ego", std::nullopt, /*longitudinal=*/true)));
+    events.push_back(timed_event(
+        "off", 1.0,
+        std::make_shared<ActivateControllerAction>("ego", std::nullopt, /*longitudinal=*/false)));
+    events.push_back(timed_event(
+        "on", 2.0,
+        std::make_shared<ActivateControllerAction>("ego", std::nullopt, /*longitudinal=*/true)));
     events.push_back(timed_event("speed", 3.0, std::make_shared<SpeedAction>("ego", 25.0)));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
@@ -399,8 +400,8 @@ TEST(VisibilityActionTest, DefaultsToVisibleAndTheActionFlipsTheFlags) {
 
 TEST(VisibilityActionTest, VisibilityDoesNotAffectMotion) {
     std::vector<scena::ir::Event> events;
-    events.push_back(timed_event(
-        "hide", 1.0, std::make_shared<VisibilityAction>("ego", false, false, false)));
+    events.push_back(
+        timed_event("hide", 1.0, std::make_shared<VisibilityAction>("ego", false, false, false)));
     Engine engine;
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
     for (int i = 0; i < 3; ++i) {
@@ -424,8 +425,8 @@ TEST(ControllerActionTest, AGatewayThatOverridesNothingNewStillRuns) {
     std::vector<scena::ir::Event> events;
     events.push_back(timed_event(
         "assign", 1.0, std::make_shared<AssignControllerAction>("ego", make_controller())));
-    events.push_back(timed_event(
-        "hide", 2.0, std::make_shared<VisibilityAction>("ego", false, false, false)));
+    events.push_back(
+        timed_event("hide", 2.0, std::make_shared<VisibilityAction>("ego", false, false, false)));
     LegacyGateway gateway;
     Engine engine(&gateway);
     ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
