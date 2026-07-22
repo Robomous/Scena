@@ -500,6 +500,60 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
             }
             warn_interaction_modes(sink, condition_path, ttc->effective_coordinate_system(),
                                    ttc->relative_distance_type(), ttc->along_route());
+        } else if (const auto* collision =
+                       dynamic_cast<const ir::CollisionCondition*>(expression)) {
+            // Only the EntityRef target is modeled (ByObjectType needs the p2-s1
+            // category); the referenced entity must resolve.
+            if (records.find(collision->entity_ref()) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "collision reference entity '" + collision->entity_ref() + "' is unknown",
+                      condition_path);
+            }
+        } else if (const auto* end_of_road =
+                       dynamic_cast<const ir::EndOfRoadCondition*>(expression)) {
+            if (!(end_of_road->duration() >= 0.0)) {
+                error(sink, Status::ValidationError, "end of road condition duration is negative",
+                      condition_path);
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "end of road condition requires road network topology (§7.6.5.1); "
+                 "deterministic false until p3-s4",
+                 condition_path);
+        } else if (const auto* offroad = dynamic_cast<const ir::OffroadCondition*>(expression)) {
+            if (!(offroad->duration() >= 0.0)) {
+                error(sink, Status::ValidationError, "offroad condition duration is negative",
+                      condition_path);
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "offroad condition requires road network topology (§7.6.5.1); "
+                 "deterministic false until p3-s4",
+                 condition_path);
+        } else if (const auto* clearance =
+                       dynamic_cast<const ir::RelativeClearanceCondition*>(expression)) {
+            if (!(clearance->distance_backward() >= 0.0) ||
+                !(clearance->distance_forward() >= 0.0)) {
+                error(sink, Status::ValidationError,
+                      "relative clearance condition distance is negative or NaN", condition_path,
+                      kRuleDistancesNotNegative);
+            }
+            for (const ir::RelativeLaneRange& range : clearance->lane_ranges()) {
+                // Both limits present and inverted (from > to) is an empty
+                // range — a content defect.
+                if (range.from.has_value() && range.to.has_value() && *range.from > *range.to) {
+                    error(sink, Status::ValidationError,
+                          "relative clearance lane range has from > to", condition_path);
+                }
+            }
+            for (const std::string& ref : clearance->entity_refs()) {
+                if (records.find(ref) == records.end()) {
+                    error(sink, Status::SemanticError,
+                          "relative clearance entity '" + ref + "' is unknown", condition_path);
+                }
+            }
+            warn(sink, Status::UnsupportedFeature,
+                 "relative clearance condition requires lane coordinates (§6.4.5); "
+                 "deterministic false until p3-s4",
+                 condition_path);
         }
     }
 }

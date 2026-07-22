@@ -242,4 +242,93 @@ private:
     std::optional<bool> along_route_;
 };
 
+/// Holds when the triggering entity collides with a reference entity, per
+/// CollisionCondition: their bounding boxes intersect (the freespace distance
+/// is zero, §6.4.7.2). The standard also allows a ByObjectType target, but
+/// ir::Entity has no category yet (p2-s1), so only the EntityRef target is
+/// modeled this sprint (ADR-0009); a missing box or reference is false.
+class CollisionCondition final : public ByEntityCondition {
+public:
+    CollisionCondition(TriggeringEntities triggering, std::string entity_ref);
+
+    [[nodiscard]] const std::string& entity_ref() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    std::string entity_ref_;
+};
+
+/// Holds once the triggering entity has been at the end of the road network for
+/// `duration` seconds, per EndOfRoadCondition. Requires road-network topology
+/// (IRoadQuery, p3-s4), so it evaluates to a deterministic false with an
+/// init-time UnsupportedFeature warning until then (ADR-0009).
+class EndOfRoadCondition final : public ByEntityCondition {
+public:
+    EndOfRoadCondition(TriggeringEntities triggering, double duration);
+
+    [[nodiscard]] double duration() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double duration_;
+};
+
+/// Holds once the triggering entity has been off-road for `duration` seconds,
+/// per OffroadCondition. Road-deferred like EndOfRoadCondition: deterministic
+/// false with an init-time UnsupportedFeature warning until p3-s4.
+class OffroadCondition final : public ByEntityCondition {
+public:
+    OffroadCondition(TriggeringEntities triggering, double duration);
+
+    [[nodiscard]] double duration() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    double duration_;
+};
+
+/// Holds when the lanes around the triggering entity are clear of other
+/// entities, per RelativeClearanceCondition. The checked area is defined in the
+/// lane coordinate system of the triggering entity's current lane, so it
+/// requires road-network topology (IRoadQuery, p3-s4) and evaluates to a
+/// deterministic false with an init-time UnsupportedFeature warning until then
+/// (ADR-0009). `free_space` and `opposite_lanes` are required; the backward/
+/// forward distances default to 0; entity refs and lane ranges are optional
+/// (empty ⇒ all entities / all lanes).
+class RelativeClearanceCondition final : public ByEntityCondition {
+public:
+    RelativeClearanceCondition(TriggeringEntities triggering, bool free_space, bool opposite_lanes,
+                               double distance_backward = 0.0, double distance_forward = 0.0,
+                               std::vector<std::string> entity_refs = {},
+                               std::vector<RelativeLaneRange> lane_ranges = {});
+
+    [[nodiscard]] bool free_space() const;
+    [[nodiscard]] bool opposite_lanes() const;
+    [[nodiscard]] double distance_backward() const;
+    [[nodiscard]] double distance_forward() const;
+    [[nodiscard]] const std::vector<std::string>& entity_refs() const;
+    [[nodiscard]] const std::vector<RelativeLaneRange>& lane_ranges() const;
+
+protected:
+    [[nodiscard]] bool evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const override;
+
+private:
+    bool free_space_;
+    bool opposite_lanes_;
+    double distance_backward_;
+    double distance_forward_;
+    std::vector<std::string> entity_refs_;
+    std::vector<RelativeLaneRange> lane_ranges_;
+};
+
 } // namespace scena::ir

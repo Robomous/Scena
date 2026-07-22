@@ -5,6 +5,7 @@
 #include <optional>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/rule.h"
@@ -506,6 +507,107 @@ CoordinateSystem TimeToCollisionCondition::effective_coordinate_system() const {
 
 RelativeDistanceType TimeToCollisionCondition::effective_relative_distance_type() const {
     return relative_distance_type_.value_or(RelativeDistanceType::EuclidianDistance);
+}
+
+// --- CollisionCondition -----------------------------------------------------
+
+CollisionCondition::CollisionCondition(TriggeringEntities triggering, std::string entity_ref)
+    : ByEntityCondition(std::move(triggering)), entity_ref_(std::move(entity_ref)) {}
+
+bool CollisionCondition::evaluate_for_entity(const EvaluationContext& context,
+                                             std::string_view entity_id) const {
+    const std::optional<EntityKinematics> trigger = context.entity_kinematics(entity_id);
+    const std::optional<EntityKinematics> reference = context.entity_kinematics(entity_ref_);
+    if (!trigger.has_value() || !reference.has_value()) {
+        return false;
+    }
+    // Collision is bounding-box intersection (§6.4.7.2). Without geometry on
+    // both entities there is nothing to intersect: per-entity false.
+    if (!trigger->bounding_box.has_value() || !reference->bounding_box.has_value()) {
+        return false;
+    }
+    const runtime::Obb2 a = make_obb(trigger->state, *trigger->bounding_box);
+    const runtime::Obb2 b = make_obb(reference->state, *reference->bounding_box);
+    return runtime::obb_intersects(a, b);
+}
+
+const std::string& CollisionCondition::entity_ref() const {
+    return entity_ref_;
+}
+
+// --- EndOfRoadCondition -----------------------------------------------------
+
+EndOfRoadCondition::EndOfRoadCondition(TriggeringEntities triggering, double duration)
+    : ByEntityCondition(std::move(triggering)), duration_(duration) {}
+
+bool EndOfRoadCondition::evaluate_for_entity(const EvaluationContext& /*context*/,
+                                             std::string_view /*entity_id*/) const {
+    // "End of road" is a road-network predicate (§7.6.5.1); without IRoadQuery
+    // (p3-s4) it is a deterministic false, warned once at init.
+    return false;
+}
+
+double EndOfRoadCondition::duration() const {
+    return duration_;
+}
+
+// --- OffroadCondition -------------------------------------------------------
+
+OffroadCondition::OffroadCondition(TriggeringEntities triggering, double duration)
+    : ByEntityCondition(std::move(triggering)), duration_(duration) {}
+
+bool OffroadCondition::evaluate_for_entity(const EvaluationContext& /*context*/,
+                                           std::string_view /*entity_id*/) const {
+    // Road-network predicate (§7.6.5.1); deferred to p3-s4, deterministic false.
+    return false;
+}
+
+double OffroadCondition::duration() const {
+    return duration_;
+}
+
+// --- RelativeClearanceCondition ---------------------------------------------
+
+RelativeClearanceCondition::RelativeClearanceCondition(TriggeringEntities triggering,
+                                                       bool free_space, bool opposite_lanes,
+                                                       double distance_backward,
+                                                       double distance_forward,
+                                                       std::vector<std::string> entity_refs,
+                                                       std::vector<RelativeLaneRange> lane_ranges)
+    : ByEntityCondition(std::move(triggering)), free_space_(free_space),
+      opposite_lanes_(opposite_lanes), distance_backward_(distance_backward),
+      distance_forward_(distance_forward), entity_refs_(std::move(entity_refs)),
+      lane_ranges_(std::move(lane_ranges)) {}
+
+bool RelativeClearanceCondition::evaluate_for_entity(const EvaluationContext& /*context*/,
+                                                     std::string_view /*entity_id*/) const {
+    // The checked area is defined in lane coordinates (§6.4.5); without a road
+    // network (p3-s4) it cannot be evaluated: deterministic false, warned once.
+    return false;
+}
+
+bool RelativeClearanceCondition::free_space() const {
+    return free_space_;
+}
+
+bool RelativeClearanceCondition::opposite_lanes() const {
+    return opposite_lanes_;
+}
+
+double RelativeClearanceCondition::distance_backward() const {
+    return distance_backward_;
+}
+
+double RelativeClearanceCondition::distance_forward() const {
+    return distance_forward_;
+}
+
+const std::vector<std::string>& RelativeClearanceCondition::entity_refs() const {
+    return entity_refs_;
+}
+
+const std::vector<RelativeLaneRange>& RelativeClearanceCondition::lane_ranges() const {
+    return lane_ranges_;
 }
 
 } // namespace scena::ir

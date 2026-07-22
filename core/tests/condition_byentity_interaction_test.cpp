@@ -33,11 +33,16 @@
 
 namespace ir = scena::ir;
 using ir::BoundingBox;
+using ir::CollisionCondition;
 using ir::CoordinateSystem;
 using ir::DistanceCondition;
+using ir::EndOfRoadCondition;
 using ir::EntityKinematics;
+using ir::OffroadCondition;
+using ir::RelativeClearanceCondition;
 using ir::RelativeDistanceCondition;
 using ir::RelativeDistanceType;
+using ir::RelativeLaneRange;
 using ir::Rule;
 using ir::TimeHeadwayCondition;
 using ir::TimeToCollisionCondition;
@@ -404,6 +409,72 @@ TEST(TimeToCollisionConditionTest, LongitudinalClosingSpeed) {
 }
 
 // ---------------------------------------------------------------------------
+// CollisionCondition (§ CollisionCondition, §6.4.7.2)
+// ---------------------------------------------------------------------------
+
+TEST(CollisionConditionTest, IntersectingBoxesCollide) {
+    const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"lead", pose(1.5, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    EXPECT_TRUE(holds(CollisionCondition{ego_only(), "lead"}, context));
+}
+
+TEST(CollisionConditionTest, TouchingBoxesCollide) {
+    // Exactly touching (centers 2 apart, unit boxes): freespace distance 0 ⇒
+    // collision (§6.4.7.2).
+    const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"lead", pose(2.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    EXPECT_TRUE(holds(CollisionCondition{ego_only(), "lead"}, context));
+}
+
+TEST(CollisionConditionTest, DisjointBoxesDoNotCollide) {
+    const KinematicsContext context{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"lead", pose(3.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    EXPECT_FALSE(holds(CollisionCondition{ego_only(), "lead"}, context));
+}
+
+TEST(CollisionConditionTest, MissingBoxOrReferenceIsFalse) {
+    // Overlapping positions but no geometry on the reference ⇒ false.
+    const KinematicsContext no_ref_box{
+        {{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}, {"lead", pose(0.0, 0.0)}}};
+    EXPECT_FALSE(holds(CollisionCondition{ego_only(), "lead"}, no_ref_box));
+    // No trigger geometry ⇒ false.
+    const KinematicsContext no_trigger_box{
+        {{"ego", pose(0.0, 0.0)}, {"lead", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    EXPECT_FALSE(holds(CollisionCondition{ego_only(), "lead"}, no_trigger_box));
+    // Absent reference entirely ⇒ false.
+    const KinematicsContext no_ref{{{"ego", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    EXPECT_FALSE(holds(CollisionCondition{ego_only(), "lead"}, no_ref));
+}
+
+TEST(CollisionConditionTest, AllReductionRequiresEveryTriggeringEntityToCollide) {
+    // Two triggering entities against "lead": under All, both must collide.
+    const KinematicsContext context{{{"a", pose(0.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"b", pose(10.0, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))},
+                                     {"lead", pose(0.5, 0.0, 0.0, 0.0, centered_box(1.0, 1.0))}}};
+    const TriggeringEntities both_all{TriggeringEntitiesRule::All, {"a", "b"}};
+    const TriggeringEntities both_any{TriggeringEntitiesRule::Any, {"a", "b"}};
+    EXPECT_FALSE(holds(CollisionCondition{both_all, "lead"}, context)); // only "a" overlaps
+    EXPECT_TRUE(holds(CollisionCondition{both_any, "lead"}, context));
+}
+
+// ---------------------------------------------------------------------------
+// Road-deferred conditions: deterministic false until p3-s4 (ADR-0009)
+// ---------------------------------------------------------------------------
+
+TEST(RoadDeferredConditionTest, EndOfRoadOffroadAndClearanceEvaluateFalse) {
+    const KinematicsContext context{
+        {{"ego", moving(0.0, 0.0, 0.0, 10.0)}, {"lead", pose(1.0, 0.0)}}};
+    EXPECT_FALSE(holds(EndOfRoadCondition{ego_only(), 0.0}, context));
+    EXPECT_FALSE(holds(OffroadCondition{ego_only(), 0.0}, context));
+    EXPECT_FALSE(holds(RelativeClearanceCondition{ego_only(), true, false}, context));
+    // Even with all the optional fields populated, still false.
+    EXPECT_FALSE(holds(
+        RelativeClearanceCondition{
+            ego_only(), false, true, 5.0, 10.0, {"lead"}, {RelativeLaneRange{-1, 1}}},
+        context));
+}
+
+// ---------------------------------------------------------------------------
 // Validation (engine.cpp validate_condition_expression)
 // ---------------------------------------------------------------------------
 
@@ -519,4 +590,67 @@ TEST(InteractionValidationTest, TtcNanPositionTargetFailsInit) {
                   ego_only(), TimeToCollisionTarget{WorldPosition{nan, 0.0, 0.0}}, 1.0, false,
                   Rule::LessThan))),
               Status::ValidationError);
+}
+
+TEST(InteractionValidationTest, CollisionUnknownReferenceFailsInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(
+                  interaction_scenario(std::make_shared<CollisionCondition>(ego_only(), "ghost"))),
+              Status::SemanticError);
+}
+
+TEST(InteractionValidationTest, EndOfRoadAndOffroadWarnUnsupportedButInitSucceeds) {
+    {
+        Engine engine;
+        ASSERT_EQ(engine.init(
+                      interaction_scenario(std::make_shared<EndOfRoadCondition>(ego_only(), 1.0))),
+                  Status::Ok);
+        EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::UnsupportedFeature),
+                  1);
+    }
+    {
+        Engine engine;
+        ASSERT_EQ(
+            engine.init(interaction_scenario(std::make_shared<OffroadCondition>(ego_only(), 1.0))),
+            Status::Ok);
+        EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::UnsupportedFeature),
+                  1);
+    }
+}
+
+TEST(InteractionValidationTest, EndOfRoadNegativeDurationFailsInit) {
+    Engine engine;
+    EXPECT_EQ(
+        engine.init(interaction_scenario(std::make_shared<EndOfRoadCondition>(ego_only(), -1.0))),
+        Status::ValidationError);
+}
+
+TEST(InteractionValidationTest, RelativeClearanceWarnsUnsupportedButInitSucceeds) {
+    Engine engine;
+    ASSERT_EQ(engine.init(interaction_scenario(
+                  std::make_shared<RelativeClearanceCondition>(ego_only(), true, false))),
+              Status::Ok);
+    EXPECT_EQ(diagnostic_count(engine, scena::Severity::Warning, Status::UnsupportedFeature), 1);
+}
+
+TEST(InteractionValidationTest, RelativeClearanceNegativeDistanceFailsInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(interaction_scenario(std::make_shared<RelativeClearanceCondition>(
+                  ego_only(), true, false, -1.0, 0.0))),
+              Status::ValidationError);
+}
+
+TEST(InteractionValidationTest, RelativeClearanceInvertedLaneRangeFailsInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(interaction_scenario(std::make_shared<RelativeClearanceCondition>(
+                  ego_only(), true, false, 0.0, 0.0, std::vector<std::string>{},
+                  std::vector<RelativeLaneRange>{RelativeLaneRange{2, -2}}))),
+              Status::ValidationError);
+}
+
+TEST(InteractionValidationTest, RelativeClearanceUnknownEntityFailsInit) {
+    Engine engine;
+    EXPECT_EQ(engine.init(interaction_scenario(std::make_shared<RelativeClearanceCondition>(
+                  ego_only(), true, false, 0.0, 0.0, std::vector<std::string>{"ghost"}))),
+              Status::SemanticError);
 }
