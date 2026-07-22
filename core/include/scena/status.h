@@ -29,6 +29,11 @@ enum class Status {
     /// A construct the engine does not implement yet. Reported as a warning
     /// diagnostic at runtime rather than as a failure.
     UnsupportedFeature,
+    /// A host referenced a named value (variable, parameter, user-defined
+    /// value) the scenario does not declare — e.g. set_variable on a name
+    /// with no VariableDeclaration. Host API misuse, like UnknownEntity, not
+    /// a defect in scenario content.
+    UnknownName,
 };
 
 } // namespace scena

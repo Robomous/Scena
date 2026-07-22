@@ -93,7 +93,8 @@ public:
 /// exercise time-only conditions.
 class TimeOnlyEvaluationContext final : public EvaluationContext {
 public:
-    explicit TimeOnlyEvaluationContext(double simulation_time) : simulation_time_(simulation_time) {}
+    explicit TimeOnlyEvaluationContext(double simulation_time)
+        : simulation_time_(simulation_time) {}
 
     [[nodiscard]] double simulation_time() const override { return simulation_time_; }
 

@@ -109,6 +109,41 @@ std::shared_ptr<Condition> sim_time(double value, Rule rule = Rule::GreaterOrEqu
     return std::make_shared<SimulationTimeCondition>(value, rule);
 }
 
+std::shared_ptr<Condition> parameter(std::string ref, Rule rule, std::string value) {
+    return std::make_shared<scena::ir::ParameterCondition>(std::move(ref), rule, std::move(value));
+}
+
+std::shared_ptr<Condition> variable(std::string ref, Rule rule, std::string value) {
+    return std::make_shared<scena::ir::VariableCondition>(std::move(ref), rule, std::move(value));
+}
+
+std::shared_ptr<Condition> user_value(std::string name, Rule rule, std::string value) {
+    return std::make_shared<scena::ir::UserDefinedValueCondition>(std::move(name), rule,
+                                                                  std::move(value));
+}
+
+/// Number of Warning diagnostics anchored to `path`.
+int warning_count(const Engine& engine, const std::string& path) {
+    int count = 0;
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        if (diagnostic.severity == scena::Severity::Warning && diagnostic.path == path) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/// True when an Error diagnostic with `code` and `rule_id` was reported.
+bool has_error(const Engine& engine, Status code, const std::string& rule_id) {
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        if (diagnostic.severity == scena::Severity::Error && diagnostic.code == code &&
+            diagnostic.rule_id == rule_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // --- Engine-driven helpers -------------------------------------------------
 
 /// A one-entity ("ego", engine-controlled) scenario whose single event fires
@@ -327,4 +362,176 @@ TEST(SimulationTimeConditionTest, SimulationTimeWithRisingEdgeAndDelay) {
         "event", trigger_of({{cond(sim_time(1.0), ConditionEdge::Rising, 0.5)}}), "ego")});
     scheduler.bind(storyboard);
     EXPECT_EQ(firing_times(scheduler, {0.0, 0.5, 1.0, 1.5, 2.0, 2.5}), (std::vector<double>{1.5}));
+}
+
+// ---------------------------------------------------------------------------
+// ParameterCondition (§ ParameterCondition, §9.1)
+// ---------------------------------------------------------------------------
+
+TEST(ParameterConditionTest, ParameterEqualToMatchesScenarioValue) {
+    scena::ir::Scenario matching = make_scenario(parameter("speedLimit", Rule::EqualTo, "30"));
+    matching.parameters["speedLimit"] = "30";
+    Engine hit;
+    ASSERT_EQ(hit.init(std::move(matching)), Status::Ok);
+    EXPECT_TRUE(ego_fired(hit)); // 30 == 30, fires at t = 0
+
+    scena::ir::Scenario mismatching = make_scenario(parameter("speedLimit", Rule::EqualTo, "30"));
+    mismatching.parameters["speedLimit"] = "50";
+    Engine miss;
+    ASSERT_EQ(miss.init(std::move(mismatching)), Status::Ok);
+    EXPECT_FALSE(ego_fired(miss));
+}
+
+TEST(ParameterConditionTest, ParameterNumericOrderingWhenConvertible) {
+    scena::ir::Scenario over = make_scenario(parameter("v", Rule::GreaterThan, "10"));
+    over.parameters["v"] = "16.667"; // unambiguously scalar
+    Engine above;
+    ASSERT_EQ(above.init(std::move(over)), Status::Ok);
+    EXPECT_TRUE(ego_fired(above));
+
+    scena::ir::Scenario under = make_scenario(parameter("v", Rule::GreaterThan, "10"));
+    under.parameters["v"] = "5";
+    Engine below;
+    ASSERT_EQ(below.init(std::move(under)), Status::Ok);
+    EXPECT_FALSE(ego_fired(below));
+}
+
+TEST(ParameterConditionTest, ParameterConditionIsConstantAcrossTheRun) {
+    // §9.1: parameters cannot change at runtime, so a condition that does not
+    // hold at t = 0 never holds — there is no setter to make it true.
+    scena::ir::Scenario scenario = make_scenario(parameter("mode", Rule::EqualTo, "go"));
+    scenario.parameters["mode"] = "stop";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    for (const double dt : {1.0, 1.0, 1.0, 1.0}) {
+        ASSERT_EQ(engine.step(dt), Status::Ok);
+    }
+    EXPECT_FALSE(ego_fired(engine));
+}
+
+TEST(ParameterConditionTest, DanglingParameterRefFailsInitWithSemanticError) {
+    scena::ir::Scenario scenario = make_scenario(parameter("missing", Rule::EqualTo, "1"));
+    Engine engine;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
+    // The standard names no checker rule for parameter resolvability.
+    EXPECT_TRUE(has_error(engine, Status::SemanticError, ""));
+}
+
+TEST(ParameterConditionTest, OrderingRuleOnNonNumericParameterWarnsAtInitAndIsFalse) {
+    scena::ir::Scenario scenario = make_scenario(parameter("mode", Rule::GreaterThan, "5"));
+    scenario.parameters["mode"] = "fast"; // not scalar-convertible
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok); // warning, not error
+    EXPECT_GE(warning_count(engine, "story/act/group/maneuver/event/startTrigger/group[0]/"
+                                    "condition[0]"),
+              1);
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine));
+}
+
+// ---------------------------------------------------------------------------
+// VariableCondition (§ VariableCondition, §6.12)
+// ---------------------------------------------------------------------------
+
+TEST(VariableConditionTest, VariableInitializationValueVisibleAtTimeZero) {
+    // §6.12: variables take their initialization value at load time, so a
+    // VariableCondition sees it in the t = 0 evaluation.
+    scena::ir::Scenario scenario = make_scenario(variable("trigger", Rule::EqualTo, "on"));
+    scenario.variables["trigger"] = "on";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(VariableConditionTest, SetVariableDuringRunFiresRisingEdgeTrigger) {
+    scena::ir::Scenario scenario =
+        make_scenario(variable("go", Rule::EqualTo, "1"), ConditionEdge::Rising);
+    scenario.variables["go"] = "0";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.set_variable("go", "1"), Status::Ok);
+    ASSERT_EQ(engine.step(2.0), Status::Ok); // false -> true: rising edge fires
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(VariableConditionTest, SetVariableOnUndeclaredNameReturnsUnknownName) {
+    scena::ir::Scenario scenario = make_scenario(sim_time(100.0));
+    scenario.variables["declared"] = "0";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_EQ(engine.set_variable("declared", "1"), Status::Ok);
+    EXPECT_EQ(engine.variable("declared"), std::optional<std::string>("1"));
+    EXPECT_EQ(engine.set_variable("undeclared", "1"), Status::UnknownName);
+    EXPECT_FALSE(engine.variable("undeclared").has_value());
+}
+
+TEST(VariableConditionTest, DanglingVariableRefFailsInitWithRuleC79) {
+    scena::ir::Scenario scenario = make_scenario(variable("missing", Rule::EqualTo, "1"));
+    Engine engine;
+    EXPECT_EQ(engine.init(std::move(scenario)), Status::SemanticError);
+    EXPECT_TRUE(has_error(engine, Status::SemanticError,
+                          "asam.net:xosc:1.2.0:reference_control.resolvable_variable_reference"));
+}
+
+TEST(VariableConditionTest, VariableNumericOrderingAcrossUpdates) {
+    scena::ir::Scenario scenario = make_scenario(variable("v", Rule::GreaterOrEqual, "10"));
+    scenario.variables["v"] = "0";
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.set_variable("v", "5"), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine)); // 5 >= 10 is false
+    ASSERT_EQ(engine.set_variable("v", "12"), Status::Ok);
+    ASSERT_EQ(engine.step(2.0), Status::Ok);
+    EXPECT_TRUE(ego_fired(engine)); // 12 >= 10 holds
+}
+
+// ---------------------------------------------------------------------------
+// UserDefinedValueCondition (§ UserDefinedValueCondition)
+// ---------------------------------------------------------------------------
+
+TEST(UserDefinedValueConditionTest, UserValueSetBeforeInitVisibleAtTimeZero) {
+    Engine engine;
+    ASSERT_EQ(engine.set_user_defined_value("ext", "ready"), Status::Ok); // staged pre-init
+    ASSERT_EQ(engine.init(make_scenario(user_value("ext", Rule::EqualTo, "ready"))), Status::Ok);
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(UserDefinedValueConditionTest, UserValueDrivesTriggerWithEdgeAndDelay) {
+    Engine engine;
+    ASSERT_EQ(engine.set_user_defined_value("sig", "0"), Status::Ok);
+    ASSERT_EQ(engine.init(
+                  make_scenario(user_value("sig", Rule::EqualTo, "1"), ConditionEdge::Rising, 0.5)),
+              Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // t = 1, still 0
+    ASSERT_EQ(engine.set_user_defined_value("sig", "1"), Status::Ok);
+    ASSERT_EQ(engine.step(0.5), Status::Ok); // t = 1.5, rise; delayed lookup still false
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.step(0.5), Status::Ok); // t = 2.0, the 0.5 s-delayed rise fires
+    EXPECT_TRUE(ego_fired(engine));
+}
+
+TEST(UserDefinedValueConditionTest, UnknownUserValueIsFalseAndWarnsOnce) {
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(user_value("missing", Rule::EqualTo, "1"))), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine));
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    ASSERT_EQ(engine.step(2.0), Status::Ok);
+    // The unset value is queried in every evaluation but warned about once.
+    EXPECT_EQ(warning_count(engine, "values/userDefined/missing"), 1);
+}
+
+TEST(UserDefinedValueConditionTest, UserValueNumericComparison) {
+    Engine engine;
+    ASSERT_EQ(engine.set_user_defined_value("count", "2"), Status::Ok);
+    ASSERT_EQ(engine.init(make_scenario(user_value("count", Rule::GreaterThan, "3"))), Status::Ok);
+    EXPECT_FALSE(ego_fired(engine)); // 2 > 3 is false
+    ASSERT_EQ(engine.set_user_defined_value("count", "5"), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_TRUE(ego_fired(engine)); // 5 > 3 holds
 }

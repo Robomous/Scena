@@ -43,6 +43,8 @@ scn_status to_c_status(scena::Status status) {
         return SCN_ERROR_SEMANTIC;
     case scena::Status::UnsupportedFeature:
         return SCN_ERROR_UNSUPPORTED_FEATURE;
+    case scena::Status::UnknownName:
+        return SCN_ERROR_UNKNOWN_NAME;
     }
     return SCN_ERROR_INTERNAL;
 }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -103,6 +105,30 @@ public:
     /// InvalidControlMode for engine-controlled entities.
     Status report_state(const std::string& entity_id, const EntityState& state);
 
+    /// Sets the current value of a global variable (§6.12), the host-side half
+    /// of the VariableCondition interface. The variable must have been
+    /// declared in the scenario (seeded into the runtime store at init);
+    /// setting an undeclared name returns UnknownName and changes nothing.
+    /// Fails with NotInitialized before init(). A rising-edge VariableCondition
+    /// observes the change on the next step.
+    Status set_variable(const std::string& name, std::string value);
+
+    /// Current value of a global variable, or std::nullopt when the name is
+    /// undeclared or the engine is not initialized.
+    [[nodiscard]] std::optional<std::string> variable(const std::string& name) const;
+
+    /// Creates or updates an externally supplied named value, the host-side
+    /// half of the UserDefinedValueCondition interface. Unlike variables these
+    /// names are not declared in the scenario, so any name is accepted and the
+    /// call always succeeds. Values may be staged before init() — a value set
+    /// beforehand is visible at the t = 0 evaluation — and persist across
+    /// init(); close() clears them.
+    Status set_user_defined_value(const std::string& name, std::string value);
+
+    /// Current value of a user-defined value, or std::nullopt when it has not
+    /// been set.
+    [[nodiscard]] std::optional<std::string> user_defined_value(const std::string& name) const;
+
     /// Lifecycle state of a storyboard element, addressed by its name path
     /// from the story down, joined with '/'
     /// (e.g. "story/act/group/maneuver/event"); the empty path addresses the
@@ -158,6 +184,16 @@ private:
     runtime::Scheduler scheduler_;
     // std::map (not unordered_map) so per-step iteration order is deterministic.
     std::map<std::string, EntityRecord> entities_;
+    // Runtime variable store, seeded from scenario_.variables at init and
+    // mutable through set_variable during the run (§6.12). std::less<> gives
+    // heterogeneous lookup on a string_view. Cleared by close().
+    std::map<std::string, std::string, std::less<>> variables_;
+    // Host-supplied external values (UserDefinedValueCondition). Persist across
+    // init() so a host can stage them before the run; cleared only by close().
+    std::map<std::string, std::string, std::less<>> user_defined_values_;
+    // Names already warned about during evaluation (unknown user value), so
+    // each warns at most once. Keyed by diagnostic path; cleared at init().
+    std::set<std::string> warned_values_;
     DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };
