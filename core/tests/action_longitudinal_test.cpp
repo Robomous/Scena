@@ -20,6 +20,7 @@
 #include "scena/ir/condition.h"
 #include "scena/ir/dynamics.h"
 #include "scena/ir/entity.h"
+#include "scena/ir/position.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
@@ -33,13 +34,17 @@ using scena::ir::ControlMode;
 using scena::ir::DynamicsDimension;
 using scena::ir::DynamicsShape;
 using scena::ir::Entity;
+using scena::ir::Performance;
 using scena::ir::RelativeTargetSpeed;
 using scena::ir::Scenario;
 using scena::ir::SimulationTimeCondition;
 using scena::ir::SpeedAction;
 using scena::ir::SpeedTargetValueType;
+using scena::ir::TeleportAction;
 using scena::ir::TransitionDynamics;
 using scena::ir::Trigger;
+using scena::ir::Vehicle;
+using scena::ir::WorldPosition;
 
 constexpr double kTol = 1e-12;
 
@@ -262,6 +267,77 @@ TEST(RelativeSpeedEngineTest, UnknownReferenceEntityIsRejectedAtInit) {
         {timed_event("go", 0.0,
                      std::make_shared<SpeedAction>("ego", target, TransitionDynamics{}))}));
     EXPECT_EQ(status, Status::SemanticError);
+}
+
+// --- GS-1: the Cruise-baseline golden scenario ----------------------------
+
+// GS-1 (docs/roadmap/golden-scenarios.md): a single engine-controlled vehicle,
+// an init teleport + init speed, and a SimulationTimeCondition at t=5 s that
+// triggers an absolute SpeedAction with linear transition dynamics.
+Scenario make_gs1_scenario() {
+    Scenario scenario;
+    scenario.name = "gs1-cruise-baseline";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    Vehicle vehicle;
+    vehicle.performance = Performance{60.0, 5.0, 5.0, std::nullopt, std::nullopt};
+    ego.object = vehicle;
+    scenario.entities.push_back(std::move(ego));
+
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 10.0));
+
+    scena::ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(timed_event(
+        "accelerate", 5.0,
+        std::make_shared<SpeedAction>(
+            "ego", 20.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 4.0})));
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+TEST(GoldenScenarioTest, GS1CruiseBaselineRunsWithConstantHeading) {
+    Engine engine;
+    ASSERT_EQ(engine.init(make_gs1_scenario()), Status::Ok);
+
+    // Init teleport + init speed took effect.
+    const std::optional<EntityState> start = engine.state("ego");
+    ASSERT_TRUE(start.has_value());
+    EXPECT_DOUBLE_EQ(start->x, 0.0);
+    EXPECT_DOUBLE_EQ(start->speed, 10.0);
+
+    // Cruise to t=5, then ramp 10 -> 20 over 4 s. Heading stays constant and the
+    // vehicle keeps moving forward the whole time.
+    double last_x = start->x;
+    for (int i = 0; i < 9; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+        const std::optional<EntityState> state = engine.state("ego");
+        ASSERT_TRUE(state.has_value());
+        EXPECT_DOUBLE_EQ(state->heading, 0.0);
+        EXPECT_GT(state->x, last_x); // moving along +x at a positive speed
+        last_x = state->x;
+    }
+    // The ramp has completed by t=9: target reached exactly, heading unchanged.
+    const std::optional<EntityState> end = engine.state("ego");
+    ASSERT_TRUE(end.has_value());
+    EXPECT_DOUBLE_EQ(end->speed, 20.0);
+    EXPECT_DOUBLE_EQ(end->heading, 0.0);
+    EXPECT_EQ(*engine.storyboard_element_state("story/act/group/maneuver/accelerate"),
+              scena::runtime::ElementState::Complete);
 }
 
 } // namespace
