@@ -625,6 +625,191 @@ TEST(CApiTest, LongitudinalDistanceActionKeepsTheGap) {
     scn_engine_destroy(engine);
 }
 
+// --- Lateral actions (p2-s3, §7.4.1.4) ------------------------------------
+
+namespace {
+
+/// An ego at the origin and a `lead` 20 m ahead in the next lane to the left,
+/// both cruising at 10 m/s along +x.
+scn_engine* make_lateral_engine() {
+    scn_engine* engine = scn_engine_create();
+    EXPECT_NE(engine, nullptr);
+    EXPECT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    EXPECT_EQ(scn_engine_add_entity(engine, "lead", "lead", SCN_CONTROL_ENGINE), SCN_OK);
+    EXPECT_EQ(scn_engine_add_teleport_action(engine, "lead", 20.0, 3.5, 0.0, 0.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    EXPECT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+    EXPECT_EQ(scn_engine_add_speed_action(engine, "lead", 10.0, 0.0), SCN_OK);
+    return engine;
+}
+
+double ego_y(scn_engine* engine) {
+    scn_entity_state state{};
+    EXPECT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    return state.y;
+}
+
+} // namespace
+
+TEST(CApiTest, RelativeLaneChangeActionThroughTheAbi) {
+    scn_engine* engine = make_lateral_engine();
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_SINUSOIDAL,
+                                           SCN_DYNAMICS_DIMENSION_TIME, 4.0,
+                                           SCN_FOLLOWING_MODE_POSITION};
+    ASSERT_EQ(scn_engine_add_relative_lane_change_action(engine, "ego", "ego", /*lane_delta=*/1,
+                                                         /*target_lane_offset=*/0.25, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 60; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 0.1), SCN_OK);
+    }
+    // One default lane width left, plus the target lane offset.
+    EXPECT_NEAR(ego_y(engine), 3.75, 1e-6);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AbsoluteLaneChangeActionCompletesWithoutARoadNetwork) {
+    scn_engine* engine = make_lateral_engine();
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_SINUSOIDAL,
+                                           SCN_DYNAMICS_DIMENSION_TIME, 4.0,
+                                           SCN_FOLLOWING_MODE_POSITION};
+    ASSERT_EQ(scn_engine_add_absolute_lane_change_action(engine, "ego", "-2", 0.0, &dynamics, 0.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 10; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 0.1), SCN_OK);
+    }
+    // No road network, so nothing to resolve the lane id against.
+    EXPECT_DOUBLE_EQ(ego_y(engine), 0.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LaneOffsetActionThroughTheAbi) {
+    scn_engine* absolute = make_lateral_engine();
+    ASSERT_EQ(scn_engine_add_lane_offset_action(absolute, "ego", /*reference_entity_id=*/nullptr,
+                                                -1.5, /*continuous=*/0, SCN_DYNAMICS_SHAPE_CUBIC,
+                                                /*max_lateral_acc=*/2.0, 0.0, SCN_PRIORITY_PARALLEL,
+                                                1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(absolute), SCN_OK);
+    for (int i = 0; i < 60; ++i) {
+        ASSERT_EQ(scn_engine_step(absolute, 0.1), SCN_OK);
+    }
+    EXPECT_NEAR(ego_y(absolute), -1.5, 1e-6);
+    scn_engine_destroy(absolute);
+
+    // A NULL reference means an absolute offset; naming one measures from that
+    // entity's lane position instead. A negative maxLateralAcc means "unset",
+    // which the standard reads as 'inf' — an instantaneous transition.
+    scn_engine* relative = make_lateral_engine();
+    ASSERT_EQ(scn_engine_add_lane_offset_action(
+                  relative, "ego", "lead", 0.0, /*continuous=*/1, SCN_DYNAMICS_SHAPE_LINEAR,
+                  /*max_lateral_acc=*/-1.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(relative), SCN_OK);
+    ASSERT_EQ(scn_engine_step(relative, 0.1), SCN_OK);
+    EXPECT_NEAR(ego_y(relative), 3.5, 1e-9);
+    scn_engine_destroy(relative);
+}
+
+TEST(CApiTest, LateralDistanceActionThroughTheAbi) {
+    scn_engine* engine = make_lateral_engine();
+    ASSERT_EQ(scn_engine_add_lateral_distance_action(
+                  engine, "ego", "lead", /*distance=*/1.0, /*freespace=*/0, /*continuous=*/1,
+                  SCN_COORDINATE_SYSTEM_ENTITY, SCN_LATERAL_DISPLACEMENT_RIGHT, nullptr, 0.0,
+                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 0.1), SCN_OK);
+    }
+    // 1 m to the right of the lead's lane position.
+    EXPECT_NEAR(ego_y(engine), 2.5, 1e-9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, DefaultLaneWidthRoundTripsAndIsValidated) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    double width = 0.0;
+    ASSERT_EQ(scn_engine_get_default_lane_width(engine, &width), SCN_OK);
+    EXPECT_DOUBLE_EQ(width, 3.5);
+    EXPECT_EQ(scn_engine_set_default_lane_width(engine, 0.0), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_default_lane_width(engine, -1.0), SCN_ERROR_INVALID_ARGUMENT);
+    ASSERT_EQ(scn_engine_set_default_lane_width(engine, 2.75), SCN_OK);
+    ASSERT_EQ(scn_engine_get_default_lane_width(engine, &width), SCN_OK);
+    EXPECT_DOUBLE_EQ(width, 2.75);
+    // NULL arguments are rejected, not crashed.
+    EXPECT_EQ(scn_engine_set_default_lane_width(nullptr, 3.0), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_default_lane_width(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_default_lane_width(nullptr, &width), SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LateralActionBuildersRejectBadArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    const scn_transition_dynamics dynamics{SCN_DYNAMICS_SHAPE_LINEAR, SCN_DYNAMICS_DIMENSION_TIME,
+                                           2.0, SCN_FOLLOWING_MODE_POSITION};
+    const scn_transition_dynamics bad_shape{static_cast<scn_dynamics_shape>(99),
+                                            SCN_DYNAMICS_DIMENSION_TIME, 2.0,
+                                            SCN_FOLLOWING_MODE_POSITION};
+
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(nullptr, "ego", "ego", 1, 0.0, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(engine, nullptr, "ego", 1, 0.0, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(engine, "ego", nullptr, 1, 0.0, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(engine, "ego", "ego", 1, 0.0, nullptr, 0.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(engine, "ego", "ego", 1, 0.0, &bad_shape,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_relative_lane_change_action(engine, "ego", "ego", 1, 0.0, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    // An empty lane id names no lane at all.
+    EXPECT_EQ(scn_engine_add_absolute_lane_change_action(engine, "ego", nullptr, 0.0, &dynamics,
+                                                         0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_absolute_lane_change_action(engine, "ego", "", 0.0, &dynamics, 0.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_add_lane_offset_action(nullptr, "ego", nullptr, 1.0, 0,
+                                                SCN_DYNAMICS_SHAPE_LINEAR, 1.0, 0.0,
+                                                SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_lane_offset_action(engine, "ego", nullptr, 1.0, 0,
+                                                static_cast<scn_dynamics_shape>(99), 1.0, 0.0,
+                                                SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_add_lateral_distance_action(
+                  engine, "ego", nullptr, 1.0, 0, 0, SCN_COORDINATE_SYSTEM_ENTITY,
+                  SCN_LATERAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_lateral_distance_action(
+                  engine, "ego", "lead", 1.0, 0, 0, static_cast<scn_coordinate_system>(99),
+                  SCN_LATERAL_DISPLACEMENT_ANY, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_lateral_distance_action(engine, "ego", "lead", 1.0, 0, 0,
+                                                     SCN_COORDINATE_SYSTEM_ENTITY,
+                                                     static_cast<scn_lateral_displacement>(99),
+                                                     nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
 TEST(CApiTest, LongitudinalDistanceActionRejectsBadTargets) {
     scn_engine* engine = scn_engine_create();
     ASSERT_NE(engine, nullptr);
