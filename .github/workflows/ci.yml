@@ -76,6 +76,9 @@ jobs:
       - name: detmath guard
         run: ./scripts/check_detmath.sh
 
+      - name: Coverage matrix consistency
+        run: python3 scripts/check_coverage_matrix.py
+
   determinism-trace:
     name: determinism trace (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
