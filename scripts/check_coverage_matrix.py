@@ -18,7 +18,7 @@
 
 The matrices under docs/roadmap/coverage/ are the normative scope declaration
 for v0.0.1, and they are only worth something if something enforces their own
-rules. This script (the p5-s6 exit criterion names it) checks two:
+rules. This script (the p5-s6 exit criterion names it) checks three:
 
   1. **Every sprint id a matrix names must exist as a sprint heading in
      docs/roadmap/roadmap.md.** This is the rule that actually rots: renaming
@@ -31,6 +31,15 @@ rules. This script (the p5-s6 exit criterion names it) checks two:
      DSL matrix scores Check and Exec separately (a row may be Check=In and
      Exec=Post while legitimately naming the sprints that got it that far), so
      only rule 1 applies there.
+
+  3. **Every In row's Tests cell either names the test suites that prove it
+     or carries a planned/deferred marker with an owner** (a sprint id or a
+     `#issue` reference), and every test file named anywhere in a Tests
+     column exists under `core/tests/` or `python/tests/`. This is the rule
+     the P5 pillar exit criterion states ("a named test" per In row) and the
+     one that keeps the Status column honest: "In" declares scope, the Tests
+     cell shows whether the row has actually been delivered. Applies to
+     single-status matrices that have a Tests column.
 
 Both matrices are parsed by their table headers rather than by column index,
 so a table that grows a column does not silently stop being checked.
@@ -57,11 +66,18 @@ SPRINT_HEADING = re.compile(r"^#+\s+(p\d+-s\d+)\b")
 SPRINT_ID = re.compile(r"\bp\d+-s\d+\b")
 # A markdown table separator: |---|---|
 SEPARATOR = re.compile(r"^\|[\s:|-]+\|$")
+# A backticked test-suite file name in a Tests cell.
+TEST_FILE = re.compile(r"`([A-Za-z0-9_]+_test\.cpp|test_[A-Za-z0-9_]+\.py)`")
+# An issue reference in a planned/deferred marker.
+ISSUE_REF = re.compile(r"#\d+")
 
 STATUSES = {"In", "Post", "Excl"}
 # Column headers that hold a coverage status, and the one that holds sprints.
 STATUS_HEADERS = {"status", "check", "exec"}
 SPRINT_HEADERS = {"sprint", "sprint(s)", "sprints"}
+TESTS_HEADERS = {"tests", "test", "test suites"}
+# Where a named test file must exist.
+TEST_DIRS = (Path("core") / "tests", Path("python") / "tests")
 
 
 def roadmap_sprints() -> set[str]:
@@ -81,7 +97,8 @@ def cells_of(line: str) -> list[str]:
 
 
 def coverage_rows(path: Path):
-    """Yields (line_number, element, statuses, sprint_cell, single_status).
+    """Yields (line_number, element, statuses, sprint_cell, tests_cell,
+    single_status), tests_cell being None where the table has no Tests column.
 
     Walks the file table by table: a header row followed by a separator opens a
     table, and the header names decide which columns carry a status and which
@@ -91,11 +108,13 @@ def coverage_rows(path: Path):
     lines = path.read_text(encoding="utf-8").splitlines()
     status_columns: list[int] = []
     sprint_column: int | None = None
+    tests_column: int | None = None
 
     for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped.startswith("|"):
-            status_columns, sprint_column = [], None  # a table cannot span prose
+            # a table cannot span prose
+            status_columns, sprint_column, tests_column = [], None, None
             continue
         if SEPARATOR.match(stripped):
             continue
@@ -108,6 +127,9 @@ def coverage_rows(path: Path):
             sprint_column = next(
                 (i for i, name in enumerate(lowered) if name in SPRINT_HEADERS), None
             )
+            tests_column = next(
+                (i for i, name in enumerate(lowered) if name in TESTS_HEADERS), None
+            )
             continue
 
         if not status_columns or sprint_column is None:
@@ -115,11 +137,17 @@ def coverage_rows(path: Path):
         if sprint_column >= len(cells) or max(status_columns) >= len(cells):
             continue
         statuses = [cells[i] for i in status_columns]
+        tests_cell = (
+            cells[tests_column]
+            if tests_column is not None and tests_column < len(cells)
+            else None
+        )
         yield (
             index + 1,
             cells[0],
             statuses,
             cells[sprint_column],
+            tests_cell,
             len(status_columns) == 1,
         )
 
@@ -137,7 +165,8 @@ def main() -> int:
     checked = 0
     for path in sorted(COVERAGE_DIR.glob("*.md")):
         relative = path.relative_to(ROOT)
-        for number, element, statuses, sprint_cell, single_status in coverage_rows(path):
+        rows = coverage_rows(path)
+        for number, element, statuses, sprint_cell, tests_cell, single_status in rows:
             checked += 1
             where = f"{relative}:{number}: row '{element}'"
 
@@ -150,7 +179,16 @@ def main() -> int:
                         f"docs/roadmap/roadmap.md"
                     )
 
-            # Rule 2 — only where the status is unambiguous.
+            # Rule 3 (file-existence half) — every named test file must exist,
+            # whatever the row's status.
+            for test_file in TEST_FILE.findall(tests_cell or ""):
+                if not any((ROOT / d / test_file).is_file() for d in TEST_DIRS):
+                    problems.append(
+                        f"{where} names test file '{test_file}', which exists in "
+                        f"none of {', '.join(str(d) for d in TEST_DIRS)}"
+                    )
+
+            # Rules 2 and 3 — only where the status is unambiguous.
             if not single_status:
                 continue
             status = statuses[0]
@@ -166,6 +204,27 @@ def main() -> int:
                     f"{where} is {status}, so it must not name a sprint "
                     f"(it names {', '.join(named)})"
                 )
+
+            # Rule 3 (delivery half) — an In row's Tests cell must name a
+            # suite or carry an owned planned/deferred marker.
+            if status != "In" or tests_cell is None:
+                continue
+            if TEST_FILE.search(tests_cell):
+                continue
+            lowered_tests = tests_cell.lower()
+            if "planned" in lowered_tests or "deferred" in lowered_tests:
+                if SPRINT_ID.search(tests_cell) or ISSUE_REF.search(tests_cell):
+                    continue
+                problems.append(
+                    f"{where} is In-v0.0.1 with a planned/deferred Tests marker "
+                    f"that names no owning sprint or issue "
+                    f"(tests cell is {tests_cell!r})"
+                )
+                continue
+            problems.append(
+                f"{where} is In-v0.0.1 but its Tests cell names no test suite "
+                f"and no planned/deferred owner (tests cell is {tests_cell!r})"
+            )
 
     if problems:
         print(f"coverage matrix check FAILED ({len(problems)} problem(s)):", file=sys.stderr)
