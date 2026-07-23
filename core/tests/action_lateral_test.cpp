@@ -39,6 +39,7 @@
 #include "scena/ir/position.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/trajectory.h"
 #include "scena/ir/trigger.h"
 
 namespace {
@@ -54,6 +55,7 @@ using scena::ir::DynamicConstraints;
 using scena::ir::DynamicsDimension;
 using scena::ir::DynamicsShape;
 using scena::ir::Entity;
+using scena::ir::FollowingMode;
 using scena::ir::LaneChangeAction;
 using scena::ir::LaneOffsetAction;
 using scena::ir::LateralDisplacement;
@@ -66,6 +68,8 @@ using scena::ir::SpeedAction;
 using scena::ir::TeleportAction;
 using scena::ir::TransitionDynamics;
 using scena::ir::WorldPosition;
+
+constexpr double kTol = 1e-9;
 
 // --- Scenario scaffolding -------------------------------------------------
 
@@ -139,6 +143,383 @@ bool has_warning(const Engine& engine, Status code) {
         }
     }
     return false;
+}
+
+const char* const kEventPath = "story/act/group/maneuver/lateral";
+
+scena::runtime::ElementState state_of(const Engine& engine, const char* path = kEventPath) {
+    return *engine.storyboard_element_state(path);
+}
+
+/// Runs `count` steps of `dt`.
+void run(Engine& engine, int count, double dt) {
+    for (int i = 0; i < count; ++i) {
+        ASSERT_EQ(engine.step(dt), Status::Ok);
+    }
+}
+
+// --- LaneOffsetAction ------------------------------------------------------
+
+TEST(LaneOffsetTest, ReachesAnAbsoluteTargetOverTheDerivedDuration) {
+    // Cubic over 3 m at 2 m/s^2: T = sqrt(6*3/2) = 3 s exactly (ADR-0016). The
+    // axis is captured along the ego's +x heading, so a positive offset is +y
+    // (§7.4.1.4, ISO 8855).
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{3.0},
+                                           /*continuous=*/false, DynamicsShape::Cubic, 2.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // The event fires at the t = 0 evaluation, so the first step already
+    // advances the ramp. The cubic starts flat: half a second in, well under a
+    // sixth of the offset is covered.
+    run(engine, 5, 0.1);
+    EXPECT_GT(engine.state("ego")->y, 0.0);
+    EXPECT_LT(engine.state("ego")->y, 0.5);
+    // Mid-transition the entity is steering: the heading has left the axis.
+    EXPECT_GT(engine.state("ego")->heading, 0.0);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+
+    // Half way through the 3 s span the cubic sits at half the offset.
+    run(engine, 10, 0.1);
+    EXPECT_NEAR(engine.state("ego")->y, 1.5, 1e-6);
+
+    run(engine, 25, 0.1); // 4 s: comfortably past the span
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // Arrived exactly on the target offset, straightened back onto the axis.
+    EXPECT_NEAR(engine.state("ego")->y, 3.0, 1e-9);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+    // The longitudinal domain was never touched: 4 s at 10 m/s.
+    EXPECT_NEAR(engine.state("ego")->x, 40.0, 1e-9);
+    EXPECT_NEAR(engine.state("ego")->speed, 10.0, kTol);
+}
+
+TEST(LaneOffsetTest, MissingMaxLateralAccIsInstantaneous) {
+    // "Missing value is interpreted as 'inf'" (Class `LaneOffsetActionDynamics`).
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{-1.25},
+                                           /*continuous=*/false, DynamicsShape::Sinusoidal)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // A negative offset is to the right of the axis.
+    EXPECT_NEAR(engine.state("ego")->y, -1.25, 1e-12);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+}
+
+TEST(LaneOffsetTest, AStepShapeIsInstantaneousWhateverTheAcceleration) {
+    // §7.4.1.4: with a step shape "the displacement required to achieve the
+    // desired lane offset is performed instantaneously - not over time".
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{2.0},
+                                           /*continuous=*/false, DynamicsShape::Step, 0.5)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 2.0, 1e-12);
+}
+
+TEST(LaneOffsetTest, RelativeTargetIsMeasuredFromTheReferenceLanePosition) {
+    // Flat world: the reference sits on its own lane centre, so a relative
+    // offset of 0 puts the actor on the reference's lateral position.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", RelativeTargetLaneOffset{"lead", 0.0},
+                                           /*continuous=*/false, DynamicsShape::Linear, 1.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 100, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-9);
+}
+
+TEST(LaneOffsetTest, ContinuousNeverEndsAndRecorrectsWhenTheReferenceMoves) {
+    // §7.5.3 / Annex A Table 10: continuous == true has "no regular ending".
+    // After arrival each re-poll re-measures, so a reference that jumps sideways
+    // is tracked (Running, not Ongoing — an Ongoing action is never re-polled).
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", RelativeTargetLaneOffset{"lead", 0.0},
+                                           /*continuous=*/true, DynamicsShape::Linear, 1.0)));
+    events.push_back(timed_event(
+        "shove", 20.0, std::make_shared<TeleportAction>("lead", WorldPosition{400.0, 7.0, 0.0})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 100, 0.1); // 10 s: arrived at the reference's lane
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-9);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+
+    run(engine, 200, 0.1); // through the teleport at t = 20 s and well past it
+    EXPECT_NEAR(engine.state("ego")->y, 7.0, 1e-9);
+    // Still no regular ending.
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+}
+
+TEST(LaneOffsetTest, ATeleportOfTheActorCarriesTheOffsetAcross) {
+    // ADR-0016: the axis is re-anchored through the entity's new position at the
+    // offset it had reached, so an in-flight transition carries on instead of
+    // dragging the entity back across the old axis.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{4.0},
+                                           /*continuous=*/false, DynamicsShape::Linear, 1.0)));
+    events.push_back(timed_event(
+        "jump", 1.0, std::make_shared<TeleportAction>("ego", WorldPosition{500.0, 100.0, 0.0})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // Linear over 4 m at 1 m/s^2 spans 2*sqrt(4/1) = 4 s, so the teleport at
+    // t = 1 s lands mid-transition. Find the step it fires on and note how much
+    // offset had been applied by then.
+    double applied_before_jump = 0.0;
+    double y_after_jump = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        const double before = engine.state("ego")->y;
+        ASSERT_EQ(engine.step(0.1), Status::Ok);
+        if (engine.state("ego")->y > 50.0) {
+            applied_before_jump = before;
+            y_after_jump = engine.state("ego")->y;
+            break;
+        }
+    }
+    ASSERT_GT(applied_before_jump, 0.0);
+    // The entity carried on from the new position rather than snapping back
+    // across the old axis.
+    EXPECT_GT(y_after_jump, 100.0);
+    EXPECT_LT(y_after_jump, 101.0);
+
+    run(engine, 100, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // What had been applied before the jump stays applied; only the remainder
+    // is added to the teleport target.
+    EXPECT_NEAR(engine.state("ego")->y, 100.0 + (4.0 - applied_before_jump), 1e-9);
+}
+
+TEST(LaneOffsetTest, AnArrivedContinuousOffsetSurvivesATeleportExactly) {
+    // Once a continuous offset has arrived, re-anchoring means a teleport moves
+    // the entity without disturbing the offset it holds: it must not drift back
+    // out by another 4 m, nor be dragged back to the old axis.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{4.0},
+                                           /*continuous=*/true, DynamicsShape::Linear, 1.0)));
+    events.push_back(timed_event(
+        "jump", 10.0, std::make_shared<TeleportAction>("ego", WorldPosition{500.0, 100.0, 0.0})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 60, 0.1); // 6 s: past the 4 s span, holding 4 m
+    EXPECT_NEAR(engine.state("ego")->y, 4.0, 1e-9);
+
+    run(engine, 100, 0.1); // through the teleport and 6 s beyond it
+    EXPECT_NEAR(engine.state("ego")->y, 100.0, 1e-9);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+}
+
+TEST(LaneOffsetTest, AnInitPhaseOffsetIsAppliedInstantaneously) {
+    // §8.5: init actions take effect before simulation time starts, so the
+    // offset is a single perpendicular translate with no heading blending.
+    Scenario scenario =
+        make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0, 3.5, 10.0, 10.0, {});
+    scenario.init_actions.push_back(std::make_shared<LaneOffsetAction>(
+        "ego", AbsoluteTargetLaneOffset{1.75}, /*continuous=*/true, DynamicsShape::Cubic, 2.0));
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_NEAR(engine.state("ego")->y, 1.75, kTol);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+    // The axis did not survive into the run: the ego integrates straight.
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(engine.state("ego")->y, 1.75, kTol);
+    EXPECT_NEAR(engine.state("ego")->x, 10.0, kTol);
+}
+
+TEST(LaneOffsetTest, ADeletedReferenceStopsTheAction) {
+    // §7.5.2.2: the reference entity is a prerequisite.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", RelativeTargetLaneOffset{"lead", 0.0},
+                                           /*continuous=*/true, DynamicsShape::Linear, 1.0)));
+    events.push_back(
+        timed_event("remove", 1.0, std::make_shared<scena::ir::DeleteEntityAction>("lead")));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnknownEntity));
+}
+
+// --- Lateral supersession (§7.5.1, Annex A Table 10) -----------------------
+
+TEST(LateralSupersessionTest, ANewLateralActionRetiresTheRunningOneAndKeepsTheAxis) {
+    // A lateral action superseding another continues on the same reference
+    // line, so the second target is measured from the same axis rather than
+    // from wherever the first one had got to.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{3.5},
+                                           /*continuous=*/false, DynamicsShape::Linear, 0.5)));
+    events.push_back(timed_event(
+        "second", 1.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{1.0},
+                                           /*continuous=*/false, DynamicsShape::Linear, 0.5)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    // The superseded action completes on its next re-poll (§7.5.2.1 override).
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+
+    run(engine, 200, 0.1);
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/second"),
+              scena::runtime::ElementState::Complete);
+    // 1.0 measured from the original axis, not from the offset already reached.
+    EXPECT_NEAR(engine.state("ego")->y, 1.0, 1e-9);
+}
+
+TEST(LateralSupersessionTest, ATrajectoryAndALateralActionStopEachOther) {
+    // §7.5.2.1: "an instance of FollowTrajectoryAction overrides an instance of
+    // LaneChangeAction" — and every lateral action does the same in reverse,
+    // since both assign a lateral control strategy (Table 10).
+    scena::ir::Trajectory path;
+    path.name = "shift";
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{200.0, -6.0, 0.0}, std::nullopt});
+
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{3.5},
+                                           /*continuous=*/true, DynamicsShape::Linear, 0.5)));
+    events.push_back(
+        timed_event("path", 1.0, std::make_shared<scena::ir::FollowTrajectoryAction>("ego", path)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    // The continuous lane offset would never end on its own; the trajectory
+    // ended it.
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/path"),
+              scena::runtime::ElementState::Running);
+}
+
+TEST(LateralSupersessionTest, ALateralActionStopsARunningTrajectory) {
+    scena::ir::Trajectory path;
+    path.name = "long";
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{1000.0, 0.0, 0.0}, std::nullopt});
+
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0,
+                                 std::make_shared<scena::ir::FollowTrajectoryAction>("ego", path)));
+    events.push_back(timed_event(
+        "offset", 1.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{2.0},
+                                           /*continuous=*/false, DynamicsShape::Linear, 1.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    run(engine, 100, 0.1);
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/offset"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 2.0, 1e-9);
+}
+
+TEST(LateralSupersessionTest, TheLongitudinalAndLateralDomainsAreIndependent) {
+    // Table 10: a SpeedAction assigns a longitudinal control strategy only, so
+    // it never conflicts with a lane offset, and vice versa. Both run.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{3.0},
+                                           /*continuous=*/false, DynamicsShape::Cubic, 2.0)));
+    events.push_back(
+        timed_event("brake", 1.0,
+                    std::make_shared<SpeedAction>(
+                        "ego", 4.0,
+                        TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 2.0,
+                                           scena::ir::FollowingMode::Position})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    // The speed ramp ran to completion and the lane offset was not disturbed.
+    EXPECT_NEAR(engine.state("ego")->speed, 4.0, 1e-9);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/brake"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.0, 1e-9);
+}
+
+TEST(LateralSupersessionTest, DeactivatingTheLateralDomainStopsAndSuppresses) {
+    // ADR-0014: releasing a domain retires its owner and suppresses later
+    // actions that need it. The entity keeps the heading it was blended to.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{3.5},
+                                           /*continuous=*/true, DynamicsShape::Linear, 0.5)));
+    events.push_back(timed_event("off", 1.0,
+                                 std::make_shared<scena::ir::ActivateControllerAction>(
+                                     "ego", /*lateral=*/false, /*longitudinal=*/std::nullopt)));
+    events.push_back(timed_event(
+        "again", 2.0,
+        std::make_shared<LaneOffsetAction>("ego", AbsoluteTargetLaneOffset{1.0},
+                                           /*continuous=*/false, DynamicsShape::Linear, 0.5)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    const double held_y = engine.state("ego")->y;
+
+    run(engine, 20, 0.1);
+    // The later lateral action is skipped, not run: the domain is deactivated.
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/again"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::InvalidControlMode));
+    // The released entity kept drifting on the heading it had, so it is off the
+    // held offset but nowhere near the abandoned target.
+    EXPECT_GT(engine.state("ego")->y, held_y);
+    EXPECT_LT(engine.state("ego")->y, 3.5);
 }
 
 // --- Validation (C1) -------------------------------------------------------

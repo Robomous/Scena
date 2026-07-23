@@ -126,7 +126,10 @@ public:
     ///     are re-polled and advance the longitudinal controller (updating
     ///     speed to t'), and completion propagates;
     ///  4. engine-controlled entities integrate position from the updated speed
-    ///     over dt;
+    ///     over dt. An entity with a live lateral axis (p2-s3) composes that
+    ///     advance with the lateral offset increment phase 3 commanded and
+    ///     blends its heading from the two; every other entity integrates the
+    ///     plain straight-line model, bit-for-bit as before (ADR-0016);
     ///  5. engine-controlled entity states are published to the gateway, if any.
     Status step(double dt);
 
@@ -301,6 +304,25 @@ private:
         double traveled = 0.0;     ///< Arc length covered [m] (time-free mode).
     };
 
+    /// The straight reference line an in-progress lateral action displaces an
+    /// entity from (ADR-0016): the flat-world stand-in for a lane centre line
+    /// until a road backend can supply the real one (#23).
+    ///
+    /// Captured once, when a lateral action first needs it, from the entity's
+    /// position and heading at that instant. While it is live the entity's
+    /// motion is composed of a longitudinal advance along the axis and a
+    /// lateral displacement across it, and its heading is blended from the two
+    /// — which is what turns an offset ramp into a plausible lane change.
+    /// `cos`/`sin` come from one det_sincos of `heading` and are cached so the
+    /// per-step composition adds no trigonometry.
+    struct LateralAxis {
+        double origin_x = 0.0; ///< World anchor: where the axis passes through.
+        double origin_y = 0.0;
+        double heading = 0.0; ///< Axis direction [rad].
+        double cos = 1.0;     ///< det_sincos(heading).cos, cached once.
+        double sin = 0.0;     ///< det_sincos(heading).sin, cached once.
+    };
+
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
@@ -342,6 +364,34 @@ private:
         // never iterated for a result — so it does not reach the determinism
         // contract.
         std::vector<const ir::Action*> retired_actions;
+        // Lateral motion state (p2-s3, ADR-0016). The axis is live exactly
+        // while an offset-model lateral action is displacing this entity;
+        // without it the entity integrates the plain straight-line model, which
+        // is what keeps every pre-lateral trace bit-identical.
+        //
+        // `lateral_transition` is the shaped offset ramp (the same
+        // value-transition sequencer the longitudinal domain uses, over metres
+        // of offset). `active_lateral_action` owns the single lateral slot and
+        // is compared by identity only, never dereferenced for ordering, so it
+        // does not reach results — exactly like active_longitudinal_action.
+        std::optional<LateralAxis> lateral_axis;
+        std::optional<runtime::LongitudinalController> lateral_transition;
+        const ir::Action* active_lateral_action = nullptr;
+        // Offset from the axis actually applied so far, and the offset the
+        // storyboard phase commanded for this step; the integrate phase moves
+        // the entity by their difference and then makes them equal. Positive is
+        // left of the axis (§7.4.1.4, ISO 8855).
+        double lateral_offset = 0.0;
+        double lateral_offset_command = 0.0;
+        // Lateral rate [m/s] carried across steps by a constrained
+        // LateralDistanceAction, whose controller limits how fast the offset
+        // may change. Unused by the ramp-driven actions.
+        double lateral_rate = 0.0;
+        // Set when a lateral action reached its goal during the storyboard
+        // phase: the integrate phase still applies that step's last offset
+        // increment, then snaps the heading back to the axis and dissolves the
+        // axis. Dissolving in the storyboard phase would drop the increment.
+        bool lateral_dissolve_pending = false;
         // The route assigned by the last AssignRouteAction or
         // AcquirePositionAction, which persists "until another action
         // overwrites them" (§6.8.2). Stored, not yet followed: route-following
@@ -465,6 +515,49 @@ private:
     /// §7.5.1 minimal conflict resolution). No-op when nothing is owned or the
     /// owner is `incoming` itself.
     void supersede_longitudinal(EntityRecord& record, const ir::Action* incoming);
+
+    /// The lateral counterpart: retires whichever action owns `record`'s
+    /// lateral domain — the offset-model slot or a trajectory follower, both of
+    /// which "assign a lateral control strategy" (Annex A Table 10) — when a
+    /// different `incoming` action supersedes it.
+    ///
+    /// The axis is deliberately left standing: a lateral action superseding
+    /// another continues on the same reference line, so an absolute lane offset
+    /// keeps meaning the same thing across the handover. Callers that are not
+    /// offset-model actions (a trajectory) dissolve it themselves.
+    void supersede_lateral(EntityRecord& record, const ir::Action* incoming);
+
+    /// Captures the lateral axis from `record`'s current pose, if none is live:
+    /// the axis runs through the entity, along its heading, and the entity
+    /// starts at offset zero on it. Zero encodes the flat-world assumption that
+    /// an actor sits on its lane centre when a lateral action starts; a real
+    /// in-lane offset needs a road backend (#23).
+    void ensure_lateral_axis(EntityRecord& record);
+
+    /// Drops the lateral axis and every offset the entity accumulated on it,
+    /// leaving position and heading exactly where they are.
+    void dissolve_lateral_axis(EntityRecord& record) noexcept;
+
+    /// Drives one step of a LaneOffsetAction on `record` (Class
+    /// `LaneOffsetAction`): installs a shaped offset ramp whose duration comes
+    /// from maxLateralAcc, and commands the offset it reaches this step.
+    /// Returns Complete once a non-continuous action has reached its target; a
+    /// continuous one returns Running forever and re-corrects whenever the
+    /// target moves (§7.5.3).
+    runtime::ActionOutcome drive_lane_offset(const ir::LaneOffsetAction& action,
+                                             EntityRecord& record, bool installing);
+
+    /// The lateral offset of `record`'s reference entity measured across the
+    /// live axis, i.e. `(p_ref - axis.origin) . axis_normal`. Flat-world: every
+    /// entity is assumed to sit on its own lane centre, so this doubles as the
+    /// reference's lane position. Requires a live axis.
+    [[nodiscard]] double reference_lateral_offset(const EntityRecord& record,
+                                                  const std::string& entity_ref) const;
+
+    /// Snaps a just-installed init-phase lateral transition to its terminal
+    /// offset with one perpendicular translate, then dissolves the axis (§8.5:
+    /// init actions are instantaneous, so no heading blending happens).
+    void finalize_lateral(const ir::Action& action, EntityRecord& record);
 
     /// Builds the controller for a SpeedAction from `record`'s current speed,
     /// clamped by its Performance envelope (max speed and per-shape peak

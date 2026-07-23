@@ -22,12 +22,24 @@
 
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "scena/engine.h"
+#include "scena/entity_state.h"
+#include "scena/ir/action.h"
+#include "scena/ir/condition.h"
 #include "scena/ir/dynamics.h"
+#include "scena/ir/entity.h"
+#include "scena/ir/position.h"
+#include "scena/ir/scenario.h"
+#include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 #include "scena/runtime/lateral.h"
 #include "scena/runtime/longitudinal.h"
 
@@ -96,8 +108,8 @@ TEST(LateralDurationTest, InstantaneousCases) {
         EXPECT_DOUBLE_EQ(lane_offset_duration(shape, 0.0, 2.0), 0.0);
         // "Missing value is interpreted as 'inf'": no time needed.
         EXPECT_DOUBLE_EQ(lane_offset_duration(shape, 3.5, std::nullopt), 0.0);
-        EXPECT_DOUBLE_EQ(
-            lane_offset_duration(shape, 3.5, std::numeric_limits<double>::infinity()), 0.0);
+        EXPECT_DOUBLE_EQ(lane_offset_duration(shape, 3.5, std::numeric_limits<double>::infinity()),
+                         0.0);
         // Defensive: init rejects these, they must not divide by zero or NaN.
         EXPECT_DOUBLE_EQ(lane_offset_duration(shape, 3.5, 0.0), 0.0);
         EXPECT_DOUBLE_EQ(lane_offset_duration(shape, std::nan(""), 2.0), 0.0);
@@ -224,6 +236,89 @@ TEST(LateralRampTest, AZeroSpanRampIsInstantaneous) {
     LongitudinalController step = offset_ramp(DynamicsShape::Step, 0.0, 3.5, 0.0);
     EXPECT_DOUBLE_EQ(step.advance(0.0, 0.0), 3.5);
     EXPECT_TRUE(step.done());
+}
+
+// --- Combined longitudinal + lateral determinism ---------------------------
+
+/// An ego running a speed ramp and a lane offset at the same time — the two
+/// domains are independent (Annex A Table 10), so both drive the same entity
+/// over the same steps and the composed integrator has to stay reproducible.
+scena::ir::Scenario make_combined_scenario() {
+    scena::ir::Scenario scenario;
+    scenario.name = "combined";
+    scena::ir::Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = scena::ir::ControlMode::EngineControlled;
+    scenario.entities.push_back(ego);
+    scenario.init_actions.push_back(std::make_shared<scena::ir::TeleportAction>(
+        "ego", scena::ir::WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<scena::ir::SpeedAction>("ego", 22.0));
+
+    scena::ir::Maneuver maneuver;
+    maneuver.name = "maneuver";
+    const auto timed = [](const std::string& name, double at_time,
+                          std::shared_ptr<scena::ir::Action> action) {
+        scena::ir::Event event;
+        event.name = name;
+        event.start_trigger =
+            scena::ir::make_trigger(std::make_shared<scena::ir::SimulationTimeCondition>(at_time),
+                                    scena::ir::ConditionEdge::None, 0.0);
+        event.actions.push_back(std::move(action));
+        return event;
+    };
+    maneuver.events.push_back(timed("shift", 1.0,
+                                    std::make_shared<scena::ir::LaneOffsetAction>(
+                                        "ego", scena::ir::AbsoluteTargetLaneOffset{-3.5},
+                                        /*continuous=*/false, DynamicsShape::Sinusoidal, 1.4)));
+    maneuver.events.push_back(timed(
+        "slow", 2.0,
+        std::make_shared<scena::ir::SpeedAction>(
+            "ego", 9.0,
+            scena::ir::TransitionDynamics{DynamicsShape::Cubic, scena::ir::DynamicsDimension::Time,
+                                          5.0, scena::ir::FollowingMode::Position})));
+    maneuver.events.push_back(timed("hold", 9.0,
+                                    std::make_shared<scena::ir::LaneOffsetAction>(
+                                        "ego", scena::ir::AbsoluteTargetLaneOffset{-1.0},
+                                        /*continuous=*/true, DynamicsShape::Cubic, 0.8)));
+    scena::ir::ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    scena::ir::Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    scena::ir::Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+TEST(LateralDeterminismTest, CombinedLongitudinalAndLateralSteppingIsBitIdentical) {
+    // Two engines, the same non-uniform step pattern: every field of the
+    // composed model — including the det_atan2 heading blend — must agree
+    // bit-for-bit, not merely to a tolerance.
+    scena::Engine a;
+    scena::Engine b;
+    ASSERT_EQ(a.init(make_combined_scenario()), scena::Status::Ok);
+    ASSERT_EQ(b.init(make_combined_scenario()), scena::Status::Ok);
+
+    const std::vector<double> pattern = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 600; ++i) {
+        const double dt = pattern[static_cast<std::size_t>(i) % pattern.size()];
+        ASSERT_EQ(a.step(dt), scena::Status::Ok);
+        ASSERT_EQ(b.step(dt), scena::Status::Ok);
+        const scena::EntityState first = *a.state("ego");
+        const scena::EntityState second = *b.state("ego");
+        ASSERT_EQ(first.x, second.x);
+        ASSERT_EQ(first.y, second.y);
+        ASSERT_EQ(first.z, second.z);
+        ASSERT_EQ(first.heading, second.heading);
+        ASSERT_EQ(first.speed, second.speed);
+    }
+    // The run really exercised both domains.
+    EXPECT_LT(a.state("ego")->y, -0.9);
+    EXPECT_NEAR(a.state("ego")->speed, 9.0, 1e-9);
 }
 
 } // namespace
