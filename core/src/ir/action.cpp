@@ -352,6 +352,38 @@ const Environment& EnvironmentAction::environment() const {
     return environment_;
 }
 
+TrafficSignalStateAction::TrafficSignalStateAction(std::string name, std::string state)
+    : name_(std::move(name)), state_(std::move(state)) {}
+
+std::string_view TrafficSignalStateAction::kind() const noexcept {
+    return "TrafficSignalStateAction";
+}
+
+const std::string& TrafficSignalStateAction::name() const {
+    return name_;
+}
+
+const std::string& TrafficSignalStateAction::state() const {
+    return state_;
+}
+
+TrafficSignalControllerAction::TrafficSignalControllerAction(
+    std::string traffic_signal_controller_ref, std::string phase)
+    : traffic_signal_controller_ref_(std::move(traffic_signal_controller_ref)),
+      phase_(std::move(phase)) {}
+
+std::string_view TrafficSignalControllerAction::kind() const noexcept {
+    return "TrafficSignalControllerAction";
+}
+
+const std::string& TrafficSignalControllerAction::traffic_signal_controller_ref() const {
+    return traffic_signal_controller_ref_;
+}
+
+const std::string& TrafficSignalControllerAction::phase() const {
+    return phase_;
+}
+
 AddEntityAction::AddEntityAction(std::string entity_ref, WorldPosition position)
     : entity_ref_(std::move(entity_ref)), position_(position) {}
 

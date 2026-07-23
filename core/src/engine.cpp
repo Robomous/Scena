@@ -21,6 +21,7 @@
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/interaction_condition.h"
 #include "scena/ir/rule.h"
+#include "scena/ir/traffic_signal.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/distance_measure.h"
 #include "scena/runtime/element_ref.h"
@@ -50,6 +51,13 @@ constexpr const char* kRuleControllerActivation =
 constexpr const char* kRuleTrajectoryOffset =
     "asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length";
 constexpr const char* kRuleTimeFormat = "asam.net:xosc:1.0.0:data_type.time_format";
+constexpr const char* kRulePhaseDuration = "asam.net:xosc:1.0.0:data_type.phase_duration_positive";
+constexpr const char* kRuleControllerReferences =
+    "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_references";
+constexpr const char* kRuleControllerActionReferences =
+    "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_action_references";
+constexpr const char* kRuleControllerConditionReferences =
+    "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_condition_references";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -157,6 +165,17 @@ private:
     DiagnosticSink* sink_;
     std::set<std::string>* warned_;
 };
+
+/// Index of the controller named `name` in `controllers`, or npos.
+std::size_t find_controller(const std::vector<ir::TrafficSignalController>& controllers,
+                            std::string_view name) {
+    for (std::size_t index = 0; index < controllers.size(); ++index) {
+        if (controllers[index].name == name) {
+            return index;
+        }
+    }
+    return static_cast<std::size_t>(-1);
+}
 
 /// True for the four ordering rules, which the by-value conditions support
 /// only between scalar-convertible operands (ParameterCondition clause).
@@ -306,7 +325,9 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
                                    const std::string& condition_path,
                                    const ir::Storyboard& storyboard, const Records& records,
                                    const NamedValueStore& parameters,
-                                   const NamedValueStore& variables, DiagnosticSink& sink) {
+                                   const NamedValueStore& variables,
+                                   const std::vector<ir::TrafficSignalController>& controllers,
+                                   DiagnosticSink& sink) {
     const ir::Condition* expression = condition.expression.get();
     if (expression == nullptr) {
         return;
@@ -621,7 +642,9 @@ template <typename Records>
 void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::string& owner_path,
                       const char* trigger_kind, const ir::Storyboard& storyboard,
                       const Records& records, const NamedValueStore& parameters,
-                      const NamedValueStore& variables, DiagnosticSink& sink) {
+                      const NamedValueStore& variables,
+                      const std::vector<ir::TrafficSignalController>& controllers,
+                      DiagnosticSink& sink) {
     if (!trigger.has_value()) {
         return;
     }
@@ -659,7 +682,7 @@ void validate_trigger(const std::optional<ir::Trigger>& trigger, const std::stri
             // By-value and by-entity conditions carry named references and
             // numeric fields whose resolvability and ranges are checked here.
             validate_condition_expression(condition, condition_path, storyboard, records,
-                                          parameters, variables, sink);
+                                          parameters, variables, controllers, sink);
         }
     }
 }
@@ -696,6 +719,23 @@ std::size_t segment_index(const std::vector<double>& bounds, double value) {
     return index;
 }
 
+/// Index of the half-open interval `[bounds[i], bounds[i+1])` containing
+/// `value` in the ascending vector `bounds`, clamped to the last interval.
+///
+/// Deliberately not segment_index: a trajectory segment owns both its
+/// endpoints (the vertex is on the path either way), but a signal phase owns
+/// its start and not its end — at exactly the cumulative duration of phase i
+/// the cycle has already moved into phase i+1 (§6.11.4). The same half-open
+/// rule makes a zero-duration phase occupy no time at all.
+std::size_t phase_index(const std::vector<double>& bounds, double value) {
+    const std::size_t last = bounds.size() - 2;
+    std::size_t index = 0;
+    while (index < last && bounds[index + 1] <= value) {
+        ++index;
+    }
+    return index;
+}
+
 /// Validates action content beyond target existence. A SpeedAction's transition
 /// dynamics value carries a time [s], distance [m] or rate [delta/s] and must be
 /// finite and in range [0..inf[ (per ASAM OpenSCENARIO XML 1.4.0
@@ -709,7 +749,47 @@ std::size_t segment_index(const std::vector<double>& bounds, double value) {
 template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
                              const Records& records, const NamedValueStore& parameters,
-                             const NamedValueStore& variables, DiagnosticSink& sink) {
+                             const NamedValueStore& variables,
+                             const std::vector<ir::TrafficSignalController>& controllers,
+                             DiagnosticSink& sink) {
+    if (const auto* controller_action =
+            dynamic_cast<const ir::TrafficSignalControllerAction*>(&action)) {
+        // per rule
+        // asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_action_references:
+        // both the controller and the phase it names must exist within the
+        // scenario — unlike signal ids, these are fully checkable here.
+        const std::size_t index =
+            find_controller(controllers, controller_action->traffic_signal_controller_ref());
+        if (index == static_cast<std::size_t>(-1)) {
+            error(sink, Status::SemanticError,
+                  "traffic signal controller '" +
+                      controller_action->traffic_signal_controller_ref() + "' is not declared",
+                  path, kRuleControllerActionReferences);
+            return;
+        }
+        bool phase_found = false;
+        for (const ir::Phase& phase : controllers[index].phases) {
+            if (phase.name == controller_action->phase()) {
+                phase_found = true;
+                break;
+            }
+        }
+        if (!phase_found) {
+            error(sink, Status::SemanticError,
+                  "traffic signal controller '" +
+                      controller_action->traffic_signal_controller_ref() + "' has no phase '" +
+                      controller_action->phase() + "'",
+                  path, kRuleControllerActionReferences);
+        }
+        return;
+    }
+    if (dynamic_cast<const ir::TrafficSignalStateAction*>(&action) != nullptr) {
+        // The signal id names an element of the road network file (rule
+        // traffic_signal_state_action_references, C.7.14), which Scena cannot
+        // reach yet — the id stays free-form until p3-s4. The state string's
+        // notation is simulator-specific by definition (§6.11.4).
+        return;
+    }
     if (const auto* environment = dynamic_cast<const ir::EnvironmentAction*>(&action)) {
         const ir::Environment& update = environment->environment();
         if (update.time_of_day.has_value() && !update.time_of_day->date_time.valid()) {
@@ -1087,11 +1167,12 @@ void validate_action_content(const ir::Action& action, const std::string& path,
 template <typename Records>
 void validate_storyboard(const ir::Storyboard& storyboard, const Records& records,
                          const NamedValueStore& parameters, const NamedValueStore& variables,
+                         const std::vector<ir::TrafficSignalController>& controllers,
                          DiagnosticSink& sink) {
     check_sibling_names(
         storyboard.stories, [](const ir::Story& s) { return s.name; }, "story", "", sink);
     validate_trigger(storyboard.stop_trigger, "", "stopTrigger", storyboard, records, parameters,
-                     variables, sink);
+                     variables, controllers, sink);
     for (const ir::Story& story : storyboard.stories) {
         const std::string story_path = story.name;
         check_sibling_names(
@@ -1102,9 +1183,9 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                 act.groups, [](const ir::ManeuverGroup& g) { return g.name; }, "maneuver group",
                 act_path, sink);
             validate_trigger(act.start_trigger, act_path, "startTrigger", storyboard, records,
-                             parameters, variables, sink);
+                             parameters, variables, controllers, sink);
             validate_trigger(act.stop_trigger, act_path, "stopTrigger", storyboard, records,
-                             parameters, variables, sink);
+                             parameters, variables, controllers, sink);
             for (const ir::ManeuverGroup& group : act.groups) {
                 const std::string group_path = join_path(act_path, group.name);
                 check_sibling_names(
@@ -1128,7 +1209,8 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                     for (const ir::Event& event : maneuver.events) {
                         const std::string event_path = join_path(maneuver_path, event.name);
                         validate_trigger(event.start_trigger, event_path, "startTrigger",
-                                         storyboard, records, parameters, variables, sink);
+                                         storyboard, records, parameters, variables, controllers,
+                                         sink);
                         // §8.3.3.2/§8.4.2.1: the XSD type of
                         // maximumExecutionCount is unsignedInt, so a negative
                         // budget has no meaning at all. Zero is schema-valid
@@ -1166,7 +1248,7 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                                       action_path);
                             }
                             validate_action_content(*action, action_path, records, parameters,
-                                                    variables, sink);
+                                                    variables, controllers, sink);
                         }
                     }
                 }
@@ -1240,6 +1322,120 @@ double effective_limit(const std::optional<double>& constraint,
         limit = std::fmin(limit, *envelope);
     }
     return limit;
+}
+
+/// Validates the traffic signal controllers of a scenario (§6.11) in document
+/// order, appending every defect to `sink`. The engine's cycle clock relies on
+/// what is established here: unique names, non-negative finite durations, a
+/// resolvable and acyclic reference chain, and delay only where a reference
+/// backs it.
+void validate_traffic_signals(const std::vector<ir::TrafficSignalController>& controllers,
+                              DiagnosticSink& sink) {
+    std::set<std::string> seen_names;
+    std::size_t controller_index = 0;
+    for (const ir::TrafficSignalController& controller : controllers) {
+        const std::string path = controller.name.empty()
+                                     ? "trafficSignals[" + std::to_string(controller_index) + "]"
+                                     : "trafficSignals/" + controller.name;
+        ++controller_index;
+        if (controller.name.empty()) {
+            error(sink, Status::ValidationError, "traffic signal controller name is empty", path);
+        } else if (!seen_names.insert(controller.name).second) {
+            error(sink, Status::ValidationError,
+                  "duplicate traffic signal controller name '" + controller.name + "'", path,
+                  kRuleUniqueNames);
+        }
+
+        // §6.11.3 / §TrafficSignalController: "If delay is set, reference is
+        // required", and the reference must name an existing controller.
+        if (controller.delay.has_value() && !controller.reference.has_value()) {
+            error(sink, Status::ValidationError,
+                  "traffic signal controller delay requires a reference (§6.11.3)", path);
+        }
+        if (controller.delay.has_value() &&
+            (!(*controller.delay >= 0.0) || !std::isfinite(*controller.delay))) {
+            error(sink, Status::ValidationError,
+                  "traffic signal controller delay must be finite and in range [0..inf[", path);
+        }
+        if (controller.reference.has_value()) {
+            if (*controller.reference == controller.name) {
+                error(sink, Status::ValidationError,
+                      "traffic signal controller '" + controller.name + "' references itself", path,
+                      kRuleControllerReferences);
+            } else if (find_controller(controllers, *controller.reference) ==
+                       static_cast<std::size_t>(-1)) {
+                error(sink, Status::SemanticError,
+                      "traffic signal controller reference '" + *controller.reference +
+                          "' is not declared",
+                      path, kRuleControllerReferences);
+            } else {
+                // Walk the chain; more hops than there are controllers means
+                // it loops. A cycle would make the start offset undefined.
+                std::size_t hops = 0;
+                std::optional<std::string> next = controller.reference;
+                while (next.has_value() && hops <= controllers.size()) {
+                    const std::size_t index = find_controller(controllers, *next);
+                    if (index == static_cast<std::size_t>(-1)) {
+                        break; // dangling further up; already reported on that controller
+                    }
+                    next = controllers[index].reference;
+                    ++hops;
+                }
+                if (hops > controllers.size()) {
+                    error(sink, Status::ValidationError,
+                          "traffic signal controller reference chain from '" + controller.name +
+                              "' is cyclic",
+                          path, kRuleControllerReferences);
+                }
+            }
+        }
+
+        std::set<std::string> seen_phases;
+        double total = 0.0;
+        std::size_t phase_index = 0;
+        for (const ir::Phase& phase : controller.phases) {
+            const std::string phase_path = path + "/phase[" + std::to_string(phase_index) + "]";
+            ++phase_index;
+            // §6.11.4: a phase has "a name that is unique within its
+            // controller" — the name is what an action and a condition
+            // address it by, so it is part of the runtime contract.
+            if (phase.name.empty()) {
+                error(sink, Status::ValidationError, "traffic signal phase name is empty",
+                      phase_path);
+            } else if (!seen_phases.insert(phase.name).second) {
+                error(sink, Status::ValidationError,
+                      "duplicate traffic signal phase name '" + phase.name + "'", phase_path,
+                      kRuleUniqueNames);
+            }
+            // per rule asam.net:xosc:1.0.0:data_type.phase_duration_positive
+            // ("shall contain non-negative values"); the negated comparison
+            // rejects NaN too.
+            if (!(phase.duration >= 0.0) || !std::isfinite(phase.duration)) {
+                error(sink, Status::ValidationError,
+                      "traffic signal phase duration must be finite and non-negative", phase_path,
+                      kRulePhaseDuration);
+            } else {
+                total += phase.duration;
+            }
+            for (const ir::TrafficSignalState& state : phase.signal_states) {
+                // The state string is free-form (§6.11.4 leaves its notation to
+                // the simulator), but a signal with no id addresses nothing.
+                if (state.traffic_signal_id.empty()) {
+                    error(sink, Status::ValidationError, "traffic signal state has an empty id",
+                          phase_path);
+                }
+            }
+        }
+        if (!controller.phases.empty() && total == 0.0) {
+            // §6.11.4 makes the cycle duration the sum of the phase durations;
+            // a zero-length cycle has no next phase to move to. The engine
+            // pins the first phase rather than dividing by it.
+            warn(sink, Status::UnsupportedFeature,
+                 "traffic signal controller cycle has zero total duration; the first phase is "
+                 "held for the whole run (§6.11.4)",
+                 path);
+        }
+    }
 }
 
 /// Code of the first Error diagnostic in report order, which is document
@@ -1343,10 +1539,12 @@ Status Engine::init(ir::Scenario scenario) {
                   "action targets unknown entity '" + action->entity_id() + "'", action_path);
         }
         validate_action_content(*action, action_path, records, scenario.parameters,
-                                scenario.variables, diagnostics_);
+                                scenario.variables, scenario.traffic_signal_controllers,
+                                diagnostics_);
     }
+    validate_traffic_signals(scenario.traffic_signal_controllers, diagnostics_);
     validate_storyboard(scenario.storyboard, records, scenario.parameters, scenario.variables,
-                        diagnostics_);
+                        scenario.traffic_signal_controllers, diagnostics_);
 
     if (diagnostics_.has_errors()) {
         return first_error_code(diagnostics_);
@@ -1369,9 +1567,55 @@ Status Engine::init(ir::Scenario scenario) {
     parameter_overrides_.clear();
     environment_ = ir::Environment{};
     date_time_animated_ = true;
+    signal_states_.clear();
+    controller_phases_.clear();
+    signal_controllers_.clear();
     warned_values_.clear();
     clock_.reset();
     initialized_ = true;
+
+    // Build the signal cycle clocks (§6.11.4). The cumulative offsets are
+    // summed once, in declared order, so every later phase lookup reads fixed
+    // partial sums instead of re-adding them.
+    for (const ir::TrafficSignalController& controller : scenario_.traffic_signal_controllers) {
+        SignalControllerRuntime runtime;
+        runtime.controller = &controller;
+        runtime.cumulative.reserve(controller.phases.size() + 1);
+        double total = 0.0;
+        runtime.cumulative.push_back(0.0);
+        for (const ir::Phase& phase : controller.phases) {
+            total += phase.duration;
+            runtime.cumulative.push_back(total);
+        }
+        runtime.total = total;
+        signal_controllers_.emplace(controller.name, std::move(runtime));
+    }
+    // §6.11.3: "its first phase virtually starts delaytime seconds after the
+    // start of the reference's first phase", so a chained controller's offset
+    // is the sum of the delays up its chain. Validation already rejected
+    // cycles and dangling references, so the walk terminates.
+    for (const ir::TrafficSignalController& controller : scenario_.traffic_signal_controllers) {
+        double offset = 0.0;
+        const ir::TrafficSignalController* current = &controller;
+        while (current->reference.has_value() && current->delay.has_value()) {
+            offset += *current->delay;
+            const std::size_t index =
+                find_controller(scenario_.traffic_signal_controllers, *current->reference);
+            if (index == static_cast<std::size_t>(-1)) {
+                break;
+            }
+            current = &scenario_.traffic_signal_controllers[index];
+        }
+        const auto it = signal_controllers_.find(controller.name);
+        if (it != signal_controllers_.end()) {
+            it->second.start_offset = offset;
+            it->second.anchor = offset;
+        }
+    }
+    // Seed the first-phase states before the init actions run, so an init-phase
+    // TrafficSignalStateAction overrides the seed rather than being overwritten
+    // by it (actions win, ADR-0015).
+    advance_signal_controllers(0.0);
 
     // Init phase (§8.5): init actions are applied before simulation time
     // starts. All actions are instantaneous in this phase, so each one
@@ -1466,6 +1710,11 @@ Status Engine::step(double dt) {
     if (dt > 0.0) {
         refresh_observations(dt);
     }
+
+    // Top of phase 3: the signal cycles advance to t' before the storyboard is
+    // evaluated, so conditions read this step's phase and a
+    // TrafficSignalStateAction fired below still wins over it (§6.11.4).
+    advance_signal_controllers(clock_.now());
 
     RuntimeContext context{clock_.now(),
                            scenario_.parameters,
@@ -1741,6 +1990,10 @@ Status Engine::close() {
     date_time_set_ = false;
     date_time_animated_ = true;
     environment_ = ir::Environment{};
+    // The controller runtimes borrow into scenario_, so they must go before it.
+    signal_controllers_.clear();
+    signal_states_.clear();
+    controller_phases_.clear();
     warned_values_.clear();
     scenario_ = ir::Scenario{};
     initialized_ = false;
@@ -1814,6 +2067,65 @@ void Engine::activate_entity(EntityRecord& record, const ir::WorldPosition& posi
     // no phantom acceleration or teleport-sized odometer jump.
     record.prev_sample = record.state;
     record.has_prev_sample = true;
+}
+
+void Engine::apply_signal_phase(const std::string& controller_name,
+                                SignalControllerRuntime& runtime, std::size_t index) {
+    const ir::Phase& phase = runtime.controller->phases[index];
+    // Document order within the phase: two states naming the same signal make
+    // the later one win, deterministically.
+    for (const ir::TrafficSignalState& state : phase.signal_states) {
+        signal_states_[state.traffic_signal_id] = state.state;
+    }
+    controller_phases_[controller_name] = phase.name;
+    runtime.applied_phase = index;
+}
+
+void Engine::advance_signal_controllers(double t) {
+    // Sorted-map order over controller names: deterministic, and the only
+    // ordering that matters — two controllers driving the same signal id in
+    // the same evaluation resolve the same way on every platform.
+    for (auto& [name, runtime] : signal_controllers_) {
+        if (runtime.controller == nullptr || runtime.controller->phases.empty()) {
+            continue;
+        }
+        const double local = t - runtime.anchor;
+        if (local < 0.0) {
+            // §6.11.3: the controller's first phase has not started yet, so it
+            // drives nothing and its phase is unobservable.
+            continue;
+        }
+        std::size_t index = 0;
+        if (runtime.total > 0.0) {
+            // std::fmod is exact in IEEE — the cycle position is recomputed
+            // from t every step rather than accumulated, so it cannot drift
+            // with the host's step pattern.
+            index = phase_index(runtime.cumulative, std::fmod(local, runtime.total));
+        }
+        // total == 0 with phases present: the cycle has no length to advance
+        // through, so the first phase is held (no fmod(x, 0) NaN). Warned about
+        // at load time.
+        if (runtime.applied_phase.has_value() && *runtime.applied_phase == index) {
+            continue; // write on transition only, so an action's override stands
+        }
+        apply_signal_phase(name, runtime, index);
+    }
+}
+
+std::optional<std::string> Engine::traffic_signal_state(const std::string& name) const {
+    const auto it = signal_states_.find(name);
+    if (it == signal_states_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<std::string> Engine::traffic_signal_controller_phase(const std::string& name) const {
+    const auto it = controller_phases_.find(name);
+    if (it == controller_phases_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 void Engine::warn_once(std::string path, Status code, std::string message) {
@@ -1900,6 +2212,40 @@ std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::Glob
         modify_named_value(parameter_overrides_, parameter_modify->parameter_ref(),
                            parameter_modify->op(), parameter_modify->value(),
                            "parameters/" + parameter_modify->parameter_ref() + "/modify");
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* signal = dynamic_cast<const ir::TrafficSignalStateAction*>(&action)) {
+        // Actions win: this write lands after the controllers have ticked for
+        // this evaluation, so a forced state (the §11.12 broken traffic light)
+        // stands until the controlling cycle's next phase transition.
+        signal_states_[signal->name()] = signal->state();
+        return runtime::ActionOutcome::Complete;
+    }
+
+    if (const auto* controller_action =
+            dynamic_cast<const ir::TrafficSignalControllerAction*>(&action)) {
+        const auto it =
+            signal_controllers_.find(controller_action->traffic_signal_controller_ref());
+        if (it != signal_controllers_.end() && it->second.controller != nullptr) {
+            SignalControllerRuntime& runtime = it->second;
+            const std::vector<ir::Phase>& phases = runtime.controller->phases;
+            for (std::size_t index = 0; index < phases.size(); ++index) {
+                if (phases[index].name != controller_action->phase()) {
+                    continue;
+                }
+                // Restart the cycle at the named phase: re-anchor so that the
+                // current instant sits exactly at that phase's start, and the
+                // cycle continues from there in declared order (§6.11.4).
+                runtime.anchor = clock_.now() - runtime.cumulative[index];
+                runtime.applied_phase.reset();
+                // Tick this one controller now, so conditions evaluated later
+                // in the same walk observe the phase the action just set.
+                apply_signal_phase(controller_action->traffic_signal_controller_ref(), runtime,
+                                   index);
+                break;
+            }
+        }
         return runtime::ActionOutcome::Complete;
     }
 

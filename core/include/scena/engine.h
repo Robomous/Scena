@@ -204,6 +204,20 @@ public:
     /// anchor while a non-animated §TimeOfDay is in force.
     [[nodiscard]] std::optional<double> date_time() const;
 
+    /// The current observable state of a traffic signal (§6.11.4), or
+    /// std::nullopt when nothing has written that signal id yet — no
+    /// controller phase names it and no TrafficSignalStateAction has forced
+    /// it. Signal ids are free-form road-network references, so an unknown id
+    /// is indistinguishable from an unwritten one.
+    [[nodiscard]] std::optional<std::string> traffic_signal_state(const std::string& name) const;
+
+    /// The name of the phase a traffic signal controller is currently in
+    /// (§6.11.4), or std::nullopt when the controller is unknown, has no
+    /// phases, or has not started yet — a controller with a `delay` has no
+    /// phase until its start offset elapses (§6.11.3).
+    [[nodiscard]] std::optional<std::string>
+    traffic_signal_controller_phase(const std::string& name) const;
+
     /// The environment state accumulated by the EnvironmentActions applied so
     /// far (§Environment). Every member starts absent and an action merges in
     /// only what it carries, so an absent member means "never set", which is
@@ -473,6 +487,45 @@ private:
     /// snapshot, over `dt` (> 0). See step()'s documentation for the invariant.
     void refresh_observations(double dt);
 
+    /// The live cycle state of one traffic signal controller (§6.11).
+    ///
+    /// The phase is derived arithmetically from simulation time rather than
+    /// accumulated across steps: `fmod` is exact in IEEE, so a controller's
+    /// phase at time t depends only on t and never drifts with the host's step
+    /// pattern. `controller` is borrowed from the owned scenario_ and is never
+    /// dereferenced for ordering.
+    struct SignalControllerRuntime {
+        const ir::TrafficSignalController* controller = nullptr;
+        /// Cumulative phase-end offsets [0, d0, d0+d1, ..., total], summed
+        /// once in declared order so the partial sums are fixed.
+        std::vector<double> cumulative;
+        /// Cycle duration, the sum of the phase durations (§6.11.4).
+        double total = 0.0;
+        /// Simulation time at which phase[0] first starts: the transitively
+        /// resolved delay chain of §6.11.3. Zero for an unchained controller.
+        double start_offset = 0.0;
+        /// Simulation time the current cycle's phase[0] started. Equal to
+        /// start_offset until a TrafficSignalControllerAction re-anchors it.
+        double anchor = 0.0;
+        /// The phase index whose states were last written, or absent when the
+        /// controller has not started (or was just re-anchored).
+        std::optional<std::size_t> applied_phase;
+    };
+
+    /// Ticks every traffic signal controller to simulation time `t`, writing
+    /// the signal states of any phase it has just entered (§6.11.4).
+    ///
+    /// Runs at the top of the storyboard-evaluation phase, so a
+    /// TrafficSignalStateAction fired by the storyboard writes *after* the
+    /// controllers and its forced state survives until the next phase
+    /// transition — the actions-win precedence the §11.12 example needs.
+    void advance_signal_controllers(double t);
+
+    /// Writes the signal states and the observable phase name of `runtime`'s
+    /// phase `index`, in the phase's document order.
+    void apply_signal_phase(const std::string& controller_name, SignalControllerRuntime& runtime,
+                            std::size_t index);
+
     gateway::ISimulatorGateway* gateway_ = nullptr;
     ir::Scenario scenario_;
     runtime::Clock clock_;
@@ -516,6 +569,17 @@ private:
     // Environment state (§Environment), merged member by member by every
     // EnvironmentAction. Per-run state: cleared by init() and close().
     ir::Environment environment_;
+    // Observable traffic signal states, keyed by road-network signal id
+    // (§6.11.4). Written by a controller's phase transitions and by
+    // TrafficSignalStateAction, and read by TrafficSignalCondition. std::map
+    // with std::less<> for deterministic iteration and heterogeneous lookup.
+    std::map<std::string, std::string, std::less<>> signal_states_;
+    // Current phase name per controller, the observable half of
+    // signal_controllers_ that TrafficSignalControllerCondition reads. A
+    // controller with no phase yet (before its delayed start) has no entry.
+    std::map<std::string, std::string, std::less<>> controller_phases_;
+    // Live cycle state per controller name, ticked once per step.
+    std::map<std::string, SignalControllerRuntime, std::less<>> signal_controllers_;
     DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };

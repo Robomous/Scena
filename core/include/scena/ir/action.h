@@ -597,6 +597,59 @@ private:
     Environment environment_;
 };
 
+/// Forces the observable state of a named traffic signal, per
+/// §InfrastructureAction / §TrafficSignalAction / §TrafficSignalStateAction:
+/// "control the state of a traffic signal". Completes immediately (Annex A
+/// Table 11).
+///
+/// The write outlives the action: the forced state stands until the controlling
+/// TrafficSignalController's next phase transition overwrites it, which is what
+/// makes the §11.12 "traffic light failure" example work — a signal is forced
+/// into a broken state and stays there. `name` is a road-network signal id, so
+/// it is free-form (rule traffic_signal_state_action_references, C.7.14, is not
+/// checkable without a road network).
+class TrafficSignalStateAction final : public GlobalAction {
+public:
+    TrafficSignalStateAction(std::string name, std::string state);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// ID of the referenced signal in the road network file.
+    [[nodiscard]] const std::string& name() const;
+
+    /// The observable state to force, e.g. "off;off;on".
+    [[nodiscard]] const std::string& state() const;
+
+private:
+    std::string name_;
+    std::string state_;
+};
+
+/// Jumps a traffic signal controller to a named phase, per
+/// §TrafficSignalControllerAction: "set a specific phase of a traffic signal
+/// controller, typically affecting a collection of signals". Completes
+/// immediately (Table 11).
+///
+/// The cycle restarts at that phase and continues from there in declared order.
+/// Both references are checkable within the scenario (rule
+/// traffic_signal_controller_action_references, C.7.11).
+class TrafficSignalControllerAction final : public GlobalAction {
+public:
+    TrafficSignalControllerAction(std::string traffic_signal_controller_ref, std::string phase);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Name of the referenced TrafficSignalController.
+    [[nodiscard]] const std::string& traffic_signal_controller_ref() const;
+
+    /// Name of the targeted phase of that controller.
+    [[nodiscard]] const std::string& phase() const;
+
+private:
+    std::string traffic_signal_controller_ref_;
+    std::string phase_;
+};
+
 /// Adds a declared entity to the running scenario at a position, per
 /// §EntityAction / §AddEntityAction. "Entities to be added or deleted must be
 /// defined in the Entities section. An entity can only exist in one copy.
