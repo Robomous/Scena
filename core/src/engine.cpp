@@ -76,11 +76,13 @@ public:
     RuntimeContext(double simulation_time, const NamedValueStore& parameters,
                    const NamedValueStore& parameter_overrides, const NamedValueStore& variables,
                    const NamedValueStore& user_defined_values, const EntityMap& entities,
+                   const NamedValueStore& signal_states, const NamedValueStore& controller_phases,
                    std::optional<double> date_time_seconds, DiagnosticSink& sink,
                    std::set<std::string>& warned)
         : simulation_time_(simulation_time), parameters_(&parameters),
           parameter_overrides_(&parameter_overrides), variables_(&variables),
           user_defined_values_(&user_defined_values), entities_(&entities),
+          signal_states_(&signal_states), controller_phases_(&controller_phases),
           date_time_seconds_(date_time_seconds), sink_(&sink), warned_(&warned) {}
 
     [[nodiscard]] double simulation_time() const override { return simulation_time_; }
@@ -97,6 +99,33 @@ public:
         const auto& record = it->second;
         return ir::EntityKinematics{record.state, record.acceleration, record.traveled_distance,
                                     record.standstill_seconds, record.bounding_box};
+    }
+
+    [[nodiscard]] std::optional<std::string_view>
+    traffic_signal_state(std::string_view name) const override {
+        const auto it = signal_states_->find(name); // heterogeneous lookup
+        if (it == signal_states_->end()) {
+            // A signal id is a road-network reference Scena cannot resolve
+            // (rule C.7.10 needs a road network), so an id no controller phase
+            // and no state action ever wrote is a degraded-but-running
+            // condition rather than a load-time error.
+            warn_once("trafficSignals/" + std::string(name),
+                      "traffic signal '" + std::string(name) +
+                          "' has no state yet; condition false");
+            return std::nullopt;
+        }
+        return std::string_view{it->second};
+    }
+
+    [[nodiscard]] std::optional<std::string_view>
+    traffic_signal_controller_phase(std::string_view controller_ref) const override {
+        const auto it = controller_phases_->find(controller_ref);
+        if (it == controller_phases_->end()) {
+            // Not a defect: a controller waiting out its §6.11.3 delay simply
+            // has no phase yet, which init() cannot warn about either.
+            return std::nullopt;
+        }
+        return std::string_view{it->second};
     }
 
     [[nodiscard]] std::optional<double> date_time_seconds() const override {
@@ -161,6 +190,8 @@ private:
     const NamedValueStore* variables_;
     const NamedValueStore* user_defined_values_;
     const EntityMap* entities_;
+    const NamedValueStore* signal_states_;
+    const NamedValueStore* controller_phases_;
     std::optional<double> date_time_seconds_;
     DiagnosticSink* sink_;
     std::set<std::string>* warned_;
@@ -375,6 +406,43 @@ void validate_condition_expression(const ir::TriggerCondition& condition,
             error(sink, Status::ValidationError, "time of day condition has an invalid date-time",
                   condition_path);
         }
+    } else if (const auto* controller_condition =
+                   dynamic_cast<const ir::TrafficSignalControllerCondition*>(expression)) {
+        // per rule
+        // asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_condition_references:
+        // the phase "shall reference a valid element ... within the scenario".
+        // The trafficSignalControllerRef half of that rule points at the road
+        // network, but the controller is declared in the scenario too, so both
+        // are checkable here.
+        const std::size_t index =
+            find_controller(controllers, controller_condition->traffic_signal_controller_ref());
+        if (index == static_cast<std::size_t>(-1)) {
+            error(sink, Status::SemanticError,
+                  "traffic signal controller '" +
+                      controller_condition->traffic_signal_controller_ref() + "' is not declared",
+                  condition_path, kRuleControllerConditionReferences);
+            return;
+        }
+        bool phase_found = false;
+        for (const ir::Phase& phase : controllers[index].phases) {
+            if (phase.name == controller_condition->phase()) {
+                phase_found = true;
+                break;
+            }
+        }
+        if (!phase_found) {
+            error(sink, Status::SemanticError,
+                  "traffic signal controller '" +
+                      controller_condition->traffic_signal_controller_ref() + "' has no phase '" +
+                      controller_condition->phase() + "'",
+                  condition_path, kRuleControllerConditionReferences);
+        }
+    } else if (dynamic_cast<const ir::TrafficSignalCondition*>(expression) != nullptr) {
+        // The signal id names a road-network element (rule
+        // traffic_signal_condition_references, C.7.10) Scena cannot reach until
+        // p3-s4, and the state notation is simulator-specific (§6.11.4) — so
+        // there is nothing checkable at load time. An id nothing writes warns
+        // once at evaluation instead.
     } else if (const auto* element =
                    dynamic_cast<const ir::StoryboardElementStateCondition*>(expression)) {
         const ir::StoryboardElementType type = element->element_type();
@@ -1655,6 +1723,8 @@ Status Engine::init(ir::Scenario scenario) {
                            variables_,
                            user_defined_values_,
                            entities_,
+                           signal_states_,
+                           controller_phases_,
                            current_date_time_seconds(0.0),
                            diagnostics_,
                            warned_values_};
@@ -1716,15 +1786,11 @@ Status Engine::step(double dt) {
     // TrafficSignalStateAction fired below still wins over it (§6.11.4).
     advance_signal_controllers(clock_.now());
 
-    RuntimeContext context{clock_.now(),
-                           scenario_.parameters,
-                           parameter_overrides_,
-                           variables_,
-                           user_defined_values_,
-                           entities_,
-                           current_date_time_seconds(clock_.now()),
-                           diagnostics_,
-                           warned_values_};
+    RuntimeContext context{
+        clock_.now(),   scenario_.parameters, parameter_overrides_,
+        variables_,     user_defined_values_, entities_,
+        signal_states_, controller_phases_,   current_date_time_seconds(clock_.now()),
+        diagnostics_,   warned_values_};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {

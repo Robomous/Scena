@@ -42,8 +42,10 @@ using scena::ir::Phase;
 using scena::ir::Scenario;
 using scena::ir::SimulationTimeCondition;
 using scena::ir::Story;
+using scena::ir::TrafficSignalCondition;
 using scena::ir::TrafficSignalController;
 using scena::ir::TrafficSignalControllerAction;
+using scena::ir::TrafficSignalControllerCondition;
 using scena::ir::TrafficSignalState;
 using scena::ir::TrafficSignalStateAction;
 using scena::ir::VariableSetAction;
@@ -469,6 +471,218 @@ TEST(TrafficSignalTest, SignalStoresAreClearedByInitAndClose) {
     EXPECT_FALSE(engine.traffic_signal_state("s1").has_value());
 }
 
+// --- The signal conditions (§7.6.5.2) --------------------------------------
+
+TEST(TrafficSignalTest, TrafficSignalConditionLevelSemantics) {
+    // A level predicate: true for as long as the state matches, not only in
+    // the evaluation it is reached. The "reaches" wording of the standard is
+    // supplied by conditionEdge rising, tested separately below.
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+    scenario.traffic_signal_controllers.push_back(
+        make_controller("group1", "s1", {{"stop", 5.0}, {"go", 5.0}}));
+
+    Event gated;
+    gated.name = "gated";
+    gated.start_trigger = make_trigger(std::make_shared<TrafficSignalCondition>("s1", "go"));
+    gated.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(gated));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "no");
+    for (int i = 0; i < 8; ++i) { // t = 4, still "stop"
+        ASSERT_EQ(engine.step(0.5), Status::Ok);
+    }
+    EXPECT_EQ(engine.variable("seen"), "no");
+    for (int i = 0; i < 4; ++i) { // past t = 5, "go"
+        ASSERT_EQ(engine.step(0.5), Status::Ok);
+    }
+    EXPECT_EQ(engine.variable("seen"), "yes");
+}
+
+TEST(TrafficSignalTest, UnknownSignalConditionIsFalseAndWarnsOnce) {
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+    Event gated;
+    gated.name = "gated";
+    gated.start_trigger = make_trigger(std::make_shared<TrafficSignalCondition>("ghost", "go"));
+    gated.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(gated));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_EQ(engine.variable("seen"), "no");
+    int warnings = 0;
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        if (diagnostic.message.find("traffic signal 'ghost'") != std::string::npos) {
+            ++warnings;
+        }
+    }
+    EXPECT_EQ(warnings, 1);
+}
+
+TEST(TrafficSignalTest, TrafficSignalControllerConditionFollowsThePhase) {
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+    scenario.traffic_signal_controllers.push_back(
+        make_controller("group1", "s1", {{"stop", 6.0}, {"go", 6.0}}));
+
+    Event gated;
+    gated.name = "gated";
+    gated.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("group1", "go"));
+    gated.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(gated));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.step(5.0), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "no");
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "yes");
+}
+
+TEST(TrafficSignalTest, ControllerConditionIsFalseBeforeADelayedStart) {
+    // A controller waiting out its §6.11.3 delay has no phase, so a condition
+    // naming its first phase is a deterministic false until it starts.
+    Scenario scenario = make_scenario();
+    scenario.variables["seen"] = "no";
+    scenario.traffic_signal_controllers.push_back(make_controller("first", "s1", {{"a", 20.0}}));
+    TrafficSignalController late = make_controller("late", "s2", {{"a", 20.0}});
+    late.delay = 5.0;
+    late.reference = "first";
+    scenario.traffic_signal_controllers.push_back(std::move(late));
+
+    Event gated;
+    gated.name = "gated";
+    gated.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("late", "a"));
+    gated.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(gated));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.step(4.0), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "no");
+    ASSERT_EQ(engine.step(1.5), Status::Ok);
+    EXPECT_EQ(engine.variable("seen"), "yes");
+}
+
+TEST(TrafficSignalTest, TrafficSignalControllerConditionC712Validation) {
+    Scenario unknown_controller = make_scenario();
+    unknown_controller.traffic_signal_controllers.push_back(
+        make_controller("group1", "s1", {{"go", 5.0}}));
+    Event a;
+    a.name = "gated";
+    a.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("group9", "go"));
+    a.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    unknown_controller.variables["seen"] = "no";
+    unknown_controller.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(a));
+    Engine engine_a;
+    EXPECT_EQ(engine_a.init(std::move(unknown_controller)), Status::SemanticError);
+    EXPECT_TRUE(cites_rule(
+        engine_a,
+        "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_condition_references"));
+
+    Scenario unknown_phase = make_scenario();
+    unknown_phase.traffic_signal_controllers.push_back(
+        make_controller("group1", "s1", {{"go", 5.0}}));
+    unknown_phase.variables["seen"] = "no";
+    Event b;
+    b.name = "gated";
+    b.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("group1", "amber"));
+    b.actions.push_back(std::make_shared<VariableSetAction>("seen", "yes"));
+    unknown_phase.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(b));
+    Engine engine_b;
+    EXPECT_EQ(engine_b.init(std::move(unknown_phase)), Status::SemanticError);
+    EXPECT_TRUE(has_diagnostic(engine_b, Severity::Error, "has no phase 'amber'"));
+}
+
+TEST(TrafficSignalTest, SignalConditionsGateEventsThroughRisingEdge) {
+    // The §11.12 shape in miniature: a controller action moves the cycle, a
+    // rising-edge TrafficSignalControllerCondition releases the cross traffic,
+    // and a forced broken state is picked up by a TrafficSignalCondition.
+    Scenario scenario = make_scenario();
+    scenario.variables["released"] = "no";
+    scenario.variables["failure"] = "no";
+    scenario.traffic_signal_controllers.push_back(
+        make_controller("intersection", "straight", {{"stop", 30.0}, {"go", 20.0}}));
+
+    add_event(scenario, "vehicle-at-stop-line", 2.0,
+              std::make_shared<TrafficSignalControllerAction>("intersection", "go"));
+
+    Event release;
+    release.name = "release-cross-traffic";
+    release.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("intersection", "go"),
+                     scena::ir::ConditionEdge::Rising);
+    release.actions.push_back(std::make_shared<VariableSetAction>("released", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(release));
+
+    add_event(scenario, "bulb-failure", 5.0,
+              std::make_shared<TrafficSignalStateAction>("straight", "red;green"));
+
+    Event notice;
+    notice.name = "notice-failure";
+    notice.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalCondition>("straight", "red;green"),
+                     scena::ir::ConditionEdge::Rising);
+    notice.actions.push_back(std::make_shared<VariableSetAction>("failure", "yes"));
+    scenario.storyboard.stories.front()
+        .acts.front()
+        .groups.front()
+        .maneuvers.front()
+        .events.push_back(std::move(notice));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    EXPECT_EQ(engine.variable("released"), "no");
+    for (int i = 0; i < 8; ++i) { // t = 4: past the controller action
+        ASSERT_EQ(engine.step(0.5), Status::Ok);
+    }
+    EXPECT_EQ(engine.variable("released"), "yes");
+    EXPECT_EQ(engine.variable("failure"), "no");
+    for (int i = 0; i < 6; ++i) { // t = 7: past the forced failure
+        ASSERT_EQ(engine.step(0.5), Status::Ok);
+    }
+    EXPECT_EQ(engine.variable("failure"), "yes");
+    EXPECT_EQ(engine.traffic_signal_state("straight"), std::optional<std::string>("red;green"));
+}
+
 // --- Determinism -----------------------------------------------------------
 
 TEST(TrafficSignalTest, PhaseTimingIsBitIdenticalAcrossRuns) {
@@ -478,8 +692,8 @@ TEST(TrafficSignalTest, PhaseTimingIsBitIdenticalAcrossRuns) {
         Scenario scenario = make_scenario();
         scenario.traffic_signal_controllers.push_back(
             make_controller("main", "s1", {{"stop", 7.0}, {"caution", 2.5}, {"go", 9.5}}));
-        TrafficSignalController cross = make_controller(
-            "cross", "s2", {{"go", 9.5}, {"caution", 2.5}, {"stop", 7.0}});
+        TrafficSignalController cross =
+            make_controller("cross", "s2", {{"go", 9.5}, {"caution", 2.5}, {"stop", 7.0}});
         cross.delay = 3.25;
         cross.reference = "main";
         scenario.traffic_signal_controllers.push_back(std::move(cross));

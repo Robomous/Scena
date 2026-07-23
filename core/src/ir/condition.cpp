@@ -127,6 +127,50 @@ Rule TimeOfDayCondition::rule() const {
     return rule_;
 }
 
+TrafficSignalCondition::TrafficSignalCondition(std::string name, std::string state)
+    : name_(std::move(name)), state_(std::move(state)) {}
+
+bool TrafficSignalCondition::evaluate(const EvaluationContext& context) const {
+    // Byte-for-byte equality: the notation of a signal state is
+    // simulator-specific (§6.11.4), so no interpretation happens here. An
+    // unwritten signal is absent, hence false (the engine warns once).
+    const std::optional<std::string_view> current = context.traffic_signal_state(name_);
+    if (!current.has_value()) {
+        return false;
+    }
+    return *current == state_;
+}
+
+const std::string& TrafficSignalCondition::name() const {
+    return name_;
+}
+
+const std::string& TrafficSignalCondition::state() const {
+    return state_;
+}
+
+TrafficSignalControllerCondition::TrafficSignalControllerCondition(
+    std::string traffic_signal_controller_ref, std::string phase)
+    : traffic_signal_controller_ref_(std::move(traffic_signal_controller_ref)),
+      phase_(std::move(phase)) {}
+
+bool TrafficSignalControllerCondition::evaluate(const EvaluationContext& context) const {
+    const std::optional<std::string_view> current =
+        context.traffic_signal_controller_phase(traffic_signal_controller_ref_);
+    if (!current.has_value()) {
+        return false; // no phase yet (a §6.11.3 delay still running), or unknown
+    }
+    return *current == phase_;
+}
+
+const std::string& TrafficSignalControllerCondition::traffic_signal_controller_ref() const {
+    return traffic_signal_controller_ref_;
+}
+
+const std::string& TrafficSignalControllerCondition::phase() const {
+    return phase_;
+}
+
 StoryboardElementStateCondition::StoryboardElementStateCondition(StoryboardElementType element_type,
                                                                  std::string element_ref,
                                                                  StoryboardElementState state)

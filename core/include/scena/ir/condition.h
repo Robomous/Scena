@@ -134,6 +134,62 @@ private:
     Rule rule_;
 };
 
+/// Holds while a referenced traffic signal is in a given observable state, per
+/// TrafficSignalCondition (§7.6.5.2, §6.11).
+///
+/// The standard phrases it as "reaches a specific observable state". Scena
+/// models it as a **level** predicate — true whenever the signal's current
+/// state equals the reference — exactly like every other by-value condition in
+/// the catalog; "reaches" is what the trigger's `conditionEdge rising` supplies
+/// on top (see docs/user-guide/conditions.md). The comparison is byte-for-byte:
+/// "interpretation and notation of state are specific to the simulation engine
+/// used" (§6.11.4), so the engine must not read meaning into the string.
+///
+/// `name` is a road-network signal id, so it cannot be validated at load time
+/// (rule traffic_signal_condition_references, C.7.10, needs a road network). A
+/// signal nothing has written yet is a deterministic false and warns once.
+class TrafficSignalCondition final : public Condition {
+public:
+    TrafficSignalCondition(std::string name, std::string state);
+
+    [[nodiscard]] bool evaluate(const EvaluationContext& context) const override;
+
+    /// ID of the referenced signal in the road network file.
+    [[nodiscard]] const std::string& name() const;
+
+    /// The observable state to be reached.
+    [[nodiscard]] const std::string& state() const;
+
+private:
+    std::string name_;
+    std::string state_;
+};
+
+/// Holds while a traffic signal controller is in a given semantic phase, per
+/// TrafficSignalControllerCondition (§7.6.5.2, §6.11). A level predicate on the
+/// phase name, with the same edge reasoning as TrafficSignalCondition.
+///
+/// Both references are resolvable within the scenario and are checked at
+/// Engine::init (rule traffic_signal_controller_condition_references, C.7.12).
+/// A controller that has not started yet — one waiting out its §6.11.3 delay —
+/// has no phase, so the condition is a deterministic false.
+class TrafficSignalControllerCondition final : public Condition {
+public:
+    TrafficSignalControllerCondition(std::string traffic_signal_controller_ref, std::string phase);
+
+    [[nodiscard]] bool evaluate(const EvaluationContext& context) const override;
+
+    /// Name of the referenced TrafficSignalController.
+    [[nodiscard]] const std::string& traffic_signal_controller_ref() const;
+
+    /// Name of the phase to be reached.
+    [[nodiscard]] const std::string& phase() const;
+
+private:
+    std::string traffic_signal_controller_ref_;
+    std::string phase_;
+};
+
 /// Holds when the referenced storyboard element is in the given runtime state,
 /// or performs the given transition at this discrete time, per
 /// StoryboardElementStateCondition. `element_ref` is a nameRef resolved
