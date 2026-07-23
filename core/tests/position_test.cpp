@@ -46,12 +46,14 @@ namespace ir = scena::ir;
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Builds a resolver over a fixed table of reference entity poses.
-PositionResolver resolver_over(const std::map<std::string, EntityState>& entities) {
-    return PositionResolver([&entities](std::string_view id) -> const EntityState* {
-        const auto it = entities.find(std::string(id));
-        return it == entities.end() ? nullptr : &it->second;
-    });
+// Builds a resolver over a fixed table of reference entity poses. The table is
+// copied into the lookup so the resolver owns it — callers may pass a temporary.
+PositionResolver resolver_over(std::map<std::string, EntityState> entities) {
+    return PositionResolver(
+        [table = std::move(entities)](std::string_view id) -> const EntityState* {
+            const auto it = table.find(std::string(id));
+            return it == table.end() ? nullptr : &it->second;
+        });
 }
 
 // --- IR shape --------------------------------------------------------------
