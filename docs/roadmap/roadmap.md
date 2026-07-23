@@ -677,7 +677,16 @@ citation in code; per-family determinism fixtures green.
   overwrite-during-transition fixtures; GS-2's core sequence as an engine
   test.
 - **Exit:** suites green; GS-1/GS-2 scenario bodies run via the C++ API
-  with stable traces.
+  with stable traces. *(Met partially as of p5-s4: the longitudinal set —
+  SpeedAction absolute/relative targets with continuous tracking, minimal
+  §7.5.1 single-domain supersession — and the world-frame TeleportAction
+  landed (ADR-0013), with GS-1 running as an engine test and determinism
+  anchor. The lateral trio — LaneChangeAction, LaneOffsetAction,
+  LateralDistanceAction — and `action_lateral_test.cpp` need the p2-s3
+  lateral machinery (#17) and p3-s4 lane resolution (#23), so they move
+  with those sprints, and GS-2 moves with them; full §7.5 conflict
+  resolution is carried by #51 and XML lowering by P4. The coverage
+  matrix's Tests column tracks each row's carrier.)*
 
 ### p5-s5 — Private actions II: routing, distance keeping & controllers
 
