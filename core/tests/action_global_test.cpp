@@ -46,6 +46,7 @@ using scena::ir::Act;
 using scena::ir::Action;
 using scena::ir::AddEntityAction;
 using scena::ir::ControlMode;
+using scena::ir::CustomCommandAction;
 using scena::ir::DateTime;
 using scena::ir::DeleteEntityAction;
 using scena::ir::DynamicsDimension;
@@ -902,6 +903,74 @@ TEST(GlobalActionTest, EnvironmentStoreIsClearedByInitAndClose) {
     // A scenario with no environment action leaves the store empty.
     ASSERT_EQ(engine.init(make_scenario()), Status::Ok);
     EXPECT_TRUE(engine.environment().name.empty());
+}
+
+// --- CustomCommandAction (§7.4.3) ------------------------------------------
+
+/// A gateway that records the custom commands it is handed, in order.
+class CommandGateway final : public scena::gateway::ISimulatorGateway {
+public:
+    void publish_state(const std::string& entity_id, const EntityState& state) override {
+        (void)entity_id;
+        (void)state;
+    }
+
+    bool poll_state(const std::string& entity_id, EntityState& out) override {
+        (void)entity_id;
+        (void)out;
+        return false;
+    }
+
+    scena::gateway::IRoadQuery* road_query() override { return nullptr; }
+
+    void on_custom_command(const std::string& type, const std::string& content) override {
+        commands.push_back({type, content});
+    }
+
+    std::vector<std::pair<std::string, std::string>> commands;
+};
+
+TEST(GlobalActionTest, CustomCommandActionReachesGatewayInOrder) {
+    Scenario scenario = make_scenario();
+    scenario.init_actions.push_back(
+        std::make_shared<CustomCommandAction>("script", "prepare.py --warm"));
+    add_event(scenario, "first", 1.0, std::make_shared<CustomCommandAction>("log", "checkpoint A"));
+    add_event(scenario, "second", 2.0,
+              std::make_shared<CustomCommandAction>("log", "checkpoint B"));
+
+    CommandGateway gateway;
+    Engine engine(&gateway);
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    // The init action is handed over during init (§8.5), before any step.
+    ASSERT_EQ(gateway.commands.size(), 1U);
+    EXPECT_EQ(gateway.commands[0].first, "script");
+    EXPECT_EQ(gateway.commands[0].second, "prepare.py --warm");
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    ASSERT_EQ(gateway.commands.size(), 3U);
+    // Verbatim and in the order the storyboard fired them.
+    EXPECT_EQ(gateway.commands[1].second, "checkpoint A");
+    EXPECT_EQ(gateway.commands[2].second, "checkpoint B");
+
+    // Each action fires once, so a further step hands nothing over.
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(gateway.commands.size(), 3U);
+}
+
+TEST(GlobalActionTest, CustomCommandActionWithoutGatewayIsSilentNoOp) {
+    // §7.4.3 makes executability depend on the environment recognizing the
+    // action, so no host means no effect — and no diagnostic.
+    Scenario scenario = make_scenario();
+    add_event(scenario, "command", 1.0, std::make_shared<CustomCommandAction>("script", "noop"));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_EQ(engine.diagnostics().size(), 0U);
+    // The action still completed, so its event ended.
+    EXPECT_EQ(engine.storyboard_element_state("story/act/group/maneuver/command"),
+              scena::runtime::ElementState::Complete);
 }
 
 TEST(GlobalActionTest, UnknownGlobalKindWarnsWithActionPath) {

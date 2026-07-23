@@ -597,6 +597,35 @@ private:
     Environment environment_;
 };
 
+/// Issues a user-defined command to the host, per §UserDefinedAction /
+/// §CustomCommandAction (§7.4.3): "Users may create their own actions which may
+/// incorporate a command or a script file." Completes immediately (Annex A
+/// Table 12).
+///
+/// Both strings are opaque to the engine: `type` and `content` are "defined as
+/// a contract between the simulation environment provider and the author of a
+/// scenario", so Scena hands them to the gateway verbatim and reads no meaning
+/// into either. Without a gateway the action is a silent no-op — §7.4.3 makes
+/// executability depend on "the ability of the specific simulation environment
+/// recognizing these actions", so a host that does not implement it is not an
+/// error.
+class CustomCommandAction final : public GlobalAction {
+public:
+    CustomCommandAction(std::string type, std::string content);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The command type agreed between host and scenario author.
+    [[nodiscard]] const std::string& type() const;
+
+    /// The command itself, in whatever form that contract specifies.
+    [[nodiscard]] const std::string& content() const;
+
+private:
+    std::string type_;
+    std::string content_;
+};
+
 /// Forces the observable state of a named traffic signal, per
 /// §InfrastructureAction / §TrafficSignalAction / §TrafficSignalStateAction:
 /// "control the state of a traffic signal". Completes immediately (Annex A

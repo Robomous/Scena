@@ -2281,6 +2281,17 @@ std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::Glob
         return runtime::ActionOutcome::Complete;
     }
 
+    if (const auto* command = dynamic_cast<const ir::CustomCommandAction*>(&action)) {
+        // §7.4.3: the type and content are a host↔author contract, handed over
+        // verbatim. Without a gateway there is nobody to hand them to, and a
+        // host that ignores the action is the documented contract — so no
+        // diagnostic either way.
+        if (gateway_ != nullptr) {
+            gateway_->on_custom_command(command->type(), command->content());
+        }
+        return runtime::ActionOutcome::Complete;
+    }
+
     if (const auto* signal = dynamic_cast<const ir::TrafficSignalStateAction*>(&action)) {
         // Actions win: this write lands after the controllers have ticked for
         // this evaluation, so a forced state (the §11.12 broken traffic light)

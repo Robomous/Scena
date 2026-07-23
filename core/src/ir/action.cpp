@@ -352,6 +352,21 @@ const Environment& EnvironmentAction::environment() const {
     return environment_;
 }
 
+CustomCommandAction::CustomCommandAction(std::string type, std::string content)
+    : type_(std::move(type)), content_(std::move(content)) {}
+
+std::string_view CustomCommandAction::kind() const noexcept {
+    return "CustomCommandAction";
+}
+
+const std::string& CustomCommandAction::type() const {
+    return type_;
+}
+
+const std::string& CustomCommandAction::content() const {
+    return content_;
+}
+
 TrafficSignalStateAction::TrafficSignalStateAction(std::string name, std::string state)
     : name_(std::move(name)), state_(std::move(state)) {}
 
