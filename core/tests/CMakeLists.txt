@@ -62,6 +62,7 @@ scn_add_test(lateral_test)
 scn_add_test(longitudinal_test)
 scn_add_test(action_longitudinal_test)
 scn_add_test(action_teleport_test)
+scn_add_test(position_test)
 scn_add_test(action_ir_test)
 scn_add_test(action_distance_test)
 scn_add_test(action_lateral_test)
@@ -76,6 +77,8 @@ target_link_libraries(determinism_test PRIVATE scena::testsupport)
 target_link_libraries(detmath_test PRIVATE scena::testsupport)
 # obb2_test hex-pins raw freespace distances, so it needs hex_bits().
 target_link_libraries(obb2_test PRIVATE scena::testsupport)
+# position_test hex-pins the RelativeObjectPosition rotation against det_sincos.
+target_link_libraries(position_test PRIVATE scena::testsupport)
 
 if(SCN_BUILD_CAPI)
     scn_add_test(capi_test)
