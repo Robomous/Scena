@@ -996,11 +996,7 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                   "add entity action references undeclared entity '" + add->entity_ref() + "'",
                   path);
         }
-        const ir::WorldPosition& position = add->position();
-        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
-            !std::isfinite(position.z)) {
-            error(sink, Status::ValidationError, "add entity action position must be finite", path);
-        }
+        validate_position(add->position(), path, records, sink);
         return;
     }
     if (const auto* remove = dynamic_cast<const ir::DeleteEntityAction*>(&action)) {
@@ -1296,12 +1292,7 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         return;
     }
     if (const auto* acquire = dynamic_cast<const ir::AcquirePositionAction*>(&action)) {
-        const ir::WorldPosition& position = acquire->position();
-        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
-            !std::isfinite(position.z)) {
-            error(sink, Status::ValidationError, "acquire position action position must be finite",
-                  path);
-        }
+        validate_position(acquire->position(), path, records, sink);
         return;
     }
     if (const auto* follow = dynamic_cast<const ir::FollowTrajectoryAction*>(&action)) {
@@ -2457,6 +2448,9 @@ void Engine::activate_entity(EntityRecord& record, const ir::WorldPosition& posi
     record.state.x = position.x;
     record.state.y = position.y;
     record.state.z = position.z;
+    record.state.heading = position.h;
+    record.state.pitch = position.p;
+    record.state.roll = position.r;
     // Seed the observation baseline from the entity's own arrival state, the
     // same way init() seeds it after the init actions: the first step after the
     // add differences against where the entity actually appeared, so there is
@@ -2706,7 +2700,14 @@ std::optional<runtime::ActionOutcome> Engine::apply_global_action(const ir::Glob
         // already active entity will have no effect."
         const auto it = entities_.find(add->entity_ref());
         if (it != entities_.end() && !it->second.active) {
-            activate_entity(it->second, add->position());
+            runtime::Pose pose;
+            if (!resolve_position(add->position(), pose, "entities/" + add->entity_ref())) {
+                // The target position has no backend yet: the entity is not
+                // added, and resolve_position has reported why (ADR-0017).
+                return runtime::ActionOutcome::Complete;
+            }
+            activate_entity(it->second, ir::WorldPosition{pose.x, pose.y, pose.z, pose.heading,
+                                                          pose.pitch, pose.roll});
         }
         return runtime::ActionOutcome::Complete;
     }
@@ -2951,12 +2952,21 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         if (found == nullptr) {
             return runtime::ActionOutcome::Complete;
         }
+        runtime::Pose target;
+        if (!resolve_position(acquire->position(), target, "entities/" + action.entity_id())) {
+            // The target position could not be resolved (no backend yet); the
+            // route is left unchanged rather than aimed at a wrong point.
+            return runtime::ActionOutcome::Complete;
+        }
         ir::Route route;
         route.closed = false;
         route.waypoints.push_back(
             ir::Waypoint{ir::WorldPosition{found->state.x, found->state.y, found->state.z},
                          ir::RouteStrategy::Shortest});
-        route.waypoints.push_back(ir::Waypoint{acquire->position(), ir::RouteStrategy::Shortest});
+        route.waypoints.push_back(
+            ir::Waypoint{ir::WorldPosition{target.x, target.y, target.z, target.heading,
+                                           target.pitch, target.roll},
+                         ir::RouteStrategy::Shortest});
         found->route = std::move(route);
         return runtime::ActionOutcome::Complete;
     }

@@ -293,8 +293,8 @@ const Route& AssignRouteAction::route() const {
     return route_;
 }
 
-AcquirePositionAction::AcquirePositionAction(std::string entity_id, WorldPosition position)
-    : entity_id_(std::move(entity_id)), position_(position) {}
+AcquirePositionAction::AcquirePositionAction(std::string entity_id, Position position)
+    : entity_id_(std::move(entity_id)), position_(std::move(position)) {}
 
 const std::string& AcquirePositionAction::entity_id() const {
     return entity_id_;
@@ -304,7 +304,7 @@ std::string_view AcquirePositionAction::kind() const noexcept {
     return "AcquirePositionAction";
 }
 
-const WorldPosition& AcquirePositionAction::position() const {
+const Position& AcquirePositionAction::position() const {
     return position_;
 }
 
@@ -540,8 +540,8 @@ const std::string& TrafficSignalControllerAction::phase() const {
     return phase_;
 }
 
-AddEntityAction::AddEntityAction(std::string entity_ref, WorldPosition position)
-    : entity_ref_(std::move(entity_ref)), position_(position) {}
+AddEntityAction::AddEntityAction(std::string entity_ref, Position position)
+    : entity_ref_(std::move(entity_ref)), position_(std::move(position)) {}
 
 std::string_view AddEntityAction::kind() const noexcept {
     return "AddEntityAction";
@@ -551,7 +551,7 @@ const std::string& AddEntityAction::entity_ref() const {
     return entity_ref_;
 }
 
-const WorldPosition& AddEntityAction::position() const {
+const Position& AddEntityAction::position() const {
     return position_;
 }
 

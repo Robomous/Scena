@@ -299,9 +299,10 @@ TEST(RoutingActionIrTest, AssignRouteCarriesTheRoute) {
 TEST(RoutingActionIrTest, AcquirePositionCarriesTheTarget) {
     const AcquirePositionAction action("ego", WorldPosition{100.0, -5.0, 0.5});
     EXPECT_EQ(action.kind(), "AcquirePositionAction");
-    EXPECT_DOUBLE_EQ(action.position().x, 100.0);
-    EXPECT_DOUBLE_EQ(action.position().y, -5.0);
-    EXPECT_DOUBLE_EQ(action.position().z, 0.5);
+    const auto& world = std::get<scena::ir::WorldPosition>(action.position());
+    EXPECT_DOUBLE_EQ(world.x, 100.0);
+    EXPECT_DOUBLE_EQ(world.y, -5.0);
+    EXPECT_DOUBLE_EQ(world.z, 0.5);
 }
 
 TEST(RoutingActionIrTest, FollowTrajectoryDefaultsToPositionModeWithoutTiming) {

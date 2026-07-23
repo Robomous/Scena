@@ -567,18 +567,19 @@ private:
 /// the first waypoint, so the installed route depends on when the action fires.
 class AcquirePositionAction final : public Action {
 public:
-    AcquirePositionAction(std::string entity_id, WorldPosition position);
+    AcquirePositionAction(std::string entity_id, Position position);
 
     [[nodiscard]] const std::string& entity_id() const override;
 
     [[nodiscard]] std::string_view kind() const noexcept override;
 
-    /// The world-frame target position to acquire (§WorldPosition).
-    [[nodiscard]] const WorldPosition& position() const;
+    /// The target position to acquire (§Position), any of the ten §6.3.8
+    /// variants; resolved to the route's last waypoint at apply time.
+    [[nodiscard]] const Position& position() const;
 
 private:
     std::string entity_id_;
-    WorldPosition position_;
+    Position position_;
 };
 
 /// Moves an entity along a trajectory, per §FollowTrajectoryAction (§6.9).
@@ -939,24 +940,23 @@ private:
 /// resolves against the declaration, not against a live instance, and adding an
 /// active entity is a no-op. Completes immediately (Annex A Table 11).
 ///
-/// Scena models the world-frame target only, the p5-s4 TeleportAction
-/// precedent; the other §6.3.8 position variants arrive with the
-/// PositionResolver (p2-s4/p3-s4).
+/// The entity appears at any of the ten §6.3.8 position variants (§Position),
+/// resolved through the PositionResolver at apply time (ADR-0017).
 class AddEntityAction final : public GlobalAction {
 public:
-    AddEntityAction(std::string entity_ref, WorldPosition position);
+    AddEntityAction(std::string entity_ref, Position position);
 
     [[nodiscard]] std::string_view kind() const noexcept override;
 
     /// Name of the declared entity to add (§EntityAction entityRef).
     [[nodiscard]] const std::string& entity_ref() const;
 
-    /// Where the entity appears (§WorldPosition).
-    [[nodiscard]] const WorldPosition& position() const;
+    /// Where the entity appears (§Position).
+    [[nodiscard]] const Position& position() const;
 
 private:
     std::string entity_ref_;
-    WorldPosition position_;
+    Position position_;
 };
 
 /// Removes an entity from the running scenario, per §EntityAction /
