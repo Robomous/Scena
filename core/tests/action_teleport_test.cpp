@@ -15,16 +15,21 @@
  */
 
 //
-// TeleportAction (p5-s4): world-frame teleport. A one-shot action that writes an
-// entity's world position and completes in the evaluation it fires. Only the
-// §WorldPosition target is modeled (the PositionResolver and the other §6.3.8
-// variants arrive with p2-s4/p3-s4).
+// TeleportAction (p5-s4, generalized in p2-s4): teleport to any §6.3.8 Position.
+// A one-shot action that resolves the target through the PositionResolver and
+// writes the entity's world position and orientation, completing in the
+// evaluation it fires. Self-contained variants (world, relative-world,
+// relative-object) resolve; road/route/geo/trajectory targets are reported and
+// the teleport is a no-op until their backends land (ADR-0017). Control-
+// ownership (host-controlled) mode violations live in control_ownership_test.
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 
 #include <gtest/gtest.h>
 
@@ -44,6 +49,7 @@ using scena::EntityState;
 using scena::Status;
 using scena::ir::ControlMode;
 using scena::ir::Entity;
+using scena::ir::Position;
 using scena::ir::Scenario;
 using scena::ir::SimulationTimeCondition;
 using scena::ir::TeleportAction;
@@ -55,9 +61,10 @@ TEST(TeleportActionIrTest, CarriesEntityAndWorldPosition) {
     TeleportAction action("ego", WorldPosition{10.0, -4.0, 1.5});
     EXPECT_EQ(action.entity_id(), "ego");
     EXPECT_EQ(action.kind(), "TeleportAction");
-    EXPECT_DOUBLE_EQ(action.position().x, 10.0);
-    EXPECT_DOUBLE_EQ(action.position().y, -4.0);
-    EXPECT_DOUBLE_EQ(action.position().z, 1.5);
+    const auto& world = std::get<WorldPosition>(action.position());
+    EXPECT_DOUBLE_EQ(world.x, 10.0);
+    EXPECT_DOUBLE_EQ(world.y, -4.0);
+    EXPECT_DOUBLE_EQ(world.z, 1.5);
 }
 
 // --- Engine integration ---------------------------------------------------
@@ -65,8 +72,8 @@ TEST(TeleportActionIrTest, CarriesEntityAndWorldPosition) {
 // Scenario with one engine-controlled "ego"; `init_teleport` (when set) runs as
 // an init action, and `timed_teleport` (when set) fires at t=1 via a
 // SimulationTimeCondition.
-Scenario make_teleport_scenario(std::optional<WorldPosition> init_teleport,
-                                std::optional<WorldPosition> timed_teleport) {
+Scenario make_teleport_scenario(std::optional<Position> init_teleport,
+                                std::optional<Position> timed_teleport) {
     Scenario scenario;
     scenario.name = "teleport-integration";
     Entity ego;
@@ -133,6 +140,67 @@ TEST(TeleportActionEngineTest, NonFinitePositionIsRejectedAtInit) {
     const Status status =
         engine.init(make_teleport_scenario(WorldPosition{std::nan(""), 0.0, 0.0}, std::nullopt));
     EXPECT_EQ(status, Status::ValidationError);
+}
+
+TEST(TeleportActionEngineTest, WorldPositionTeleportWritesOrientation) {
+    // The generalized teleport now writes heading/pitch/roll from the resolved
+    // pose, not just x/y/z (ADR-0017).
+    Engine engine;
+    ASSERT_EQ(engine.init(make_teleport_scenario(WorldPosition{5.0, 6.0, 0.0, 0.75, 0.1, -0.2},
+                                                 std::nullopt)),
+              Status::Ok);
+    const std::optional<EntityState> state = engine.state("ego");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_DOUBLE_EQ(state->heading, 0.75);
+    EXPECT_DOUBLE_EQ(state->pitch, 0.1);
+    EXPECT_DOUBLE_EQ(state->roll, -0.2);
+}
+
+TEST(TeleportActionEngineTest, RelativeWorldPositionResolvesAgainstReference) {
+    // Two init teleports in order: place "lead" in the world, then teleport
+    // "ego" to a world-axis delta from it. The resolver reads lead's just-set
+    // state (§RelativeWorldPosition).
+    Scenario scenario;
+    scenario.name = "relative-teleport";
+    for (const char* id : {"lead", "ego"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        scenario.entities.push_back(std::move(entity));
+    }
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("lead", WorldPosition{10.0, 20.0, 0.0}));
+    scena::ir::RelativeWorldPosition relative;
+    relative.entity_ref = "lead";
+    relative.dx = 5.0;
+    relative.dy = -3.0;
+    scenario.init_actions.push_back(std::make_shared<TeleportAction>("ego", relative));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(scenario), Status::Ok);
+    const std::optional<EntityState> ego = engine.state("ego");
+    ASSERT_TRUE(ego.has_value());
+    EXPECT_DOUBLE_EQ(ego->x, 15.0); // 10 + 5, world axis (not rotated)
+    EXPECT_DOUBLE_EQ(ego->y, 17.0); // 20 - 3
+}
+
+TEST(TeleportActionEngineTest, UnsupportedVariantIsReportedAndLeavesStateUntouched) {
+    // A road-relative target has no backend yet: the teleport is a no-op and a
+    // diagnostic is reported — never silently wrong (ADR-0017).
+    scena::ir::RoadPosition road;
+    road.road_id = "1";
+    road.s = 5.0;
+    Engine engine;
+    ASSERT_EQ(engine.init(make_teleport_scenario(Position{road}, std::nullopt)), Status::Ok);
+    const std::optional<EntityState> state = engine.state("ego");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_DOUBLE_EQ(state->x, 0.0); // untouched
+    EXPECT_DOUBLE_EQ(state->y, 0.0);
+    const auto& diagnostics = engine.diagnostics();
+    EXPECT_TRUE(std::any_of(diagnostics.begin(), diagnostics.end(), [](const scena::Diagnostic& d) {
+        return d.code == Status::UnsupportedFeature;
+    }));
 }
 
 } // namespace

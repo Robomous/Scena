@@ -66,9 +66,9 @@ TEST(PositionIrTest, WorldPositionKeepsThreeFieldInitializer) {
 
 TEST(PositionIrTest, PositionHoldsEachVariantInChoiceOrder) {
     const ir::Position variants[] = {
-        ir::WorldPosition{},         ir::RelativeWorldPosition{}, ir::RelativeObjectPosition{},
-        ir::RoadPosition{},          ir::RelativeRoadPosition{},  ir::LanePosition{},
-        ir::RelativeLanePosition{},  ir::RoutePosition{},         ir::GeoPosition{},
+        ir::WorldPosition{},        ir::RelativeWorldPosition{}, ir::RelativeObjectPosition{},
+        ir::RoadPosition{},         ir::RelativeRoadPosition{},  ir::LanePosition{},
+        ir::RelativeLanePosition{}, ir::RoutePosition{},         ir::GeoPosition{},
         ir::TrajectoryPosition{}};
     // The spec's Position xsd:choice order, mirrored by the variant index.
     EXPECT_EQ(variants[0].index(), 0u);
@@ -197,9 +197,9 @@ TEST(PositionResolverTest, RelativeObjectRotationIsBitIdenticalToDetSincos) {
 TEST(PositionResolverTest, RoadFamilyReportsUnsupported) {
     const PositionResolver resolver = resolver_over({});
     Pose pose;
-    const ir::Position road_family[] = {
-        ir::RoadPosition{}, ir::RelativeRoadPosition{}, ir::LanePosition{},
-        ir::RelativeLanePosition{}, ir::RoutePosition{}};
+    const ir::Position road_family[] = {ir::RoadPosition{}, ir::RelativeRoadPosition{},
+                                        ir::LanePosition{}, ir::RelativeLanePosition{},
+                                        ir::RoutePosition{}};
     for (const auto& position : road_family) {
         const auto result = resolver.resolve(position, pose);
         EXPECT_EQ(result.status, Status::UnsupportedFeature);
@@ -226,9 +226,9 @@ TEST(PositionResolverTest, TrajectoryPositionReportsUnsupported) {
 TEST(PositionResolverTest, EveryVariantResolvesOrReports) {
     const PositionResolver resolver = resolver_over({});
     const ir::Position all[] = {
-        ir::WorldPosition{},         ir::RelativeWorldPosition{}, ir::RelativeObjectPosition{},
-        ir::RoadPosition{},          ir::RelativeRoadPosition{},  ir::LanePosition{},
-        ir::RelativeLanePosition{},  ir::RoutePosition{},         ir::GeoPosition{},
+        ir::WorldPosition{},        ir::RelativeWorldPosition{}, ir::RelativeObjectPosition{},
+        ir::RoadPosition{},         ir::RelativeRoadPosition{},  ir::LanePosition{},
+        ir::RelativeLanePosition{}, ir::RoutePosition{},         ir::GeoPosition{},
         ir::TrajectoryPosition{}};
     for (const auto& position : all) {
         Pose pose;

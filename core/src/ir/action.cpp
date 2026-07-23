@@ -86,8 +86,8 @@ FollowingMode SpeedProfileAction::following_mode() const {
     return following_mode_;
 }
 
-TeleportAction::TeleportAction(std::string entity_id, WorldPosition position)
-    : entity_id_(std::move(entity_id)), position_(position) {}
+TeleportAction::TeleportAction(std::string entity_id, Position position)
+    : entity_id_(std::move(entity_id)), position_(std::move(position)) {}
 
 const std::string& TeleportAction::entity_id() const {
     return entity_id_;
@@ -97,7 +97,7 @@ std::string_view TeleportAction::kind() const noexcept {
     return "TeleportAction";
 }
 
-const WorldPosition& TeleportAction::position() const {
+const Position& TeleportAction::position() const {
     return position_;
 }
 

@@ -189,25 +189,27 @@ private:
 /// §TeleportAction: a step (instantaneous) action that follows the §7.4 layer
 /// prioritization hierarchy.
 ///
-/// Scena models the world-frame target (§WorldPosition) only. The ten §6.3.8
-/// Position variants and the PositionResolver (road/lane/relative/…) arrive with
-/// p2-s4/p3-s4; this action generalizes to `ir::Position` there. The teleport
-/// writes the entity's world position; orientation (part of the full Position)
-/// is not modeled yet and is left unchanged.
+/// The target is any of the ten §6.3.8 Position variants (`ir::Position`); the
+/// runtime resolves it to a world pose through the PositionResolver and writes
+/// the entity's position and orientation. A `WorldPosition` converts implicitly,
+/// so `TeleportAction{id, WorldPosition{...}}` still compiles. Road-, lane-,
+/// route- and geo-relative targets resolve once their backends land
+/// (p3-s4/p2-s5); until then the resolver reports them and the teleport is a
+/// no-op (ADR-0017).
 class TeleportAction final : public Action {
 public:
-    TeleportAction(std::string entity_id, WorldPosition position);
+    TeleportAction(std::string entity_id, Position position);
 
     [[nodiscard]] const std::string& entity_id() const override;
 
     [[nodiscard]] std::string_view kind() const noexcept override;
 
-    /// The world-frame target position (§WorldPosition).
-    [[nodiscard]] const WorldPosition& position() const;
+    /// The target position (§Position), any of the ten §6.3.8 variants.
+    [[nodiscard]] const Position& position() const;
 
 private:
     std::string entity_id_;
-    WorldPosition position_;
+    Position position_;
 };
 
 /// Where the distance or time gap of a LongitudinalDistanceAction applies

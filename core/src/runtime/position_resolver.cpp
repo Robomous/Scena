@@ -47,7 +47,9 @@ void compose_orientation(double base_h, double base_p, double base_r,
     out.roll = base_r + orientation->r;
 }
 
-PositionResolution ok() { return PositionResolution{Status::Ok, {}, {}}; }
+PositionResolution ok() {
+    return PositionResolution{Status::Ok, {}, {}};
+}
 
 PositionResolution unresolved_reference(const std::string& entity_ref) {
     return PositionResolution{Status::SemanticError,

@@ -831,6 +831,56 @@ std::size_t phase_index(const std::vector<double>& bounds, double value) {
 ///
 /// The global actions (§7.4.2) validate their own references here too — they
 /// have no actor entity, so the caller's target check does not apply to them.
+/// Validates a Position target (§6.3.8) at init: numeric fields must be finite,
+/// and a variant that references an entity must name a declared one. Variants
+/// that need a road, route, trajectory or geodetic backend are accepted here —
+/// resolving them is reported at apply time (ADR-0017), not rejected at load, so
+/// a scenario that uses them still initializes.
+template <typename Records>
+void validate_position(const ir::Position& position, const std::string& path,
+                       const Records& records, DiagnosticSink& sink) {
+    const auto require_ref = [&](const std::string& entity_ref) {
+        if (records.find(entity_ref) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "position reference entity '" + entity_ref + "' is unknown", path);
+        }
+    };
+    const auto finite_orientation = [&](const std::optional<ir::Orientation>& orientation) {
+        if (orientation.has_value() &&
+            (!std::isfinite(orientation->h) || !std::isfinite(orientation->p) ||
+             !std::isfinite(orientation->r))) {
+            error(sink, Status::ValidationError, "position orientation must be finite", path);
+        }
+    };
+    if (const auto* world = std::get_if<ir::WorldPosition>(&position)) {
+        if (!std::isfinite(world->x) || !std::isfinite(world->y) || !std::isfinite(world->z) ||
+            !std::isfinite(world->h) || !std::isfinite(world->p) || !std::isfinite(world->r)) {
+            error(sink, Status::ValidationError, "world position must be finite", path);
+        }
+        return;
+    }
+    if (const auto* rel = std::get_if<ir::RelativeWorldPosition>(&position)) {
+        require_ref(rel->entity_ref);
+        finite_orientation(rel->orientation);
+        if (!std::isfinite(rel->dx) || !std::isfinite(rel->dy) || !std::isfinite(rel->dz)) {
+            error(sink, Status::ValidationError, "relative world position deltas must be finite",
+                  path);
+        }
+        return;
+    }
+    if (const auto* rel = std::get_if<ir::RelativeObjectPosition>(&position)) {
+        require_ref(rel->entity_ref);
+        finite_orientation(rel->orientation);
+        if (!std::isfinite(rel->dx) || !std::isfinite(rel->dy) || !std::isfinite(rel->dz)) {
+            error(sink, Status::ValidationError, "relative object position deltas must be finite",
+                  path);
+        }
+        return;
+    }
+    // The remaining variants (road/lane/route/geo/trajectory) are resolved — or
+    // reported unsupported — at apply time; no init-time gate.
+}
+
 template <typename Records>
 void validate_action_content(const ir::Action& action, const std::string& path,
                              const Records& records, const NamedValueStore& parameters,
@@ -1060,11 +1110,7 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         return;
     }
     if (const auto* teleport = dynamic_cast<const ir::TeleportAction*>(&action)) {
-        const ir::WorldPosition& position = teleport->position();
-        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
-            !std::isfinite(position.z)) {
-            error(sink, Status::ValidationError, "teleport action position must be finite", path);
-        }
+        validate_position(teleport->position(), path, records, sink);
         return;
     }
     if (const auto* keeping = dynamic_cast<const ir::LongitudinalDistanceAction*>(&action)) {
@@ -2353,6 +2399,29 @@ Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
     return nullptr;
 }
 
+bool Engine::resolve_position(const ir::Position& position, runtime::Pose& out,
+                              const std::string& path) {
+    const runtime::PositionResolver resolver([this](std::string_view id) -> const EntityState* {
+        const auto it = entities_.find(id);
+        if (it == entities_.end() || !it->second.active) {
+            return nullptr;
+        }
+        return &it->second.state;
+    });
+    const runtime::PositionResolution result = resolver.resolve(position, out);
+    if (result.status == Status::Ok) {
+        return true;
+    }
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = result.status;
+    diagnostic.message = result.message;
+    diagnostic.path = path;
+    diagnostic.rule_id = result.rule_id;
+    diagnostics_.report(std::move(diagnostic));
+    return false;
+}
+
 void Engine::deactivate_entity(EntityRecord& record) {
     record.active = false;
     // Motion and domain ownership: nothing may keep driving an entity that is
@@ -2817,19 +2886,35 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
     }
 
     if (const auto* teleport = dynamic_cast<const ir::TeleportAction*>(&action)) {
-        // §TeleportAction: a step (instantaneous) action. Scena resolves the
-        // world-frame target only; the PositionResolver and the other §6.3.8
-        // variants arrive with p2-s4/p3-s4. Orientation is part of the full
-        // Position and is not modeled yet, so heading/pitch/roll are left as-is.
+        // §TeleportAction: a step (instantaneous) action. Resolve the target
+        // Position (any §6.3.8 variant) to a world pose and write the entity's
+        // position and orientation. Variants that need a road/trajectory/geodetic
+        // backend are reported and skipped by resolve_position (ADR-0017).
         EntityRecord* found = record_for(action);
         if (found == nullptr) {
             return runtime::ActionOutcome::Complete;
         }
         EntityRecord& record = *found;
-        const ir::WorldPosition& position = teleport->position();
-        record.state.x = position.x;
-        record.state.y = position.y;
-        record.state.z = position.z;
+        // Control ownership is airtight: the engine never drives a
+        // host-controlled entity. A teleport aimed at one is a mode violation —
+        // reported and skipped, its state left entirely to the host (ADR-0003,
+        // ADR-0017). Warn-once: a re-executed event must not flood the sink.
+        if (record.mode == ir::ControlMode::HostControlled) {
+            warn_once("entities/" + action.entity_id(), Status::InvalidControlMode,
+                      "teleport action targets host-controlled entity '" + action.entity_id() +
+                          "'; the host owns its state, so the action is skipped");
+            return runtime::ActionOutcome::Complete;
+        }
+        runtime::Pose pose;
+        if (!resolve_position(teleport->position(), pose, "entities/" + action.entity_id())) {
+            return runtime::ActionOutcome::Complete;
+        }
+        record.state.x = pose.x;
+        record.state.y = pose.y;
+        record.state.z = pose.z;
+        record.state.heading = pose.heading;
+        record.state.pitch = pose.pitch;
+        record.state.roll = pose.roll;
         if (record.lateral_axis.has_value()) {
             // A lateral action is mid-flight: re-anchor its axis so it still
             // runs through the entity at the offset it had reached, and the
@@ -2840,8 +2925,6 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             axis.origin_x = record.state.x - record.lateral_offset * -axis.sin;
             axis.origin_y = record.state.y - record.lateral_offset * axis.cos;
         }
-        // A host-controlled entity's reported state overwrites this on the next
-        // poll; the formal host round-trip for teleport is p2-s4.
         return runtime::ActionOutcome::Complete;
     }
 
