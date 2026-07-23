@@ -526,6 +526,62 @@ scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity
     }
 }
 
+scn_status scn_engine_add_teleport_action_oriented(scn_engine* engine, const char* entity_id,
+                                                   double x, double y, double z, double h, double p,
+                                                   double r, double at_time,
+                                                   scn_event_priority priority,
+                                                   int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::TeleportAction>(
+                                    entity_id, scena::ir::WorldPosition{x, y, z, h, p, r}));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_teleport_action_relative(scn_engine* engine, const char* entity_id,
+                                                   const char* reference_entity_id, double dx,
+                                                   double dy, double dz, int object_frame,
+                                                   double at_time, scn_event_priority priority,
+                                                   int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || reference_entity_id == nullptr ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Position position;
+        if (object_frame != 0) {
+            scena::ir::RelativeObjectPosition target;
+            target.entity_ref = reference_entity_id;
+            target.dx = dx;
+            target.dy = dy;
+            target.dz = dz;
+            position = target;
+        } else {
+            scena::ir::RelativeWorldPosition target;
+            target.entity_ref = reference_entity_id;
+            target.dx = dx;
+            target.dy = dy;
+            target.dz = dz;
+            position = target;
+        }
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::TeleportAction>(entity_id, std::move(position)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
 namespace {
 
 /// Shared argument check for the two lane-change builders: everything but the

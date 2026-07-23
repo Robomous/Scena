@@ -482,14 +482,35 @@ SCN_API scn_status scn_engine_add_relative_speed_action(
 
 /* Adds a TeleportAction (§TeleportAction) that moves `entity_id` to the world
  * position (`x`, `y`, `z`) [m] when triggered at `at_time`. A step
- * (instantaneous) action; Scena resolves the world-frame target only (the other
- * §6.3.8 position variants arrive with p2-s4/p3-s4). An out-of-range priority or
- * a negative maximum_execution_count is rejected with
- * SCN_ERROR_INVALID_ARGUMENT. */
+ * (instantaneous) action. Orientation is left unchanged (heading/pitch/roll are
+ * 0 in the world target); use scn_engine_add_teleport_action_oriented to set it.
+ * An out-of-range priority or a negative maximum_execution_count is rejected
+ * with SCN_ERROR_INVALID_ARGUMENT. */
 SCN_API scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity_id,
                                                   double x, double y, double z, double at_time,
                                                   scn_event_priority priority,
                                                   int maximum_execution_count);
+
+/* Adds a TeleportAction to the world position (`x`, `y`, `z`) [m] with the
+ * world-frame orientation heading/pitch/roll (`h`, `p`, `r`) [rad]
+ * (§WorldPosition). The teleport writes the entity's full pose. Same argument
+ * rules as scn_engine_add_teleport_action. */
+SCN_API scn_status scn_engine_add_teleport_action_oriented(
+    scn_engine* engine, const char* entity_id, double x, double y, double z, double h, double p,
+    double r, double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a TeleportAction to a position relative to `reference_entity_id`
+ * (§RelativeWorldPosition / §RelativeObjectPosition). When `object_frame` is 0
+ * the deltas (`dx`, `dy`, `dz`) [m] are along the WORLD axes; when non-zero they
+ * are in the reference entity's LOCAL frame (rotated by its heading). The
+ * teleported entity copies the reference entity's orientation. The target is
+ * resolved at apply time; if the reference entity is not active then the
+ * teleport is reported and skipped. `reference_entity_id` must be non-NULL;
+ * other argument rules match scn_engine_add_teleport_action. */
+SCN_API scn_status scn_engine_add_teleport_action_relative(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double dx,
+    double dy, double dz, int object_frame, double at_time, scn_event_priority priority,
+    int maximum_execution_count);
 
 /* Adds a LongitudinalDistanceAction (§LongitudinalDistanceAction): the actor
  * keeps a distance [m] or a headway time gap [s] to `reference_entity_id`.

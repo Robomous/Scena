@@ -381,6 +381,46 @@ TEST(CApiTest, AddTeleportActionMovesEntity) {
     scn_engine_destroy(engine);
 }
 
+TEST(CApiTest, OrientedTeleportWritesHeadingThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_teleport_action_oriented(engine, "ego", 1.0, 2.0, 0.0, 0.9, 0.0, 0.0,
+                                                      1.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // t=1: teleport fires
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.x, 1.0);
+    EXPECT_EQ(state.heading, 0.9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, RelativeTeleportResolvesThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "lead", "lead", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    // Place the lead at t=1, then teleport ego to a world-axis delta from it at
+    // t=2 — the resolver reads lead's placed state.
+    ASSERT_EQ(scn_engine_add_teleport_action(engine, "lead", 10.0, 20.0, 0.0, 1.0,
+                                             SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_teleport_action_relative(engine, "ego", "lead", 5.0, -3.0, 0.0,
+                                                      /*object_frame=*/0, 2.0,
+                                                      SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // t=1: lead placed
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // t=2: ego resolves
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.x, 15.0);
+    EXPECT_EQ(state.y, 17.0);
+    scn_engine_destroy(engine);
+}
+
 TEST(CApiTest, PrivateActionBuildersRejectInvalidArguments) {
     scn_engine* engine = scn_engine_create();
     ASSERT_NE(engine, nullptr);
@@ -412,6 +452,23 @@ TEST(CApiTest, PrivateActionBuildersRejectInvalidArguments) {
               SCN_ERROR_INVALID_ARGUMENT);
     EXPECT_EQ(scn_engine_add_teleport_action(engine, "ego", 0.0, 0.0, 0.0, 0.0,
                                              SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Oriented teleport: NULL engine/entity.
+    EXPECT_EQ(scn_engine_add_teleport_action_oriented(nullptr, "ego", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_teleport_action_oriented(engine, nullptr, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // Relative teleport: NULL engine/entity/reference, negative execution count.
+    EXPECT_EQ(scn_engine_add_teleport_action_relative(nullptr, "ego", "lead", 0.0, 0.0, 0.0, 0, 0.0,
+                                                      SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_teleport_action_relative(engine, nullptr, "lead", 0.0, 0.0, 0.0, 0,
+                                                      0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_teleport_action_relative(engine, "ego", nullptr, 0.0, 0.0, 0.0, 0, 0.0,
+                                                      SCN_PRIORITY_PARALLEL, 1),
               SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }
