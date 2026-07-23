@@ -15,6 +15,7 @@ add_library(scena-core STATIC
     src/runtime/detmath.cpp
     src/runtime/distance_measure.cpp
     src/runtime/element_ref.cpp
+    src/runtime/lateral.cpp
     src/runtime/longitudinal.cpp
     src/runtime/obb2.cpp
     src/runtime/scheduler.cpp

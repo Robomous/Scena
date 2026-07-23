@@ -68,9 +68,16 @@ namespace scena::runtime {
 [[nodiscard]] double transition_duration(const ir::TransitionDynamics& td, double from,
                                          double to) noexcept;
 
-/// A default longitudinal speed controller: drives an entity's speed through a
-/// sequence of segments. A plain SpeedAction is one segment; a
-/// SpeedProfileAction is one segment per profile entry.
+/// A sequencer for shaped value transitions: drives a scalar through a sequence
+/// of segments. A plain SpeedAction is one segment; a SpeedProfileAction is one
+/// segment per profile entry.
+///
+/// The name is historical — it is the default longitudinal speed controller —
+/// but nothing in it is longitudinal. p2-s3 reuses it verbatim as the lateral
+/// offset sequencer of a LaneChangeAction or LaneOffsetAction, whose segments
+/// carry metres of lateral offset rather than metres per second; an offset ramp
+/// and a speed ramp are the same §TransitionDynamics shape math over a
+/// different quantity, and sharing the code keeps them bit-identical.
 ///
 /// The controller is pure kinematics. Performance clamping is folded into the
 /// segment spans by the caller (as an extended, achievable duration), so the
@@ -79,8 +86,8 @@ namespace scena::runtime {
 /// travelled, which the caller supplies each step.
 struct LongitudinalController {
     struct Segment {
-        double from = 0.0; ///< Speed at segment start [m/s].
-        double to = 0.0;   ///< Target speed [m/s].
+        double from = 0.0; ///< Value at segment start [m/s speed, or m offset].
+        double to = 0.0;   ///< Target value, same unit as `from`.
         ir::DynamicsShape shape = ir::DynamicsShape::Linear;
         bool by_distance = false; ///< false: `span` is seconds; true: metres.
         double span = 0.0;        ///< Duration [s] or distance [m]; <= 0 ⇒ instant.
@@ -94,14 +101,14 @@ struct LongitudinalController {
     /// True once every segment has completed.
     [[nodiscard]] bool done() const noexcept { return index >= segments.size(); }
 
-    /// Commanded speed at the current progress. After done(), the final target
+    /// Commanded value at the current progress. After done(), the final target
     /// (exactly, so a Sinusoidal endpoint is not left a det_cos ulp short).
     [[nodiscard]] double speed() const noexcept;
 
     /// Advances by one step of `dt` seconds during which the entity travelled
     /// `step_distance` metres (used only by distance-segments), crossing
     /// segment boundaries as needed and carrying the unused remainder into the
-    /// next segment. Returns the commanded speed at the end of the step; sets
+    /// next segment. Returns the commanded value at the end of the step; sets
     /// done() once the last segment finishes.
     double advance(double dt, double step_distance) noexcept;
 };

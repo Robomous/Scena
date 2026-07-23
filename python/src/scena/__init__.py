@@ -20,6 +20,8 @@ query / close.
 """
 
 from ._scena import (
+    AbsoluteTargetLane,
+    AbsoluteTargetLaneOffset,
     AccelerationCondition,
     AcquirePositionAction,
     Act,
@@ -63,6 +65,10 @@ from ._scena import (
     FollowingMode,
     FollowTrajectoryAction,
     GlobalAction,
+    LaneChangeAction,
+    LaneOffsetAction,
+    LateralDisplacement,
+    LateralDistanceAction,
     LongitudinalDisplacement,
     LongitudinalDistanceAction,
     Maneuver,
@@ -89,6 +95,8 @@ from ._scena import (
     RelativeDistanceType,
     RelativeLaneRange,
     RelativeSpeedCondition,
+    RelativeTargetLane,
+    RelativeTargetLaneOffset,
     RelativeTargetSpeed,
     RoadCondition,
     Role,
@@ -150,6 +158,8 @@ from ._scena import (
 )
 
 __all__ = [
+    "AbsoluteTargetLane",
+    "AbsoluteTargetLaneOffset",
     "AccelerationCondition",
     "AcquirePositionAction",
     "Act",
@@ -193,6 +203,10 @@ __all__ = [
     "FollowingMode",
     "FollowTrajectoryAction",
     "GlobalAction",
+    "LaneChangeAction",
+    "LaneOffsetAction",
+    "LateralDisplacement",
+    "LateralDistanceAction",
     "LongitudinalDisplacement",
     "LongitudinalDistanceAction",
     "Maneuver",
@@ -219,6 +233,8 @@ __all__ = [
     "RelativeDistanceType",
     "RelativeLaneRange",
     "RelativeSpeedCondition",
+    "RelativeTargetLane",
+    "RelativeTargetLaneOffset",
     "RelativeTargetSpeed",
     "RoadCondition",
     "Role",

@@ -526,6 +526,166 @@ scn_status scn_engine_add_teleport_action(scn_engine* engine, const char* entity
     }
 }
 
+namespace {
+
+/// Shared argument check for the two lane-change builders: everything but the
+/// target, which is what distinguishes them.
+bool lane_change_arguments_valid(scn_engine* engine, const char* entity_id,
+                                 const scn_transition_dynamics* dynamics,
+                                 scn_event_priority priority, int maximum_execution_count,
+                                 scena::ir::EventPriority& out_priority) {
+    return engine != nullptr && entity_id != nullptr && dynamics != nullptr &&
+           maximum_execution_count >= 0 && to_ir_priority(priority, out_priority) &&
+           static_cast<unsigned>(dynamics->shape) <=
+               static_cast<unsigned>(SCN_DYNAMICS_SHAPE_STEP) &&
+           static_cast<unsigned>(dynamics->dimension) <=
+               static_cast<unsigned>(SCN_DYNAMICS_DIMENSION_RATE) &&
+           static_cast<unsigned>(dynamics->following_mode) <=
+               static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW);
+}
+
+scena::ir::TransitionDynamics from_c_dynamics(const scn_transition_dynamics& dynamics) {
+    return scena::ir::TransitionDynamics{
+        static_cast<scena::ir::DynamicsShape>(dynamics.shape),
+        static_cast<scena::ir::DynamicsDimension>(dynamics.dimension), dynamics.value,
+        static_cast<scena::ir::FollowingMode>(dynamics.following_mode)};
+}
+
+} // namespace
+
+scn_status scn_engine_add_relative_lane_change_action(scn_engine* engine, const char* entity_id,
+                                                      const char* reference_entity_id,
+                                                      int lane_delta, double target_lane_offset,
+                                                      const scn_transition_dynamics* dynamics,
+                                                      double at_time, scn_event_priority priority,
+                                                      int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (reference_entity_id == nullptr ||
+        !lane_change_arguments_valid(engine, entity_id, dynamics, priority, maximum_execution_count,
+                                     ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::LaneChangeAction>(
+                                    entity_id,
+                                    scena::ir::RelativeTargetLane{reference_entity_id, lane_delta},
+                                    from_c_dynamics(*dynamics), target_lane_offset));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_absolute_lane_change_action(scn_engine* engine, const char* entity_id,
+                                                      const char* lane_id,
+                                                      double target_lane_offset,
+                                                      const scn_transition_dynamics* dynamics,
+                                                      double at_time, scn_event_priority priority,
+                                                      int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (lane_id == nullptr || lane_id[0] == '\0' ||
+        !lane_change_arguments_valid(engine, entity_id, dynamics, priority, maximum_execution_count,
+                                     ir_priority)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::LaneChangeAction>(
+                                    entity_id, scena::ir::AbsoluteTargetLane{lane_id},
+                                    from_c_dynamics(*dynamics), target_lane_offset));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_lane_offset_action(scn_engine* engine, const char* entity_id,
+                                             const char* reference_entity_id, double value,
+                                             int continuous, scn_dynamics_shape shape,
+                                             double max_lateral_acc, double at_time,
+                                             scn_event_priority priority,
+                                             int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(shape) > static_cast<unsigned>(SCN_DYNAMICS_SHAPE_STEP)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        // On the ABI "unset" is a negative maxLateralAcc, the same convention
+        // the distance/timeGap pair uses: the standard's range is [0..inf[ and
+        // a missing value means 'inf'.
+        std::optional<double> ir_acc;
+        if (max_lateral_acc >= 0.0) {
+            ir_acc = max_lateral_acc;
+        }
+        const auto ir_shape = static_cast<scena::ir::DynamicsShape>(shape);
+        std::shared_ptr<scena::ir::LaneOffsetAction> action;
+        if (reference_entity_id != nullptr) {
+            action = std::make_shared<scena::ir::LaneOffsetAction>(
+                entity_id, scena::ir::RelativeTargetLaneOffset{reference_entity_id, value},
+                continuous != 0, ir_shape, ir_acc);
+        } else {
+            action = std::make_shared<scena::ir::LaneOffsetAction>(
+                entity_id, scena::ir::AbsoluteTargetLaneOffset{value}, continuous != 0, ir_shape,
+                ir_acc);
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::move(action));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_lateral_distance_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double distance,
+    int freespace, int continuous, scn_coordinate_system coordinate_system,
+    scn_lateral_displacement displacement, const scn_dynamic_constraints* constraints,
+    double at_time, scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || reference_entity_id == nullptr ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(coordinate_system) >
+            static_cast<unsigned>(SCN_COORDINATE_SYSTEM_WORLD) ||
+        static_cast<unsigned>(displacement) >
+            static_cast<unsigned>(SCN_LATERAL_DISPLACEMENT_RIGHT)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        std::optional<scena::ir::DynamicConstraints> ir_constraints;
+        if (constraints != nullptr) {
+            ir_constraints = from_c_constraints(*constraints);
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::LateralDistanceAction>(
+                                    entity_id, reference_entity_id, distance, freespace != 0,
+                                    continuous != 0,
+                                    static_cast<scena::ir::CoordinateSystem>(coordinate_system),
+                                    static_cast<scena::ir::LateralDisplacement>(displacement),
+                                    std::move(ir_constraints)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_default_lane_width(scn_engine* engine, double width) {
+    if (engine == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    return to_c_status(engine->engine.set_default_lane_width(width));
+}
+
+scn_status scn_engine_get_default_lane_width(scn_engine* engine, double* out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out = engine->engine.default_lane_width();
+    return SCN_OK;
+}
+
 scn_status scn_engine_add_longitudinal_distance_action(
     scn_engine* engine, const char* entity_id, const char* reference_entity_id, double distance,
     double time_gap, int freespace, int continuous, scn_coordinate_system coordinate_system,

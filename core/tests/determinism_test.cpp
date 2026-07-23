@@ -771,6 +771,81 @@ scena::ir::Scenario make_gs4_scenario() {
     return scenario;
 }
 
+/// GS-2 from docs/roadmap/golden-scenarios.md, flat-world (p2-s3): the ego
+/// cruises in the right lane while a faster cutter closes in the lane to its
+/// left; a RelativeDistanceCondition on the longitudinal gap arms the cut-in,
+/// a relative LaneChangeAction with sinusoidal time dynamics brings the cutter
+/// into the ego's lane, and an absolute SpeedAction then slows it.
+///
+/// The lateral determinism anchor: it is the only golden scenario that drives
+/// the composed lateral integrator and its det_atan2 heading blend, and it runs
+/// both entities concurrently so the two-domain interaction is covered too.
+/// Real lane identity needs a road backend (#23); here "one lane over" is the
+/// engine's default lane width.
+scena::ir::Scenario make_gs2_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "gs2-cut-in";
+
+    const auto vehicle_entity = [](const char* id) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        Vehicle vehicle;
+        vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, 5.0, 2.0, 1.5};
+        vehicle.performance = Performance{60.0, 4.0, 8.0, std::nullopt, std::nullopt};
+        entity.object = vehicle;
+        return entity;
+    };
+    scenario.entities.push_back(vehicle_entity("cutter"));
+    scenario.entities.push_back(vehicle_entity("ego"));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
+    // One default lane width to the ego's left, and behind it to start with.
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("cutter", WorldPosition{-40.0, 3.5, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 25.0));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("cutter", 33.0));
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+
+    Event cut_in;
+    cut_in.name = "cut-in";
+    // The cutter overtakes and cuts in once it is more than 15 m clear of the
+    // ego longitudinally (a rising edge: the gap starts at 40 m behind, closes
+    // through zero as it passes, and opens again ahead).
+    cut_in.start_trigger = make_trigger(std::make_shared<RelativeDistanceCondition>(
+        TriggeringEntities{TriggeringEntitiesRule::Any, {"cutter"}}, std::string("ego"), 15.0,
+        /*freespace=*/true, RelativeDistanceType::Longitudinal, Rule::GreaterThan,
+        CoordinateSystem::Entity));
+    cut_in.actions.push_back(std::make_shared<LaneChangeAction>(
+        "cutter", RelativeTargetLane{"cutter", -1},
+        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 3.0}));
+    maneuver.events.push_back(std::move(cut_in));
+
+    Event slow;
+    slow.name = "cutter-slows";
+    slow.start_trigger = make_trigger(std::make_shared<StoryboardElementStateCondition>(
+        StoryboardElementType::Event, "cut-in", StoryboardElementState::CompleteState));
+    slow.actions.push_back(std::make_shared<SpeedAction>(
+        "cutter", 14.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 4.0}));
+    maneuver.events.push_back(std::move(slow));
+
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
 /// An entity lifecycle scenario (p5-s6): three entities, one of which is
 /// deleted mid-run and added back at a new position while the others keep
 /// driving. The determinism anchor for §EntityAction — the active flag must
@@ -1038,6 +1113,59 @@ TEST(DeterminismTest, GoldenScenario4TrafficJamApproachIsBitIdentical) {
     const double gap = engine_a.state("lead")->x - engine_a.state("ego")->x - 5.0;
     EXPECT_LT(gap, 20.0);
     EXPECT_GT(gap, 0.0);
+}
+
+TEST(DeterminismTest, GoldenScenario2CutInIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_gs2_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_gs2_scenario()), Status::Ok);
+
+    // The same non-uniform step pattern every other golden anchor uses.
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 600; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+        expect_bit_identical(engine_a, engine_b, "cutter");
+    }
+    expect_same_diagnostics(engine_a, engine_b);
+
+    // Guard against a dead scenario: the cutter really did change lane into the
+    // ego's, straighten out, and slow down.
+    ASSERT_TRUE(engine_a.state("cutter").has_value());
+    EXPECT_NEAR(engine_a.state("cutter")->y, 0.0, 1e-9);
+    EXPECT_DOUBLE_EQ(engine_a.state("cutter")->heading, 0.0);
+    EXPECT_NEAR(engine_a.state("cutter")->speed, 14.0, 1e-9);
+    // The ego was never steered: it holds the lane it started in.
+    ASSERT_TRUE(engine_a.state("ego").has_value());
+    EXPECT_DOUBLE_EQ(engine_a.state("ego")->y, 0.0);
+}
+
+TEST(DeterminismTest, GoldenScenario2CutInIsHexPinned) {
+    // The cross-platform half of the lateral anchor: the CI matrix runs this on
+    // macOS, Linux and Windows, so a libm call sneaking into the composed
+    // integrator or the heading blend would show up as a differing bit pattern
+    // rather than as a tolerance drift. Captured from the local build; if it
+    // ever disagrees, run scripts/check_detmath.sh first.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_gs2_scenario()), Status::Ok);
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 600; ++i) {
+        ASSERT_EQ(engine.step(pattern[i % 4]), Status::Ok);
+    }
+    ASSERT_TRUE(engine.state("cutter").has_value());
+    const scena::EntityState cutter = *engine.state("cutter");
+    EXPECT_EQ(hex_bits(cutter.x), "408809dbb2fec593");
+    EXPECT_EQ(hex_bits(cutter.y), "3cd0000000000000");
+    EXPECT_EQ(hex_bits(cutter.heading), "0000000000000000");
+    EXPECT_EQ(hex_bits(cutter.speed), "402c000000000000");
+
+    // One det_atan2 blend sample from the middle of the lane change, pinned
+    // directly: a lateral step of 0.11 m over 2.7 m of travel.
+    EXPECT_EQ(hex_bits(scena::runtime::det_atan2(0.11, 2.7)), "3fa4d904d47e781f");
 }
 
 TEST(DeterminismTest, TrajectoryFollowingIsBitIdentical) {

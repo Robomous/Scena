@@ -269,6 +269,14 @@ typedef enum scn_longitudinal_displacement {
     SCN_LONGITUDINAL_DISPLACEMENT_LEADING = 2   /* the actor stays ahead */
 } scn_longitudinal_displacement;
 
+/* Which side of the reference entity a lateral distance applies to
+ * (§LateralDisplacement). Values mirror the IR enum. */
+typedef enum scn_lateral_displacement {
+    SCN_LATERAL_DISPLACEMENT_ANY = 0, /* whichever side the actor is on (default) */
+    SCN_LATERAL_DISPLACEMENT_LEFT = 1,
+    SCN_LATERAL_DISPLACEMENT_RIGHT = 2
+} scn_lateral_displacement;
+
 /* Strategy for path selection between route waypoints (§RouteStrategy). Values
  * mirror the IR enum. Stored but not interpreted: choosing a path needs a road
  * network, and SCN_ROUTE_STRATEGY_RANDOM never reaches a random generator. */
@@ -499,6 +507,79 @@ SCN_API scn_status scn_engine_add_longitudinal_distance_action(
     double time_gap, int freespace, int continuous, scn_coordinate_system coordinate_system,
     scn_longitudinal_displacement displacement, const scn_dynamic_constraints* constraints,
     double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* The lateral actions (§7.4.1.4). The lateral sign convention is one rule for
+ * all three: positive is the reference entity's +y axis, which points left
+ * (§6.3.4, ISO 8855).
+ *
+ * Adds a LaneChangeAction whose target lane is `lane_delta` lanes from
+ * `reference_entity_id`'s current lane — positive to its left, the road centre
+ * lane not counted (§7.4.1.4). `reference_entity_id` may name the actor itself.
+ * `target_lane_offset` [m] is the offset to reach on the target lane, where the
+ * action ends; pass 0 for the lane centre. Without a road network the lane
+ * spacing is Engine's default lane width (see scn_engine_set_default_lane_width).
+ *
+ * A NULL engine/id/reference, an out-of-range shape/dimension/following_mode/
+ * priority, or a negative maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_relative_lane_change_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, int lane_delta,
+    double target_lane_offset, const scn_transition_dynamics* dynamics, double at_time,
+    scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a LaneChangeAction to the lane named by `lane_id` (§AbsoluteTargetLane).
+ * A lane id names an element of the road network, so resolving it needs a host
+ * IRoadQuery that answers the lane queries; without one the action reports
+ * SCN_ERROR_UNSUPPORTED_FEATURE as a runtime diagnostic and completes without
+ * moving the entity sideways. A NULL or empty `lane_id` is rejected here. */
+SCN_API scn_status scn_engine_add_absolute_lane_change_action(
+    scn_engine* engine, const char* entity_id, const char* lane_id, double target_lane_offset,
+    const scn_transition_dynamics* dynamics, double at_time, scn_event_priority priority,
+    int maximum_execution_count);
+
+/* Adds a LaneOffsetAction (§LaneOffsetAction) moving `entity_id` to a lateral
+ * offset of `value` [m]. `reference_entity_id` NULL makes the offset absolute,
+ * measured from the actor's own lane centre line; naming an entity measures it
+ * from that entity's lane position instead. `continuous` non-zero keeps the
+ * offset and the action never ends by itself (§7.5.3).
+ *
+ * There is no authored duration: it follows from `shape`, the offset delta and
+ * `max_lateral_acc` [m/s^2]. Pass a negative `max_lateral_acc` for "unset",
+ * which the standard reads as 'inf' and which makes the transition
+ * instantaneous, as does SCN_DYNAMICS_SHAPE_STEP. A zero max_lateral_acc is
+ * rejected at scn_engine_init: it would permit no lateral motion at all. */
+SCN_API scn_status scn_engine_add_lane_offset_action(scn_engine* engine, const char* entity_id,
+                                                     const char* reference_entity_id, double value,
+                                                     int continuous, scn_dynamics_shape shape,
+                                                     double max_lateral_acc, double at_time,
+                                                     scn_event_priority priority,
+                                                     int maximum_execution_count);
+
+/* Adds a LateralDistanceAction (§LateralDistanceAction): the actor keeps a
+ * lateral distance [m, Range [0..inf[] to `reference_entity_id`. `freespace`
+ * non-zero measures between the closest bounding-box points, zero between
+ * reference points. `continuous` non-zero makes the action never end by itself
+ * (§7.5.3). `constraints` may be NULL, which is what the standard calls keeping
+ * the distance "rigid": the whole error is closed in one step.
+ *
+ * SCN_COORDINATE_SYSTEM_LANE is accepted but cannot be honoured — §6.4.8.2.2
+ * states the lane-CS lateral distance is undefined — and is reported at
+ * scn_engine_init and again when the action runs. */
+SCN_API scn_status scn_engine_add_lateral_distance_action(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id, double distance,
+    int freespace, int continuous, scn_coordinate_system coordinate_system,
+    scn_lateral_displacement displacement, const scn_dynamic_constraints* constraints,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Sets the lane width a LaneChangeAction assumes when the target lane cannot be
+ * resolved against a road network, in metres. A non-finite or non-positive
+ * width returns SCN_ERROR_INVALID_ARGUMENT and changes nothing. Settable before
+ * or after scn_engine_init; persists across init and is restored to the default
+ * 3.5 m by scn_engine_close. */
+SCN_API scn_status scn_engine_set_default_lane_width(scn_engine* engine, double width);
+
+/* Writes the lane width the flat-world lane model currently uses into *out. */
+SCN_API scn_status scn_engine_get_default_lane_width(scn_engine* engine, double* out);
 
 /* Adds an AssignRouteAction (§AssignRouteAction) assigning a route of
  * `waypoint_count` waypoints (at least 2) to `entity_id`. `closed` non-zero

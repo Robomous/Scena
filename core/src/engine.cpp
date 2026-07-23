@@ -17,6 +17,7 @@
 #include "scena/engine.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -28,6 +29,7 @@
 #include <utility>
 #include <variant>
 
+#include "scena/gateway/road_query.h"
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/controller.h"
@@ -39,6 +41,7 @@
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/distance_measure.h"
 #include "scena/runtime/element_ref.h"
+#include "scena/runtime/lateral.h"
 #include "scena/runtime/obb2.h"
 
 namespace scena {
@@ -1120,6 +1123,115 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         }
         return;
     }
+    if (const auto* lane_change = dynamic_cast<const ir::LaneChangeAction*>(&action)) {
+        // Class `LaneChangeAction`: the transition dynamics are required and the
+        // target lane is a prerequisite (§7.5.2.2, "Target lane exists").
+        const ir::TransitionDynamics& td = lane_change->dynamics();
+        if (!std::isfinite(td.value) || td.value < 0.0) {
+            error(sink, Status::ValidationError,
+                  "lane change action transition dynamics value must be finite and in range "
+                  "[0..inf[",
+                  path);
+        }
+        // §TransitionDynamics: "`Step` is an immediate transition [...]; in that
+        // case `value` must be 0." A non-zero value contradicts the shape.
+        if (td.shape == ir::DynamicsShape::Step && td.value != 0.0) {
+            error(sink, Status::ValidationError,
+                  "lane change action with a step shape must have a zero dynamics value", path);
+        }
+        if (!std::isfinite(lane_change->target_lane_offset())) {
+            error(sink, Status::ValidationError,
+                  "lane change action targetLaneOffset must be finite", path);
+        }
+        if (lane_change->is_relative()) {
+            const ir::RelativeTargetLane& target = *lane_change->relative_target();
+            if (records.find(target.entity_ref) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "lane change action reference entity '" + target.entity_ref + "' is unknown",
+                      path);
+            }
+        } else if (lane_change->absolute_target()->value.empty()) {
+            error(sink, Status::ValidationError, "lane change action target lane id is empty",
+                  path);
+        }
+        return;
+    }
+    if (const auto* lane_offset = dynamic_cast<const ir::LaneOffsetAction*>(&action)) {
+        if (lane_offset->is_relative()) {
+            const ir::RelativeTargetLaneOffset& target = *lane_offset->relative_target();
+            if (records.find(target.entity_ref) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "lane offset action reference entity '" + target.entity_ref + "' is unknown",
+                      path);
+            }
+            if (!std::isfinite(target.value)) {
+                error(sink, Status::ValidationError,
+                      "lane offset action target value must be finite", path);
+            }
+        } else if (!std::isfinite(lane_offset->absolute_target()->value)) {
+            error(sink, Status::ValidationError, "lane offset action target value must be finite",
+                  path);
+        }
+        // Class `LaneOffsetActionDynamics` gives maxLateralAcc the range
+        // [0..inf[, but a limit of exactly 0 permits no lateral motion at all,
+        // so the target offset could never be reached and the action would
+        // never end. Scena rejects that degenerate case rather than model an
+        // infinite transition (ADR-0016); an absent value means 'inf'.
+        if (lane_offset->max_lateral_acc().has_value() &&
+            !(*lane_offset->max_lateral_acc() > 0.0 &&
+              std::isfinite(*lane_offset->max_lateral_acc()))) {
+            error(sink, Status::ValidationError,
+                  "lane offset action maxLateralAcc must be finite and in range ]0..inf[", path);
+        }
+        return;
+    }
+    if (const auto* lateral = dynamic_cast<const ir::LateralDistanceAction*>(&action)) {
+        // Class `LateralDistanceAction`: the reference entity is a prerequisite
+        // (§7.5.2.2, "Referenced entity exists").
+        if (records.find(lateral->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "lateral distance action reference entity '" + lateral->entity_ref() +
+                      "' is unknown",
+                  path);
+        }
+        // "Lateral distance value. [...] Range: [0..inf[."; the negated
+        // comparison also rejects NaN.
+        if (!(lateral->distance() >= 0.0 && std::isfinite(lateral->distance()))) {
+            error(sink, Status::ValidationError,
+                  "lateral distance action distance must be finite and in range [0..inf[", path,
+                  kRuleDistancesNotNegative);
+        }
+        if (lateral->constraints().has_value()) {
+            const ir::DynamicConstraints& constraints = *lateral->constraints();
+            const auto invalid = [](const std::optional<double>& value) {
+                return value.has_value() && !(*value >= 0.0 && std::isfinite(*value));
+            };
+            if (invalid(constraints.max_acceleration) || invalid(constraints.max_deceleration) ||
+                invalid(constraints.max_acceleration_rate) ||
+                invalid(constraints.max_deceleration_rate) || invalid(constraints.max_speed)) {
+                error(sink, Status::ValidationError,
+                      "lateral distance action dynamic constraints must be finite and in range "
+                      "[0..inf[",
+                      path);
+            }
+        }
+        const ir::CoordinateSystem cs = lateral->coordinate_system();
+        if (cs == ir::CoordinateSystem::Lane) {
+            // §6.4.8.2.2 states outright that the lane-CS lateral distance "is
+            // undefined". No road backend can rescue this one, so it is warned
+            // about on its own terms rather than as a deferral.
+            warn(sink, Status::UnsupportedFeature,
+                 "the lateral distance in the lane coordinate system is undefined (§6.4.8.2.2); "
+                 "the lateral distance action completes immediately",
+                 path);
+        } else if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+            warn(sink, Status::UnsupportedFeature,
+                 "road-based coordinate system needs a road network (§6.4); the lateral distance "
+                 "action completes immediately",
+                 path);
+        }
+        return;
+    }
     if (const auto* assign_route = dynamic_cast<const ir::AssignRouteAction*>(&action)) {
         // §Route: "At least two waypoints are needed to define a route."
         const ir::Route& route = assign_route->route();
@@ -1388,6 +1500,73 @@ std::optional<double> signed_longitudinal_gap(const EntityState& actor,
     // rear. Reference behind: from the reference's front to the actor's rear,
     // negated so the sign convention holds.
     return reference_point_gap >= 0.0 ? b_lo - a_hi : b_hi - a_lo;
+}
+
+/// Signed lateral gap from the reference entity to the actor along the lateral
+/// axis of `cs`, positive when the actor is to the *left* of the reference
+/// (§7.4.1.4, ISO 8855; the body y-axis and the road t-axis both point left).
+///
+/// Note the sign convention is the mirror image of signed_longitudinal_gap's,
+/// which measures reference-minus-actor: a longitudinal gap is naturally read
+/// as "how far ahead the reference is", a lateral one as "which side the actor
+/// is on", which is what §LateralDisplacement is phrased in.
+///
+/// The freespace form is the separation of the two boxes' projections onto that
+/// axis (§6.4.7.2), carrying the sign of the reference-point separation so
+/// overlapping boxes report a negative gap rather than an unsigned zero.
+/// Returns std::nullopt when a freespace measurement is asked for and either
+/// entity has no geometry — a missing prerequisite (§7.5.2.2).
+///
+/// Only the Entity and World coordinate systems reach here; the road-based
+/// systems are handled before the call (Lane is undefined outright, §6.4.8.2.2).
+///
+/// `axis_heading` is the heading the Entity coordinate system's lateral axis is
+/// taken from. It is the actor's lateral axis heading, not its instantaneous
+/// yaw: while the entity is being displaced sideways its heading is blended
+/// away from its direction of travel (ADR-0016), and measuring in that
+/// transient frame would feed the controller's own manoeuvre back into the
+/// error it is closing. The two agree whenever the entity is not mid-manoeuvre,
+/// which is the only time the distinction could be observed. The bounding boxes
+/// still use the real heading: they are genuinely rotated with the vehicle.
+std::optional<double> signed_lateral_gap(const EntityState& actor,
+                                         const std::optional<ir::BoundingBox>& actor_box,
+                                         const EntityState& reference,
+                                         const std::optional<ir::BoundingBox>& reference_box,
+                                         ir::CoordinateSystem cs, bool freespace,
+                                         double axis_heading) {
+    double ux = 0.0;
+    double uy = 0.0;
+    runtime::projection_axis(cs, ir::RelativeDistanceType::Lateral, axis_heading, ux, uy);
+    const double rx = actor.x - reference.x;
+    const double ry = actor.y - reference.y;
+    const double reference_point_gap = rx * ux + ry * uy;
+    if (!freespace) {
+        return reference_point_gap;
+    }
+    if (!actor_box.has_value() || !reference_box.has_value()) {
+        return std::nullopt;
+    }
+    const runtime::Obb2 a = runtime::make_obb(actor, *actor_box);
+    const runtime::Obb2 b = runtime::make_obb(reference, *reference_box);
+    double a_lo = 0.0;
+    double a_hi = 0.0;
+    double b_lo = 0.0;
+    double b_hi = 0.0;
+    runtime::obb_project(a, ux, uy, a_lo, a_hi);
+    runtime::obb_project(b, ux, uy, b_lo, b_hi);
+    // Actor to the left: the clearance runs from the reference's left flank to
+    // the actor's right flank; actor to the right, mirrored.
+    const bool actor_left = reference_point_gap >= 0.0;
+    double clearance = actor_left ? a_lo - b_hi : b_lo - a_hi;
+    // Flanks that overlap have no clearance at all. Clamping here rather than
+    // letting the expression go negative keeps the sign of the result tied to
+    // the side the actor is on: a vehicle angled across the axis presents a
+    // wider flank, and a gap that could flip sign as the yaw grows would make a
+    // keeping controller chase its own manoeuvre across the reference.
+    if (clearance < 0.0) {
+        clearance = 0.0;
+    }
+    return actor_left ? clearance : -clearance;
 }
 
 /// The tighter of two optional limits, where an absent or non-positive limit
@@ -1711,8 +1890,28 @@ Status Engine::init(ir::Scenario scenario) {
             const auto it = entities_.find(action->entity_id());
             if (it != entities_.end()) {
                 finalize_longitudinal(*action, it->second);
+                finalize_lateral(*action, it->second);
             }
         }
+    }
+
+    // Lateral settle pass: the init phase has no integrate stage, so an offset
+    // an init action commanded is applied here as the single perpendicular
+    // translate §8.5 calls for, and the axis is dissolved rather than left live
+    // into the run. Iterates entities_ in std::map order like every other
+    // per-entity pass.
+    for (auto& [id, record] : entities_) {
+        (void)id;
+        if (!record.lateral_axis.has_value()) {
+            continue;
+        }
+        const LateralAxis& axis = *record.lateral_axis;
+        const double step = record.lateral_offset_command - record.lateral_offset;
+        record.state.x += step * -axis.sin;
+        record.state.y += step * axis.cos;
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
     }
 
     // Seed the derived-observation baseline after init actions, before the
@@ -1819,6 +2018,36 @@ Status Engine::step(double dt) {
                 // straight-line model. Only the source of the integrate phase
                 // changes — the phase order of step() is untouched (ADR-0014).
                 record.trajectory_moved = false;
+                continue;
+            }
+            if (record.lateral_axis.has_value()) {
+                // Composed lateral motion (p2-s3, ADR-0016): the entity
+                // advances along the axis by speed*dt and across it by the
+                // offset increment the storyboard phase commanded, and its
+                // heading is the axis heading turned by the angle those two
+                // legs subtend. det_atan2, not libm, so the blend is
+                // bit-identical across platforms.
+                const LateralAxis& axis = *record.lateral_axis;
+                const double lateral_step = record.lateral_offset_command - record.lateral_offset;
+                const double along_step = record.state.speed * dt;
+                record.state.x += along_step * axis.cos - lateral_step * axis.sin;
+                record.state.y += along_step * axis.sin + lateral_step * axis.cos;
+                // Edge cases, all geometrically truthful and all documented:
+                // no lateral step leaves the heading on the axis (which covers
+                // dt == 0); a lateral step with no forward travel gives the
+                // +/-pi/2 crab angle; a Linear shape kinks at its endpoints
+                // because its offset rate does.
+                record.state.heading = axis.heading + runtime::det_atan2(lateral_step, along_step);
+                record.lateral_offset = record.lateral_offset_command;
+                if (record.lateral_dissolve_pending) {
+                    // The action reached its goal during phase 3: this step's
+                    // last increment has now been applied, so straighten out
+                    // and let go of the axis. Continuing straight through the
+                    // offset the entity reached is exactly what the composed
+                    // model would produce from here on.
+                    record.state.heading = axis.heading;
+                    dissolve_lateral_axis(record);
+                }
                 continue;
             }
             // Straight-line kinematics: placeholder physics for this phase.
@@ -1987,6 +2216,20 @@ std::optional<std::string> Engine::user_defined_value(const std::string& name) c
     return it->second;
 }
 
+Status Engine::set_default_lane_width(double width) {
+    // The negated comparison rejects NaN too. A zero or negative lane width
+    // would make every relative lane target collapse onto the actor's own lane.
+    if (!(width > 0.0) || !std::isfinite(width)) {
+        return Status::InvalidArgument;
+    }
+    default_lane_width_ = width;
+    return Status::Ok;
+}
+
+double Engine::default_lane_width() const noexcept {
+    return default_lane_width_;
+}
+
 Status Engine::set_date_time(const ir::DateTime& date_time) {
     if (!date_time.valid()) {
         return Status::InvalidArgument;
@@ -2069,6 +2312,7 @@ Status Engine::close() {
     user_defined_values_.clear();
     date_time_set_ = false;
     date_time_animated_ = true;
+    default_lane_width_ = kDefaultLaneWidth;
     environment_ = ir::Environment{};
     // The controller runtimes borrow into scenario_, so they must go before it.
     signal_controllers_.clear();
@@ -2118,6 +2362,9 @@ void Engine::deactivate_entity(EntityRecord& record) {
     record.continuous_speed.reset();
     record.trajectory.reset();
     record.trajectory_moved = false;
+    record.active_lateral_action = nullptr;
+    record.lateral_transition.reset();
+    dissolve_lateral_axis(record);
     record.retired_actions.clear();
     // Assignments (§6.8.2, §AssignControllerAction, §VisibilityAction) are
     // runtime state too, so a re-added entity starts from the defaults.
@@ -2521,6 +2768,54 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
                                       : build_profile_controller(*profile_action, record));
     }
 
+    const auto* lane_change_action = dynamic_cast<const ir::LaneChangeAction*>(&action);
+    const auto* lane_offset_action = dynamic_cast<const ir::LaneOffsetAction*>(&action);
+    const auto* lateral_distance_action = dynamic_cast<const ir::LateralDistanceAction*>(&action);
+    if (lane_change_action != nullptr || lane_offset_action != nullptr ||
+        lateral_distance_action != nullptr) {
+        // Lateral actions share the single lateral-domain ownership slot and
+        // the offset axis (Annex A Table 10: LaneChangeAction, LaneOffsetAction
+        // and LateralDistanceAction all assign a lateral control strategy).
+        EntityRecord* found = record_for(action);
+        if (found == nullptr) {
+            return runtime::ActionOutcome::Complete;
+        }
+        EntityRecord& record = *found;
+
+        // A lateral action superseded by a newer one, re-polled while still in
+        // its event's running set: retire it. It completes so its event can end
+        // (§8.4.2) and never reinstalls itself to fight the current owner.
+        const auto retired =
+            std::find(record.retired_actions.begin(), record.retired_actions.end(), &action);
+        if (retired != record.retired_actions.end()) {
+            record.retired_actions.erase(retired);
+            return runtime::ActionOutcome::Complete;
+        }
+
+        // Fired while the engine does not control the lateral domain: a missing
+        // prerequisite, reported and skipped (§7.5.2.2, ADR-0014).
+        if (!record.activation.lateral) {
+            report_inactive_domain(action, "lateral");
+            return runtime::ActionOutcome::Complete;
+        }
+
+        const bool is_owner = record.active_lateral_action == &action;
+        if (!is_owner) {
+            supersede_lateral(record, &action);
+            record.active_lateral_action = &action;
+            record.lateral_transition.reset();
+            record.lateral_rate = 0.0;
+            record.lateral_dissolve_pending = false;
+        }
+        if (lane_change_action != nullptr) {
+            return drive_lane_change(*lane_change_action, record, !is_owner);
+        }
+        if (lateral_distance_action != nullptr) {
+            return drive_lateral_keeping(*lateral_distance_action, record);
+        }
+        return drive_lane_offset(*lane_offset_action, record, !is_owner);
+    }
+
     if (const auto* teleport = dynamic_cast<const ir::TeleportAction*>(&action)) {
         // §TeleportAction: a step (instantaneous) action. Scena resolves the
         // world-frame target only; the PositionResolver and the other §6.3.8
@@ -2535,6 +2830,16 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         record.state.x = position.x;
         record.state.y = position.y;
         record.state.z = position.z;
+        if (record.lateral_axis.has_value()) {
+            // A lateral action is mid-flight: re-anchor its axis so it still
+            // runs through the entity at the offset it had reached, and the
+            // transition carries on relative to the new position rather than
+            // snapping the entity back across the old axis (ADR-0016). The
+            // normal points left: (-sin, cos).
+            LateralAxis& axis = *record.lateral_axis;
+            axis.origin_x = record.state.x - record.lateral_offset * -axis.sin;
+            axis.origin_y = record.state.y - record.lateral_offset * axis.cos;
+        }
         // A host-controlled entity's reported state overwrites this on the next
         // poll; the formal host round-trip for teleport is p2-s4.
         return runtime::ActionOutcome::Complete;
@@ -2598,6 +2903,15 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         if (follow->time_reference().has_value() && !record.activation.longitudinal) {
             report_inactive_domain(action, "longitudinal");
             return runtime::ActionOutcome::Complete;
+        }
+        // A new trajectory takes the lateral domain from whatever held it
+        // (§7.5.2.1: "an instance of FollowTrajectoryAction overrides an
+        // instance of LaneChangeAction"). Unlike a lateral action superseding
+        // another, the follower writes positions outright, so the offset axis
+        // is dissolved rather than carried over.
+        if (record.trajectory.has_value() ? record.trajectory->action != &action : true) {
+            supersede_lateral(record, &action);
+            dissolve_lateral_axis(record);
         }
         return drive_trajectory(*follow, record);
     }
@@ -2844,6 +3158,367 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     return runtime::ActionOutcome::Running;
 }
 
+std::optional<double> Engine::resolve_lane_change_target(const ir::LaneChangeAction& action,
+                                                         const EntityRecord& record) const {
+    gateway::IRoadQuery* road = gateway_ != nullptr ? gateway_->road_query() : nullptr;
+
+    if (action.is_relative()) {
+        const ir::RelativeTargetLane& target = *action.relative_target();
+        if (road != nullptr) {
+            // Road-backed resolution: find the reference entity's lane, step
+            // `value` lanes from it, and take the difference between that
+            // lane's centre line and the actor's own.
+            const auto reference_it = entities_.find(target.entity_ref);
+            gateway::LanePosition actor_lane;
+            gateway::LanePosition reference_lane;
+            int target_lane = 0;
+            double target_t = 0.0;
+            double actor_t = 0.0;
+            if (reference_it != entities_.end() &&
+                road->to_lane_position(record.state.x, record.state.y, record.state.z,
+                                       actor_lane) &&
+                road->to_lane_position(reference_it->second.state.x, reference_it->second.state.y,
+                                       reference_it->second.state.z, reference_lane) &&
+                road->relative_lane(reference_lane.road_id, reference_lane.lane_id, target.value,
+                                    target_lane) &&
+                road->lane_center_offset(reference_lane.road_id, target_lane, reference_lane.s,
+                                         target_t) &&
+                road->lane_center_offset(actor_lane.road_id, actor_lane.lane_id, actor_lane.s,
+                                         actor_t)) {
+                // The road t-axis and the axis normal both point left, so the
+                // lane-centre difference is the offset delta directly.
+                return record.lateral_offset + (target_t + action.target_lane_offset() - actor_t);
+            }
+            // A backend that cannot answer one of the queries falls through to
+            // the flat-world model rather than stopping the action: partial
+            // support degrades, it does not fail.
+        }
+        // Flat world: `value` default lane widths from the reference entity's
+        // lateral position. When the reference is the actor itself that
+        // position is the axis, which stands in for the actor's lane centre.
+        const double base = target.entity_ref == action.entity_id()
+                                ? 0.0
+                                : reference_lateral_offset(record, target.entity_ref);
+        return base + static_cast<double>(target.value) * default_lane_width_ +
+               action.target_lane_offset();
+    }
+
+    // An absolute lane id names an element of the road network, so it has no
+    // flat-world reading at all (ADR-0016, #23).
+    if (road != nullptr) {
+        const std::string& value = action.absolute_target()->value;
+        int lane_id = 0;
+        // std::from_chars, never std::stoi: the locale-independent rule.
+        const char* const begin = value.data();
+        const char* const end = begin + value.size();
+        const std::from_chars_result parsed = std::from_chars(begin, end, lane_id);
+        gateway::LanePosition actor_lane;
+        double target_t = 0.0;
+        double actor_t = 0.0;
+        if (parsed.ec == std::errc() && parsed.ptr == end &&
+            road->to_lane_position(record.state.x, record.state.y, record.state.z, actor_lane) &&
+            road->lane_center_offset(actor_lane.road_id, lane_id, actor_lane.s, target_t) &&
+            road->lane_center_offset(actor_lane.road_id, actor_lane.lane_id, actor_lane.s,
+                                     actor_t)) {
+            return record.lateral_offset + (target_t + action.target_lane_offset() - actor_t);
+        }
+    }
+    return std::nullopt;
+}
+
+runtime::ActionOutcome Engine::drive_lane_change(const ir::LaneChangeAction& action,
+                                                 EntityRecord& record, bool installing) {
+    const auto give_up = [this, &record, &action](Status code, std::string message) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
+        warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    if (installing) {
+        if (action.is_relative()) {
+            // §7.5.2.2: the reference entity whose lane the count is measured
+            // from has to be in the scenario.
+            const std::string& reference = action.relative_target()->entity_ref;
+            const auto it = entities_.find(reference); // heterogeneous lookup
+            if (it == entities_.end() || !it->second.active) {
+                return give_up(Status::UnknownEntity,
+                               "lane change action reference entity '" + reference +
+                                   "' is not in the scenario (§7.5.2.2); action completed");
+            }
+        }
+        ensure_lateral_axis(record);
+        // "Target lane exists" (§7.5.2.2). Resolved once, at install: a lane
+        // change commits to where it is going and then goes there.
+        const std::optional<double> target = resolve_lane_change_target(action, record);
+        if (!target.has_value()) {
+            return give_up(Status::UnsupportedFeature,
+                           "lane change action to an absolute target lane needs a road network "
+                           "(§7.5.2.2, #23); action completed");
+        }
+
+        const ir::TransitionDynamics& dynamics = action.dynamics();
+        runtime::LongitudinalController::Segment segment;
+        segment.from = record.lateral_offset;
+        segment.to = *target;
+        segment.shape = dynamics.shape;
+        if (dynamics.dimension == ir::DynamicsDimension::Distance &&
+            dynamics.shape != ir::DynamicsShape::Step) {
+            // "Time and distance are measured between the start position and
+            // the end position of the action" (Class `LaneChangeAction`): the
+            // distance dimension ties progress to the odometer, so a slower
+            // actor takes longer but changes lane over the same ground. An
+            // entity at a standstill never finishes, exactly as a
+            // distance-dimensioned SpeedAction does not (ADR-0011).
+            segment.by_distance = true;
+            segment.span = dynamics.value;
+        } else {
+            segment.by_distance = false;
+            segment.span = runtime::transition_duration(dynamics, segment.from, segment.to);
+        }
+        runtime::LongitudinalController controller;
+        controller.segments.push_back(segment);
+        controller.advance(0.0, 0.0); // settle a Step / zero-span transition
+        record.lateral_transition = std::move(controller);
+    } else {
+        // Distance-dimensioned progress is estimated from the speed at the
+        // start of the step, the same explicit scheme drive_longitudinal and
+        // the position integrator use.
+        record.lateral_transition->advance(last_dt_, record.state.speed * last_dt_);
+    }
+    record.lateral_offset_command = record.lateral_transition->speed();
+
+    if (record.lateral_transition->done()) {
+        // Annex A Table 10: ends "by reaching the lateral centerline offset on
+        // the target lane".
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        record.lateral_dissolve_pending = true;
+        return runtime::ActionOutcome::Complete;
+    }
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::ActionOutcome Engine::drive_lane_offset(const ir::LaneOffsetAction& action,
+                                                 EntityRecord& record, bool installing) {
+    // Releases the lateral domain and completes: the §7.5.2.2 missing-
+    // prerequisite path, mirroring drive_distance_keeping's give_up.
+    const auto give_up = [this, &record, &action](Status code, std::string message) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
+        warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    if (action.is_relative()) {
+        // Class `RelativeTargetLaneOffset` needs its reference entity; a
+        // DeleteEntityAction on it stops the action (§7.5.2.2).
+        const std::string& reference = action.relative_target()->entity_ref;
+        const auto it = entities_.find(reference); // heterogeneous lookup
+        if (it == entities_.end() || !it->second.active) {
+            return give_up(Status::UnknownEntity,
+                           "lane offset action reference entity '" + reference +
+                               "' is not in the scenario (§7.5.2.2); action completed");
+        }
+    }
+
+    ensure_lateral_axis(record);
+
+    // The target offset across the axis. An absolute target is "with respect to
+    // the entity's current lane's center line", which the axis stands in for; a
+    // relative one is measured from the reference entity's own lane position
+    // (flat world: every entity sits on its lane centre).
+    const double target =
+        action.is_relative()
+            ? reference_lateral_offset(record, action.relative_target()->entity_ref) +
+                  action.relative_target()->value
+            : action.absolute_target()->value;
+
+    // A transition is installed on the first fire, and again — for a continuous
+    // action only — once the previous one has arrived and the target has since
+    // moved, which is how "the lane offset will be kept" survives a moving
+    // reference or a teleport. Mid-transition the target stays where it was
+    // when the ramp was built, so the authored shape is not restarted every
+    // step (ADR-0016).
+    bool install = installing || !record.lateral_transition.has_value();
+    if (!install && action.continuous() && record.lateral_transition->done() &&
+        std::fabs(target - record.lateral_offset) > kDistanceKeepingEpsilon) {
+        install = true;
+    }
+    if (install) {
+        runtime::LongitudinalController::Segment segment;
+        segment.from = record.lateral_offset;
+        segment.to = target;
+        segment.shape = action.shape();
+        segment.by_distance = false;
+        // No authored duration: it follows from the shape, the offset delta and
+        // maxLateralAcc (Class `LaneOffsetActionDynamics`, ADR-0016).
+        segment.span = runtime::lane_offset_duration(action.shape(), target - record.lateral_offset,
+                                                     action.max_lateral_acc());
+        runtime::LongitudinalController controller;
+        controller.segments.push_back(segment);
+        // Settle any instantaneous segment up front, exactly as the
+        // longitudinal controller's first application does.
+        controller.advance(0.0, 0.0);
+        record.lateral_transition = std::move(controller);
+    } else {
+        record.lateral_transition->advance(last_dt_, 0.0);
+    }
+    record.lateral_offset_command = record.lateral_transition->speed();
+
+    if (record.lateral_transition->done() && !action.continuous()) {
+        // Annex A Table 10: ends "by reaching the targeted lane offset". The
+        // axis dissolves in the integrate phase, once this step's last offset
+        // increment has been applied.
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        record.lateral_dissolve_pending = true;
+        return runtime::ActionOutcome::Complete;
+    }
+    // §7.5.3: with continuous == true the action has no regular ending.
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::ActionOutcome Engine::drive_lateral_keeping(const ir::LateralDistanceAction& action,
+                                                     EntityRecord& record) {
+    const auto give_up = [this, &record, &action](Status code, std::string message) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
+        warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    const ir::CoordinateSystem cs = action.coordinate_system();
+    if (cs == ir::CoordinateSystem::Lane) {
+        // §6.4.8.2.2 states outright that the lane-CS lateral distance "is
+        // undefined". No road backend can rescue this one; warned at init too.
+        return give_up(Status::UnsupportedFeature,
+                       "the lateral distance in the lane coordinate system is undefined "
+                       "(§6.4.8.2.2); action completed");
+    }
+    if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+        // Road-based gaps need IRoadQuery (p3-s4); warned about at init too.
+        return give_up(Status::UnsupportedFeature,
+                       "lateral distance action needs a road network for its coordinate system "
+                       "(§6.4); action completed");
+    }
+    const auto reference_it = entities_.find(action.entity_ref()); // heterogeneous lookup
+    if (reference_it == entities_.end() || !reference_it->second.active) {
+        // §7.5.2.2: "Referenced entity exists" is this action's prerequisite,
+        // during execution as well as at its start.
+        return give_up(Status::UnknownEntity, "lateral distance action reference entity '" +
+                                                  action.entity_ref() +
+                                                  "' is not in the scenario (§7.5.2.2); action "
+                                                  "completed");
+    }
+    // Read-only view of the reference; the actor's own record is written below.
+    const EntityRecord& reference = reference_it->second;
+
+    // The axis is captured before the measurement, so the gap is read on the
+    // actor's undisturbed direction of travel rather than on the heading its
+    // own sideways motion blends it to.
+    ensure_lateral_axis(record);
+
+    // The reference-point separation decides which side the actor is on; the
+    // freespace clearance, when asked for, is what the target is compared
+    // against. Keeping the two apart matters for `any`: the side an actor is on
+    // is a fact about where it is, not about how much room its flanks leave.
+    const std::optional<double> reference_point_gap = signed_lateral_gap(
+        record.state, record.bounding_box, reference.state, reference.bounding_box, cs,
+        /*freespace=*/false, record.lateral_axis->heading);
+    const std::optional<double> gap =
+        action.freespace() ? signed_lateral_gap(record.state, record.bounding_box, reference.state,
+                                                reference.bounding_box, cs, /*freespace=*/true,
+                                                record.lateral_axis->heading)
+                           : reference_point_gap;
+    if (!gap.has_value()) {
+        return give_up(Status::UnsupportedFeature,
+                       "lateral distance action needs bounding boxes for a freespace gap "
+                       "(§6.4.7.2); action completed");
+    }
+
+    // Which side of the reference the actor holds (§LateralDisplacement).
+    // `Any` keeps whichever side the actor is on right now.
+    double desired = action.distance();
+    switch (action.displacement()) {
+    case ir::LateralDisplacement::LeftToReferencedEntity:
+        desired = action.distance();
+        break;
+    case ir::LateralDisplacement::RightToReferencedEntity:
+        desired = -action.distance();
+        break;
+    case ir::LateralDisplacement::Any:
+        desired = *reference_point_gap >= 0.0 ? action.distance() : -action.distance();
+        break;
+    }
+    const double error = desired - *gap;
+
+    // Table 10: a non-continuous action ends "by reaching the targeted lateral
+    // distance" — including immediately, when it already holds at the start of
+    // the action (§7.5.2.1). A continuous one never ends (§7.5.3).
+    if (!action.continuous() && std::fabs(error) <= kDistanceKeepingEpsilon) {
+        record.active_lateral_action = nullptr;
+        record.lateral_dissolve_pending = true;
+        return runtime::ActionOutcome::Complete;
+    }
+
+    // Deadbeat command on the lateral rate, the ADR-0014 distance-keeping law
+    // moved across to the lateral domain: with no DynamicConstraints the whole
+    // error closes in one step, which is exactly "lateral distance is kept
+    // rigid". A zero-length step commands nothing.
+    if (last_dt_ > 0.0) {
+        const std::optional<ir::DynamicConstraints>& constraints = action.constraints();
+        const auto constraint_of =
+            [&constraints](
+                std::optional<double> ir::DynamicConstraints::*field) -> std::optional<double> {
+            return constraints.has_value() ? (*constraints).*field : std::nullopt;
+        };
+        // The Performance envelope is deliberately not consulted: its
+        // acceleration and speed limits are longitudinal (§Performance), and
+        // Class `LateralDistanceAction` reads its DynamicConstraints as
+        // "limiting values for lateral acceleration, lateral deceleration and
+        // lateral speed".
+        const double acceleration_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_acceleration), std::nullopt);
+        const double deceleration_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_deceleration), std::nullopt);
+        const double speed_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_speed), std::nullopt);
+
+        // Glide bound: close the whole error this step, but only while the
+        // entity could still shed the resulting lateral rate within the error
+        // it has left. Unlike the longitudinal law there is no forward/backward
+        // asymmetry — moving left and moving right are the same manoeuvre — so
+        // the bound is always the deceleration limit. IEEE-exact, sqrt included.
+        double approach = std::fabs(error) / last_dt_;
+        if (std::isfinite(deceleration_limit)) {
+            approach = std::fmin(approach, std::sqrt(2.0 * deceleration_limit * std::fabs(error)));
+        }
+        double rate = std::copysign(approach, error);
+        // Slewing the rate up is bounded by the acceleration limit, bringing it
+        // back down by the deceleration limit.
+        const double slew = std::fabs(rate) >= std::fabs(record.lateral_rate) ? acceleration_limit
+                                                                              : deceleration_limit;
+        const double delta = rate - record.lateral_rate;
+        if (delta > slew * last_dt_) {
+            rate = record.lateral_rate + slew * last_dt_;
+        } else if (delta < -slew * last_dt_) {
+            rate = record.lateral_rate - slew * last_dt_;
+        }
+        if (rate > speed_limit) {
+            rate = speed_limit;
+        } else if (rate < -speed_limit) {
+            rate = -speed_limit;
+        }
+        record.lateral_rate = rate;
+        record.lateral_offset_command = record.lateral_offset + rate * last_dt_;
+    }
+    return runtime::ActionOutcome::Running;
+}
+
 runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction& action,
                                                 EntityRecord& record) {
     const bool timing = action.time_reference().has_value();
@@ -3080,21 +3755,105 @@ void Engine::release_longitudinal_domain(EntityRecord& record) {
 }
 
 void Engine::release_lateral_domain(EntityRecord& record) {
-    if (!record.trajectory.has_value()) {
+    // Retires whatever owned the domain (it completes on its next re-poll, the
+    // stopTransition analog of §7.5.2.1) and leaves the entity where it stands,
+    // keeping the heading it was last blended to — the lateral counterpart of a
+    // released longitudinal domain holding the current speed.
+    supersede_lateral(record, nullptr);
+    dissolve_lateral_axis(record);
+}
+
+void Engine::supersede_lateral(EntityRecord& record, const ir::Action* incoming) {
+    const auto retire = [&record, incoming](const ir::Action* outgoing) {
+        if (outgoing == nullptr || outgoing == incoming) {
+            return false;
+        }
+        // The outgoing owner is still Running in its own event; mark it so its
+        // next re-poll reports Complete rather than reinstalling itself. Guard
+        // against a duplicate entry (a given action owns the entity once).
+        if (std::find(record.retired_actions.begin(), record.retired_actions.end(), outgoing) ==
+            record.retired_actions.end()) {
+            record.retired_actions.push_back(outgoing);
+        }
+        return true;
+    };
+
+    if (retire(record.active_lateral_action)) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        record.lateral_rate = 0.0;
+        record.lateral_dissolve_pending = false;
+    }
+    if (record.trajectory.has_value()) {
+        const ir::Action* outgoing = record.trajectory->action;
+        if (retire(outgoing)) {
+            // A timed trajectory also owned the longitudinal domain; losing the
+            // lateral one ends the whole action, so that ownership goes too.
+            if (record.active_longitudinal_action == outgoing) {
+                record.active_longitudinal_action = nullptr;
+            }
+            record.trajectory.reset();
+        }
+    }
+}
+
+void Engine::ensure_lateral_axis(EntityRecord& record) {
+    if (record.lateral_axis.has_value()) {
+        // A lateral action superseding another continues on the same reference
+        // line, so an absolute lane offset keeps meaning the same thing and the
+        // offset reached so far carries over.
         return;
     }
-    const ir::Action* outgoing = record.trajectory->action;
-    if (outgoing != nullptr &&
-        std::find(record.retired_actions.begin(), record.retired_actions.end(), outgoing) ==
-            record.retired_actions.end()) {
-        record.retired_actions.push_back(outgoing);
+    LateralAxis axis;
+    axis.origin_x = record.state.x;
+    axis.origin_y = record.state.y;
+    axis.heading = record.state.heading;
+    // The one trig site of the whole lateral model: det_sincos, cached for
+    // every later composition step.
+    const runtime::SinCos hs = runtime::det_sincos(axis.heading);
+    axis.cos = hs.cos;
+    axis.sin = hs.sin;
+    record.lateral_axis = axis;
+    record.lateral_offset = 0.0;
+    record.lateral_offset_command = 0.0;
+    record.lateral_rate = 0.0;
+    record.lateral_dissolve_pending = false;
+}
+
+void Engine::dissolve_lateral_axis(EntityRecord& record) noexcept {
+    record.lateral_axis.reset();
+    record.lateral_offset = 0.0;
+    record.lateral_offset_command = 0.0;
+    record.lateral_rate = 0.0;
+    record.lateral_dissolve_pending = false;
+}
+
+double Engine::reference_lateral_offset(const EntityRecord& record,
+                                        const std::string& entity_ref) const {
+    const LateralAxis& axis = *record.lateral_axis;
+    const auto it = entities_.find(entity_ref); // heterogeneous lookup
+    if (it == entities_.end() || !it->second.active) {
+        // Callers check the prerequisite first; defensive, and it yields the
+        // actor's own offset, i.e. a no-op delta.
+        return record.lateral_offset;
     }
-    // A timed trajectory also owned the longitudinal domain; releasing the
-    // lateral one ends the whole action, so that ownership goes too.
-    if (record.active_longitudinal_action == outgoing) {
-        record.active_longitudinal_action = nullptr;
+    // Project onto the axis normal, which points left: (-sin, cos).
+    const double rx = it->second.state.x - axis.origin_x;
+    const double ry = it->second.state.y - axis.origin_y;
+    return rx * -axis.sin + ry * axis.cos;
+}
+
+void Engine::finalize_lateral(const ir::Action& action, EntityRecord& record) {
+    if (record.active_lateral_action == &action && record.lateral_transition.has_value() &&
+        !record.lateral_transition->segments.empty()) {
+        // §8.5: init actions are instantaneous — command the terminal offset
+        // straight away rather than let a transition run into the first step.
+        record.lateral_offset_command = record.lateral_transition->segments.back().to;
     }
-    record.trajectory.reset();
+    record.active_lateral_action = nullptr;
+    record.lateral_transition.reset();
+    // The axis stays live for the settle pass in init(), which turns the
+    // commanded offset into the one perpendicular translate.
 }
 
 void Engine::apply_activation(EntityRecord& record, const std::optional<bool>& lateral,

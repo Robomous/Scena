@@ -300,6 +300,243 @@ private:
     std::optional<DynamicConstraints> constraints_;
 };
 
+// --- Lateral actions (§7.4.1.4) ---------------------------------------------
+//
+// The lateral sign convention is one rule for all three actions: positive is
+// the reference entity's +y axis, which points left (§6.3.4, ISO 8855; the
+// road and lane t-axes of §6.3.2/§6.3.3 point left too, so the two agree).
+//
+// The 1.4 `layer` attribute of Absolute/RelativeTargetLane is deliberately not
+// modeled: Scena targets XML 1.0-1.3, where lane layers (§7.4.1.3) do not
+// exist at all. A 1.4 file's layer is a frontend concern when 1.4 is targeted.
+
+/// Target lane of a LaneChangeAction given as a difference from the reference
+/// entity's current lane, per ASAM OpenSCENARIO XML 1.4.0, Class
+/// `RelativeTargetLane`: "Target lane defined as difference compared to the
+/// reference entity's current lane evaluated in the reference entity's
+/// coordinate system. [...] For ASAM OpenDRIVE maps, the road center lane is
+/// not counted as a lane and thus omitted."
+struct RelativeTargetLane {
+    /// Name of the entity whose current lane the count is measured from; may be
+    /// the actor itself.
+    std::string entity_ref;
+    /// Signed lane count; positive moves towards the reference entity's +y
+    /// (left), negative towards -y (§7.4.1.4).
+    int value = 0;
+};
+
+/// Target lane of a LaneChangeAction given by lane id, per Class
+/// `AbsoluteTargetLane`: "Number (ID) of the target lane the entity will change
+/// to." The id is a string in the XSD because it names an element of the road
+/// network, so resolving it needs a road backend (#23).
+struct AbsoluteTargetLane {
+    std::string value;
+};
+
+/// Lane offset of a LaneOffsetAction measured from another entity's lane
+/// position, per Class `RelativeTargetLaneOffset`. Positive is the reference
+/// entity's +y (left), per §7.4.1.4: "Positive offset values are aligned with
+/// the reference entities' positive y-axis."
+struct RelativeTargetLaneOffset {
+    std::string entity_ref;
+    double value = 0.0; ///< Unit: [m], + = left of the reference entity.
+};
+
+/// Lane offset of a LaneOffsetAction measured from the actor's own lane centre
+/// line, per Class `AbsoluteTargetLaneOffset`: "Lane offset with respect to the
+/// entity's current lane's center line."
+struct AbsoluteTargetLaneOffset {
+    double value = 0.0; ///< Unit: [m], + = left.
+};
+
+/// Moves an entity from its current lane to a target lane, per Class
+/// `LaneChangeAction`: "This action describes the transition between an
+/// entity's current lane and its target lane. [...] The transition starts at
+/// the current lane position, including the current lane offset and ends at the
+/// target lane position, optionally including a targetLaneOffset. If no
+/// targetLaneOffset is specified, it shall be zero after completing the action,
+/// so that any previous offset is not taken into account."
+///
+/// The action assigns a lateral control strategy and ends "by reaching the
+/// lateral centerline offset on the target lane" (Annex A Table 10). A Step
+/// shape performs it instantaneously (§7.4.1.4) and assigns no control strategy
+/// (§7.4.1.2).
+///
+/// Without a road backend Scena resolves the target in a flat world from a
+/// configurable default lane width (Engine::set_default_lane_width); with one,
+/// through the IRoadQuery lane queries. An absolute lane id has no flat-world
+/// reading and needs the backend (ADR-0016, #23).
+class LaneChangeAction final : public Action {
+public:
+    /// Lane change to a lane `target.value` lanes from `target.entity_ref`'s
+    /// current lane (Class `RelativeTargetLane`).
+    LaneChangeAction(std::string entity_id, RelativeTargetLane target, TransitionDynamics dynamics,
+                     double target_lane_offset = 0.0);
+
+    /// Lane change to the lane named by `target.value` (Class
+    /// `AbsoluteTargetLane`).
+    LaneChangeAction(std::string entity_id, AbsoluteTargetLane target, TransitionDynamics dynamics,
+                     double target_lane_offset = 0.0);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// True when the target is a relative lane count; false for a lane id.
+    [[nodiscard]] bool is_relative() const noexcept;
+
+    /// The relative target, present iff `is_relative()`.
+    [[nodiscard]] const std::optional<RelativeTargetLane>& relative_target() const;
+
+    /// The absolute target, present iff `!is_relative()`.
+    [[nodiscard]] const std::optional<AbsoluteTargetLane>& absolute_target() const;
+
+    /// Shape and time/distance of the transition (§LaneChangeActionDynamics).
+    [[nodiscard]] const TransitionDynamics& dynamics() const;
+
+    /// "Lane offset to be reached at the target lane; the action will end
+    /// there. Missing value is interpreted as 0." Unit: [m], + = left.
+    [[nodiscard]] double target_lane_offset() const noexcept;
+
+private:
+    std::string entity_id_;
+    std::optional<RelativeTargetLane> relative_target_;
+    std::optional<AbsoluteTargetLane> absolute_target_;
+    TransitionDynamics dynamics_;
+    double target_lane_offset_;
+};
+
+/// Moves an entity to a lane offset and optionally keeps it there, per Class
+/// `LaneOffsetAction`: "This action describes the transition to a defined lane
+/// offset of an entity. The lane offset will be kept if the action is set as
+/// continuous. [...] The dynamics are specified by providing the maxLateralAcc
+/// used to keep the lane offset."
+///
+/// There is no authored duration: the transition time follows from the shape,
+/// the offset delta and `max_lateral_acc` (ADR-0016). "Missing value is
+/// interpreted as 'inf'" (Class `LaneOffsetActionDynamics`), which makes the
+/// transition instantaneous, as does a Step shape (§7.4.1.4).
+///
+/// With `continuous == false` the action ends "by reaching the targeted lane
+/// offset"; with `continuous == true` it has "no regular ending" (Annex A
+/// Table 10, §7.5.3) and the offset is re-enforced every step.
+class LaneOffsetAction final : public Action {
+public:
+    /// Offset measured from the actor's own lane centre line.
+    LaneOffsetAction(std::string entity_id, AbsoluteTargetLaneOffset target, bool continuous,
+                     DynamicsShape shape, std::optional<double> max_lateral_acc = std::nullopt);
+
+    /// Offset measured from another entity's lane position.
+    LaneOffsetAction(std::string entity_id, RelativeTargetLaneOffset target, bool continuous,
+                     DynamicsShape shape, std::optional<double> max_lateral_acc = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// True when the offset is relative to another entity.
+    [[nodiscard]] bool is_relative() const noexcept;
+
+    [[nodiscard]] const std::optional<RelativeTargetLaneOffset>& relative_target() const;
+
+    [[nodiscard]] const std::optional<AbsoluteTargetLaneOffset>& absolute_target() const;
+
+    /// True ⇒ the action never ends by itself (§7.5.3).
+    [[nodiscard]] bool continuous() const noexcept;
+
+    /// Geometrical shape of the transition (§LaneOffsetActionDynamics).
+    [[nodiscard]] DynamicsShape shape() const noexcept;
+
+    /// "Maximum lateral acceleration used to initially reach and afterwards
+    /// keep the lane offset. Missing value is interpreted as 'inf'." Unit:
+    /// [m/s^2]. Range: [0..inf[.
+    [[nodiscard]] const std::optional<double>& max_lateral_acc() const;
+
+private:
+    std::string entity_id_;
+    std::optional<RelativeTargetLaneOffset> relative_target_;
+    std::optional<AbsoluteTargetLaneOffset> absolute_target_;
+    bool continuous_;
+    DynamicsShape shape_;
+    std::optional<double> max_lateral_acc_;
+};
+
+/// Which side of the reference entity the lateral distance of a
+/// LateralDistanceAction applies to, per Enumeration `LateralDisplacement`: "A
+/// displacement relative to an entity along a lateral axis (e.g. the y axis of
+/// the entity coordinate system)". Omitted ⇒ `Any`.
+enum class LateralDisplacement {
+    /// "Either left or right to the entity along the lateral dimension"; the
+    /// actor keeps the side it is currently on.
+    Any,
+    /// "Left to the entity along the lateral dimension."
+    LeftToReferencedEntity,
+    /// "Right to the entity along the lateral dimension."
+    RightToReferencedEntity,
+};
+
+/// Keeps a lateral distance to a reference entity, per Class
+/// `LateralDistanceAction`: "This action describes a continuously kept lateral
+/// distance of an entity with respect to a reference entity. The distance can
+/// be maintained by using a controller, requiring limiting values for lateral
+/// acceleration, lateral deceleration and lateral speed. Without this limiting
+/// parameters lateral distance is kept rigid."
+///
+/// The action assigns a lateral control strategy; with `continuous == false` it
+/// ends "by reaching the targeted lateral distance" and with
+/// `continuous == true` it has "no regular ending" (Annex A Table 10).
+///
+/// The Lane coordinate system is accepted but cannot be honoured: §6.4.8.2.2
+/// states the lane-CS lateral distance is undefined. Scena reports it and
+/// completes the action, the road/trajectory-CS treatment of ADR-0009.
+class LateralDistanceAction final : public Action {
+public:
+    LateralDistanceAction(std::string entity_id, std::string entity_ref, double distance,
+                          bool freespace, bool continuous,
+                          CoordinateSystem coordinate_system = CoordinateSystem::Entity,
+                          LateralDisplacement displacement = LateralDisplacement::Any,
+                          std::optional<DynamicConstraints> constraints = std::nullopt);
+
+    [[nodiscard]] const std::string& entity_id() const override;
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// "Name of the reference entity the lateral distance shall be kept to."
+    [[nodiscard]] const std::string& entity_ref() const;
+
+    /// "Lateral distance value. Missing value is interpreted as 0." Unit: [m].
+    /// Range: [0..inf[.
+    [[nodiscard]] double distance() const noexcept;
+
+    /// True: measured between the closest bounding-box points; false: between
+    /// reference points.
+    [[nodiscard]] bool freespace() const noexcept;
+
+    /// True ⇒ the action never ends by itself (§7.5.3).
+    [[nodiscard]] bool continuous() const noexcept;
+
+    /// The coordinate system the distance is measured in; `Entity` (the
+    /// default) is the actor's local system.
+    [[nodiscard]] CoordinateSystem coordinate_system() const noexcept;
+
+    /// Which side of the reference entity the distance applies to.
+    [[nodiscard]] LateralDisplacement displacement() const noexcept;
+
+    /// Optional limits on the lateral controller; absent ⇒ "lateral distance is
+    /// kept rigid".
+    [[nodiscard]] const std::optional<DynamicConstraints>& constraints() const;
+
+private:
+    std::string entity_id_;
+    std::string entity_ref_;
+    double distance_;
+    bool freespace_;
+    bool continuous_;
+    CoordinateSystem coordinate_system_;
+    LateralDisplacement displacement_;
+    std::optional<DynamicConstraints> constraints_;
+};
+
 /// Assigns a route to an entity, per §AssignRouteAction (§6.8.2). The action
 /// "does not override any action that controls either lateral or longitudinal
 /// domain" and completes immediately (Annex A Table 10): it installs routing

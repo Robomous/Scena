@@ -1036,6 +1036,106 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("displacement", &ir::LongitudinalDistanceAction::displacement)
         .def_prop_ro("constraints", &ir::LongitudinalDistanceAction::constraints);
 
+    // Lateral actions (§7.4.1.4). Positive is the reference entity's +y axis,
+    // which points left (§6.3.4, ISO 8855), for all three.
+    nb::enum_<ir::LateralDisplacement>(
+        m, "LateralDisplacement",
+        "Which side of the reference entity a lateral distance applies to "
+        "(§LateralDisplacement).")
+        .value("Any", ir::LateralDisplacement::Any)
+        .value("LeftToReferencedEntity", ir::LateralDisplacement::LeftToReferencedEntity)
+        .value("RightToReferencedEntity", ir::LateralDisplacement::RightToReferencedEntity);
+
+    nb::class_<ir::RelativeTargetLane>(m, "RelativeTargetLane")
+        .def(
+            "__init__",
+            [](ir::RelativeTargetLane* self, std::string entity_ref, int value) {
+                new (self) ir::RelativeTargetLane{std::move(entity_ref), value};
+            },
+            "entity_ref"_a, "value"_a = 0,
+            "A target lane given as a signed lane count from a reference entity's lane; "
+            "positive is to its left (§RelativeTargetLane).")
+        .def_rw("entity_ref", &ir::RelativeTargetLane::entity_ref)
+        .def_rw("value", &ir::RelativeTargetLane::value);
+
+    nb::class_<ir::AbsoluteTargetLane>(m, "AbsoluteTargetLane")
+        .def(
+            "__init__",
+            [](ir::AbsoluteTargetLane* self, std::string value) {
+                new (self) ir::AbsoluteTargetLane{std::move(value)};
+            },
+            "value"_a,
+            "A target lane given by road-network lane id; resolving it needs a road backend "
+            "(§AbsoluteTargetLane).")
+        .def_rw("value", &ir::AbsoluteTargetLane::value);
+
+    nb::class_<ir::RelativeTargetLaneOffset>(m, "RelativeTargetLaneOffset")
+        .def(
+            "__init__",
+            [](ir::RelativeTargetLaneOffset* self, std::string entity_ref, double value) {
+                new (self) ir::RelativeTargetLaneOffset{std::move(entity_ref), value};
+            },
+            "entity_ref"_a, "value"_a = 0.0,
+            "A lane offset [m] measured from a reference entity's lane position; positive is "
+            "to its left (§RelativeTargetLaneOffset).")
+        .def_rw("entity_ref", &ir::RelativeTargetLaneOffset::entity_ref)
+        .def_rw("value", &ir::RelativeTargetLaneOffset::value);
+
+    nb::class_<ir::AbsoluteTargetLaneOffset>(m, "AbsoluteTargetLaneOffset")
+        .def(
+            "__init__",
+            [](ir::AbsoluteTargetLaneOffset* self, double value) {
+                new (self) ir::AbsoluteTargetLaneOffset{value};
+            },
+            "value"_a = 0.0,
+            "A lane offset [m] from the actor's own lane centre line, positive to the left "
+            "(§AbsoluteTargetLaneOffset).")
+        .def_rw("value", &ir::AbsoluteTargetLaneOffset::value);
+
+    nb::class_<ir::LaneChangeAction, ir::Action>(m, "LaneChangeAction")
+        .def(nb::init<std::string, ir::RelativeTargetLane, ir::TransitionDynamics, double>(),
+             "entity_id"_a, "target"_a, "dynamics"_a, "target_lane_offset"_a = 0.0)
+        .def(nb::init<std::string, ir::AbsoluteTargetLane, ir::TransitionDynamics, double>(),
+             "entity_id"_a, "target"_a, "dynamics"_a, "target_lane_offset"_a = 0.0)
+        .def_prop_ro("entity_id", &ir::LaneChangeAction::entity_id)
+        .def_prop_ro("is_relative", &ir::LaneChangeAction::is_relative)
+        .def_prop_ro("relative_target", &ir::LaneChangeAction::relative_target)
+        .def_prop_ro("absolute_target", &ir::LaneChangeAction::absolute_target)
+        .def_prop_ro("dynamics", &ir::LaneChangeAction::dynamics)
+        .def_prop_ro("target_lane_offset", &ir::LaneChangeAction::target_lane_offset);
+
+    nb::class_<ir::LaneOffsetAction, ir::Action>(m, "LaneOffsetAction")
+        .def(nb::init<std::string, ir::AbsoluteTargetLaneOffset, bool, ir::DynamicsShape,
+                      std::optional<double>>(),
+             "entity_id"_a, "target"_a, "continuous"_a = false, "shape"_a = ir::DynamicsShape::Step,
+             "max_lateral_acc"_a = nb::none())
+        .def(nb::init<std::string, ir::RelativeTargetLaneOffset, bool, ir::DynamicsShape,
+                      std::optional<double>>(),
+             "entity_id"_a, "target"_a, "continuous"_a = false, "shape"_a = ir::DynamicsShape::Step,
+             "max_lateral_acc"_a = nb::none())
+        .def_prop_ro("entity_id", &ir::LaneOffsetAction::entity_id)
+        .def_prop_ro("is_relative", &ir::LaneOffsetAction::is_relative)
+        .def_prop_ro("relative_target", &ir::LaneOffsetAction::relative_target)
+        .def_prop_ro("absolute_target", &ir::LaneOffsetAction::absolute_target)
+        .def_prop_ro("continuous", &ir::LaneOffsetAction::continuous)
+        .def_prop_ro("shape", &ir::LaneOffsetAction::shape)
+        .def_prop_ro("max_lateral_acc", &ir::LaneOffsetAction::max_lateral_acc);
+
+    nb::class_<ir::LateralDistanceAction, ir::Action>(m, "LateralDistanceAction")
+        .def(nb::init<std::string, std::string, double, bool, bool, ir::CoordinateSystem,
+                      ir::LateralDisplacement, std::optional<ir::DynamicConstraints>>(),
+             "entity_id"_a, "entity_ref"_a, "distance"_a = 0.0, "freespace"_a = false,
+             "continuous"_a = false, "coordinate_system"_a = ir::CoordinateSystem::Entity,
+             "displacement"_a = ir::LateralDisplacement::Any, "constraints"_a = nb::none())
+        .def_prop_ro("entity_id", &ir::LateralDistanceAction::entity_id)
+        .def_prop_ro("entity_ref", &ir::LateralDistanceAction::entity_ref)
+        .def_prop_ro("distance", &ir::LateralDistanceAction::distance)
+        .def_prop_ro("freespace", &ir::LateralDistanceAction::freespace)
+        .def_prop_ro("continuous", &ir::LateralDistanceAction::continuous)
+        .def_prop_ro("coordinate_system", &ir::LateralDistanceAction::coordinate_system)
+        .def_prop_ro("displacement", &ir::LateralDistanceAction::displacement)
+        .def_prop_ro("constraints", &ir::LateralDistanceAction::constraints);
+
     nb::class_<ir::AssignRouteAction, ir::Action>(m, "AssignRouteAction")
         .def(nb::init<std::string, ir::Route>(), "entity_id"_a, "route"_a)
         .def_prop_ro("entity_id", &ir::AssignRouteAction::entity_id)
@@ -1550,6 +1650,12 @@ NB_MODULE(_scena, m) {
              "Anchors the simulated time of day; InvalidArgument for an out-of-range DateTime.")
         .def_prop_ro("date_time", &scena::Engine::date_time,
                      "Simulated instant as epoch seconds, or None when no anchor is set.")
+        .def("set_default_lane_width", &scena::Engine::set_default_lane_width, "width"_a,
+             "Sets the lane width a LaneChangeAction assumes without a road network [m]; "
+             "InvalidArgument for a non-finite or non-positive width. A method returning a "
+             "Status rather than a property setter, matching every other Engine setter.")
+        .def_prop_ro("default_lane_width", &scena::Engine::default_lane_width,
+                     "The lane width the flat-world lane model currently uses [m].")
         .def("storyboard_element_state", &scena::Engine::storyboard_element_state, "path"_a,
              "Lifecycle state of the element at 'story/act/group/maneuver/event'; '' is the "
              "storyboard itself; None for unknown paths.")

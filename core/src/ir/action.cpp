@@ -151,6 +151,133 @@ const std::optional<DynamicConstraints>& LongitudinalDistanceAction::constraints
     return constraints_;
 }
 
+LaneChangeAction::LaneChangeAction(std::string entity_id, RelativeTargetLane target,
+                                   TransitionDynamics dynamics, double target_lane_offset)
+    : entity_id_(std::move(entity_id)), relative_target_(std::move(target)), dynamics_(dynamics),
+      target_lane_offset_(target_lane_offset) {}
+
+LaneChangeAction::LaneChangeAction(std::string entity_id, AbsoluteTargetLane target,
+                                   TransitionDynamics dynamics, double target_lane_offset)
+    : entity_id_(std::move(entity_id)), absolute_target_(std::move(target)), dynamics_(dynamics),
+      target_lane_offset_(target_lane_offset) {}
+
+const std::string& LaneChangeAction::entity_id() const {
+    return entity_id_;
+}
+
+std::string_view LaneChangeAction::kind() const noexcept {
+    return "LaneChangeAction";
+}
+
+bool LaneChangeAction::is_relative() const noexcept {
+    return relative_target_.has_value();
+}
+
+const std::optional<RelativeTargetLane>& LaneChangeAction::relative_target() const {
+    return relative_target_;
+}
+
+const std::optional<AbsoluteTargetLane>& LaneChangeAction::absolute_target() const {
+    return absolute_target_;
+}
+
+const TransitionDynamics& LaneChangeAction::dynamics() const {
+    return dynamics_;
+}
+
+double LaneChangeAction::target_lane_offset() const noexcept {
+    return target_lane_offset_;
+}
+
+LaneOffsetAction::LaneOffsetAction(std::string entity_id, AbsoluteTargetLaneOffset target,
+                                   bool continuous, DynamicsShape shape,
+                                   std::optional<double> max_lateral_acc)
+    : entity_id_(std::move(entity_id)), absolute_target_(target), continuous_(continuous),
+      shape_(shape), max_lateral_acc_(max_lateral_acc) {}
+
+LaneOffsetAction::LaneOffsetAction(std::string entity_id, RelativeTargetLaneOffset target,
+                                   bool continuous, DynamicsShape shape,
+                                   std::optional<double> max_lateral_acc)
+    : entity_id_(std::move(entity_id)), relative_target_(std::move(target)),
+      continuous_(continuous), shape_(shape), max_lateral_acc_(max_lateral_acc) {}
+
+const std::string& LaneOffsetAction::entity_id() const {
+    return entity_id_;
+}
+
+std::string_view LaneOffsetAction::kind() const noexcept {
+    return "LaneOffsetAction";
+}
+
+bool LaneOffsetAction::is_relative() const noexcept {
+    return relative_target_.has_value();
+}
+
+const std::optional<RelativeTargetLaneOffset>& LaneOffsetAction::relative_target() const {
+    return relative_target_;
+}
+
+const std::optional<AbsoluteTargetLaneOffset>& LaneOffsetAction::absolute_target() const {
+    return absolute_target_;
+}
+
+bool LaneOffsetAction::continuous() const noexcept {
+    return continuous_;
+}
+
+DynamicsShape LaneOffsetAction::shape() const noexcept {
+    return shape_;
+}
+
+const std::optional<double>& LaneOffsetAction::max_lateral_acc() const {
+    return max_lateral_acc_;
+}
+
+LateralDistanceAction::LateralDistanceAction(std::string entity_id, std::string entity_ref,
+                                             double distance, bool freespace, bool continuous,
+                                             CoordinateSystem coordinate_system,
+                                             LateralDisplacement displacement,
+                                             std::optional<DynamicConstraints> constraints)
+    : entity_id_(std::move(entity_id)), entity_ref_(std::move(entity_ref)), distance_(distance),
+      freespace_(freespace), continuous_(continuous), coordinate_system_(coordinate_system),
+      displacement_(displacement), constraints_(std::move(constraints)) {}
+
+const std::string& LateralDistanceAction::entity_id() const {
+    return entity_id_;
+}
+
+std::string_view LateralDistanceAction::kind() const noexcept {
+    return "LateralDistanceAction";
+}
+
+const std::string& LateralDistanceAction::entity_ref() const {
+    return entity_ref_;
+}
+
+double LateralDistanceAction::distance() const noexcept {
+    return distance_;
+}
+
+bool LateralDistanceAction::freespace() const noexcept {
+    return freespace_;
+}
+
+bool LateralDistanceAction::continuous() const noexcept {
+    return continuous_;
+}
+
+CoordinateSystem LateralDistanceAction::coordinate_system() const noexcept {
+    return coordinate_system_;
+}
+
+LateralDisplacement LateralDistanceAction::displacement() const noexcept {
+    return displacement_;
+}
+
+const std::optional<DynamicConstraints>& LateralDistanceAction::constraints() const {
+    return constraints_;
+}
+
 AssignRouteAction::AssignRouteAction(std::string entity_id, Route route)
     : entity_id_(std::move(entity_id)), route_(std::move(route)) {}
 
