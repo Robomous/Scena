@@ -589,6 +589,17 @@ private:
     resolve_lane_change_target(const ir::LaneChangeAction& action,
                                const EntityRecord& record) const;
 
+    /// Drives one step of a LateralDistanceAction on `record` (Class
+    /// `LateralDistanceAction`): measures the signed lateral gap to the
+    /// reference entity and commands the offset change that closes it over the
+    /// current step, clamped by the action's DynamicConstraints — "without this
+    /// limiting parameters lateral distance is kept rigid", which is what an
+    /// unclamped deadbeat command amounts to. Returns Complete once a
+    /// non-continuous action has reached its target; a continuous one returns
+    /// Running forever (§7.5.3).
+    runtime::ActionOutcome drive_lateral_keeping(const ir::LateralDistanceAction& action,
+                                                 EntityRecord& record);
+
     /// The lateral offset of `record`'s reference entity measured across the
     /// live axis, i.e. `(p_ref - axis.origin) . axis_normal`. Flat-world: every
     /// entity is assumed to sit on its own lane centre, so this doubles as the

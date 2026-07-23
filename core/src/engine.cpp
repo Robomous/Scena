@@ -1502,6 +1502,73 @@ std::optional<double> signed_longitudinal_gap(const EntityState& actor,
     return reference_point_gap >= 0.0 ? b_lo - a_hi : b_hi - a_lo;
 }
 
+/// Signed lateral gap from the reference entity to the actor along the lateral
+/// axis of `cs`, positive when the actor is to the *left* of the reference
+/// (§7.4.1.4, ISO 8855; the body y-axis and the road t-axis both point left).
+///
+/// Note the sign convention is the mirror image of signed_longitudinal_gap's,
+/// which measures reference-minus-actor: a longitudinal gap is naturally read
+/// as "how far ahead the reference is", a lateral one as "which side the actor
+/// is on", which is what §LateralDisplacement is phrased in.
+///
+/// The freespace form is the separation of the two boxes' projections onto that
+/// axis (§6.4.7.2), carrying the sign of the reference-point separation so
+/// overlapping boxes report a negative gap rather than an unsigned zero.
+/// Returns std::nullopt when a freespace measurement is asked for and either
+/// entity has no geometry — a missing prerequisite (§7.5.2.2).
+///
+/// Only the Entity and World coordinate systems reach here; the road-based
+/// systems are handled before the call (Lane is undefined outright, §6.4.8.2.2).
+///
+/// `axis_heading` is the heading the Entity coordinate system's lateral axis is
+/// taken from. It is the actor's lateral axis heading, not its instantaneous
+/// yaw: while the entity is being displaced sideways its heading is blended
+/// away from its direction of travel (ADR-0016), and measuring in that
+/// transient frame would feed the controller's own manoeuvre back into the
+/// error it is closing. The two agree whenever the entity is not mid-manoeuvre,
+/// which is the only time the distinction could be observed. The bounding boxes
+/// still use the real heading: they are genuinely rotated with the vehicle.
+std::optional<double> signed_lateral_gap(const EntityState& actor,
+                                         const std::optional<ir::BoundingBox>& actor_box,
+                                         const EntityState& reference,
+                                         const std::optional<ir::BoundingBox>& reference_box,
+                                         ir::CoordinateSystem cs, bool freespace,
+                                         double axis_heading) {
+    double ux = 0.0;
+    double uy = 0.0;
+    runtime::projection_axis(cs, ir::RelativeDistanceType::Lateral, axis_heading, ux, uy);
+    const double rx = actor.x - reference.x;
+    const double ry = actor.y - reference.y;
+    const double reference_point_gap = rx * ux + ry * uy;
+    if (!freespace) {
+        return reference_point_gap;
+    }
+    if (!actor_box.has_value() || !reference_box.has_value()) {
+        return std::nullopt;
+    }
+    const runtime::Obb2 a = runtime::make_obb(actor, *actor_box);
+    const runtime::Obb2 b = runtime::make_obb(reference, *reference_box);
+    double a_lo = 0.0;
+    double a_hi = 0.0;
+    double b_lo = 0.0;
+    double b_hi = 0.0;
+    runtime::obb_project(a, ux, uy, a_lo, a_hi);
+    runtime::obb_project(b, ux, uy, b_lo, b_hi);
+    // Actor to the left: the clearance runs from the reference's left flank to
+    // the actor's right flank; actor to the right, mirrored.
+    const bool actor_left = reference_point_gap >= 0.0;
+    double clearance = actor_left ? a_lo - b_hi : b_lo - a_hi;
+    // Flanks that overlap have no clearance at all. Clamping here rather than
+    // letting the expression go negative keeps the sign of the result tied to
+    // the side the actor is on: a vehicle angled across the axis presents a
+    // wider flank, and a gap that could flip sign as the yaw grows would make a
+    // keeping controller chase its own manoeuvre across the reference.
+    if (clearance < 0.0) {
+        clearance = 0.0;
+    }
+    return actor_left ? clearance : -clearance;
+}
+
 /// The tighter of two optional limits, where an absent or non-positive limit
 /// does not constrain (§DynamicConstraints "missing value is interpreted as
 /// 'inf'"; the p2-s2 Performance clamp likewise only honours a positive
@@ -2703,7 +2770,9 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
 
     const auto* lane_change_action = dynamic_cast<const ir::LaneChangeAction*>(&action);
     const auto* lane_offset_action = dynamic_cast<const ir::LaneOffsetAction*>(&action);
-    if (lane_change_action != nullptr || lane_offset_action != nullptr) {
+    const auto* lateral_distance_action = dynamic_cast<const ir::LateralDistanceAction*>(&action);
+    if (lane_change_action != nullptr || lane_offset_action != nullptr ||
+        lateral_distance_action != nullptr) {
         // Lateral actions share the single lateral-domain ownership slot and
         // the offset axis (Annex A Table 10: LaneChangeAction, LaneOffsetAction
         // and LateralDistanceAction all assign a lateral control strategy).
@@ -2740,6 +2809,9 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         }
         if (lane_change_action != nullptr) {
             return drive_lane_change(*lane_change_action, record, !is_owner);
+        }
+        if (lateral_distance_action != nullptr) {
+            return drive_lateral_keeping(*lateral_distance_action, record);
         }
         return drive_lane_offset(*lane_offset_action, record, !is_owner);
     }
@@ -3306,6 +3378,144 @@ runtime::ActionOutcome Engine::drive_lane_offset(const ir::LaneOffsetAction& act
         return runtime::ActionOutcome::Complete;
     }
     // §7.5.3: with continuous == true the action has no regular ending.
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::ActionOutcome Engine::drive_lateral_keeping(const ir::LateralDistanceAction& action,
+                                                     EntityRecord& record) {
+    const auto give_up = [this, &record, &action](Status code, std::string message) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
+        warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    const ir::CoordinateSystem cs = action.coordinate_system();
+    if (cs == ir::CoordinateSystem::Lane) {
+        // §6.4.8.2.2 states outright that the lane-CS lateral distance "is
+        // undefined". No road backend can rescue this one; warned at init too.
+        return give_up(Status::UnsupportedFeature,
+                       "the lateral distance in the lane coordinate system is undefined "
+                       "(§6.4.8.2.2); action completed");
+    }
+    if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+        // Road-based gaps need IRoadQuery (p3-s4); warned about at init too.
+        return give_up(Status::UnsupportedFeature,
+                       "lateral distance action needs a road network for its coordinate system "
+                       "(§6.4); action completed");
+    }
+    const auto reference_it = entities_.find(action.entity_ref()); // heterogeneous lookup
+    if (reference_it == entities_.end() || !reference_it->second.active) {
+        // §7.5.2.2: "Referenced entity exists" is this action's prerequisite,
+        // during execution as well as at its start.
+        return give_up(Status::UnknownEntity, "lateral distance action reference entity '" +
+                                                  action.entity_ref() +
+                                                  "' is not in the scenario (§7.5.2.2); action "
+                                                  "completed");
+    }
+    // Read-only view of the reference; the actor's own record is written below.
+    const EntityRecord& reference = reference_it->second;
+
+    // The axis is captured before the measurement, so the gap is read on the
+    // actor's undisturbed direction of travel rather than on the heading its
+    // own sideways motion blends it to.
+    ensure_lateral_axis(record);
+
+    // The reference-point separation decides which side the actor is on; the
+    // freespace clearance, when asked for, is what the target is compared
+    // against. Keeping the two apart matters for `any`: the side an actor is on
+    // is a fact about where it is, not about how much room its flanks leave.
+    const std::optional<double> reference_point_gap = signed_lateral_gap(
+        record.state, record.bounding_box, reference.state, reference.bounding_box, cs,
+        /*freespace=*/false, record.lateral_axis->heading);
+    const std::optional<double> gap =
+        action.freespace() ? signed_lateral_gap(record.state, record.bounding_box, reference.state,
+                                                reference.bounding_box, cs, /*freespace=*/true,
+                                                record.lateral_axis->heading)
+                           : reference_point_gap;
+    if (!gap.has_value()) {
+        return give_up(Status::UnsupportedFeature,
+                       "lateral distance action needs bounding boxes for a freespace gap "
+                       "(§6.4.7.2); action completed");
+    }
+
+    // Which side of the reference the actor holds (§LateralDisplacement).
+    // `Any` keeps whichever side the actor is on right now.
+    double desired = action.distance();
+    switch (action.displacement()) {
+    case ir::LateralDisplacement::LeftToReferencedEntity:
+        desired = action.distance();
+        break;
+    case ir::LateralDisplacement::RightToReferencedEntity:
+        desired = -action.distance();
+        break;
+    case ir::LateralDisplacement::Any:
+        desired = *reference_point_gap >= 0.0 ? action.distance() : -action.distance();
+        break;
+    }
+    const double error = desired - *gap;
+
+    // Table 10: a non-continuous action ends "by reaching the targeted lateral
+    // distance" — including immediately, when it already holds at the start of
+    // the action (§7.5.2.1). A continuous one never ends (§7.5.3).
+    if (!action.continuous() && std::fabs(error) <= kDistanceKeepingEpsilon) {
+        record.active_lateral_action = nullptr;
+        record.lateral_dissolve_pending = true;
+        return runtime::ActionOutcome::Complete;
+    }
+
+    // Deadbeat command on the lateral rate, the ADR-0014 distance-keeping law
+    // moved across to the lateral domain: with no DynamicConstraints the whole
+    // error closes in one step, which is exactly "lateral distance is kept
+    // rigid". A zero-length step commands nothing.
+    if (last_dt_ > 0.0) {
+        const std::optional<ir::DynamicConstraints>& constraints = action.constraints();
+        const auto constraint_of =
+            [&constraints](
+                std::optional<double> ir::DynamicConstraints::*field) -> std::optional<double> {
+            return constraints.has_value() ? (*constraints).*field : std::nullopt;
+        };
+        // The Performance envelope is deliberately not consulted: its
+        // acceleration and speed limits are longitudinal (§Performance), and
+        // Class `LateralDistanceAction` reads its DynamicConstraints as
+        // "limiting values for lateral acceleration, lateral deceleration and
+        // lateral speed".
+        const double acceleration_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_acceleration), std::nullopt);
+        const double deceleration_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_deceleration), std::nullopt);
+        const double speed_limit =
+            effective_limit(constraint_of(&ir::DynamicConstraints::max_speed), std::nullopt);
+
+        // Glide bound: close the whole error this step, but only while the
+        // entity could still shed the resulting lateral rate within the error
+        // it has left. Unlike the longitudinal law there is no forward/backward
+        // asymmetry — moving left and moving right are the same manoeuvre — so
+        // the bound is always the deceleration limit. IEEE-exact, sqrt included.
+        double approach = std::fabs(error) / last_dt_;
+        if (std::isfinite(deceleration_limit)) {
+            approach = std::fmin(approach, std::sqrt(2.0 * deceleration_limit * std::fabs(error)));
+        }
+        double rate = std::copysign(approach, error);
+        // Slewing the rate up is bounded by the acceleration limit, bringing it
+        // back down by the deceleration limit.
+        const double slew = std::fabs(rate) >= std::fabs(record.lateral_rate) ? acceleration_limit
+                                                                              : deceleration_limit;
+        const double delta = rate - record.lateral_rate;
+        if (delta > slew * last_dt_) {
+            rate = record.lateral_rate + slew * last_dt_;
+        } else if (delta < -slew * last_dt_) {
+            rate = record.lateral_rate - slew * last_dt_;
+        }
+        if (rate > speed_limit) {
+            rate = speed_limit;
+        } else if (rate < -speed_limit) {
+            rate = -speed_limit;
+        }
+        record.lateral_rate = rate;
+        record.lateral_offset_command = record.lateral_offset + rate * last_dt_;
+    }
     return runtime::ActionOutcome::Running;
 }
 

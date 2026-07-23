@@ -35,10 +35,12 @@
 #include "scena/gateway/road_query.h"
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
+#include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/coordinate_system.h"
 #include "scena/ir/dynamics.h"
 #include "scena/ir/entity.h"
+#include "scena/ir/entity_types.h"
 #include "scena/ir/position.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
@@ -52,6 +54,7 @@ using scena::Severity;
 using scena::Status;
 using scena::ir::AbsoluteTargetLane;
 using scena::ir::AbsoluteTargetLaneOffset;
+using scena::ir::BoundingBox;
 using scena::ir::ControlMode;
 using scena::ir::CoordinateSystem;
 using scena::ir::DynamicConstraints;
@@ -70,6 +73,7 @@ using scena::ir::SimulationTimeCondition;
 using scena::ir::SpeedAction;
 using scena::ir::TeleportAction;
 using scena::ir::TransitionDynamics;
+using scena::ir::Vehicle;
 using scena::ir::WorldPosition;
 
 constexpr double kTol = 1e-9;
@@ -93,6 +97,16 @@ Entity plain_entity(const std::string& id) {
     entity.id = id;
     entity.name = id;
     entity.control_mode = ControlMode::EngineControlled;
+    return entity;
+}
+
+/// An engine-controlled vehicle with a `length` x `width` m box centred on its
+/// reference point.
+Entity vehicle_entity(const std::string& id, double length, double width) {
+    Entity entity = plain_entity(id);
+    Vehicle vehicle;
+    vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, length, width, 1.5};
+    entity.object = vehicle;
     return entity;
 }
 
@@ -752,6 +766,230 @@ TEST(LaneOffsetTest, ADeletedReferenceStopsTheAction) {
     run(engine, 20, 0.1);
     EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
     EXPECT_TRUE(has_warning(engine, Status::UnknownEntity));
+}
+
+// --- LateralDistanceAction -------------------------------------------------
+
+TEST(LateralDistanceTest, RigidKeepingClosesTheWholeErrorInOneStep) {
+    // "Without this limiting parameters lateral distance is kept rigid"
+    // (Class `LateralDistanceAction`): the unclamped deadbeat command puts the
+    // actor on target in a single step.
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 1.0, /*freespace=*/false,
+                                                            /*continuous=*/false)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // Ego at y = 0, lead at y = 3.5, so the gap is -3.5 (ego is right of it)
+    // and `any` keeps that side: the target is -1, i.e. y = 2.5.
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_NEAR(engine.state("ego")->y, 2.5, 1e-9);
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 2.5, 1e-9);
+    // Straightened back onto the axis once it let go.
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+}
+
+TEST(LateralDistanceTest, CompletesImmediatelyWhenTheDistanceAlreadyHolds) {
+    // §7.5.2.1: "An action ends regularly if its goal is accomplished upon the
+    // start of the action."
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 3.5, /*freespace=*/false,
+                                                            /*continuous=*/false)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0); // never commanded
+}
+
+TEST(LateralDistanceTest, DisplacementPicksTheSide) {
+    const auto run_with = [](LateralDisplacement displacement) {
+        std::vector<scena::ir::Event> events;
+        events.push_back(timed_event(
+            "lateral", 0.0,
+            std::make_shared<LateralDistanceAction>("ego", "lead", 2.0, /*freespace=*/false,
+                                                    /*continuous=*/false, CoordinateSystem::Entity,
+                                                    displacement)));
+        auto engine = std::make_unique<Engine>();
+        EXPECT_EQ(engine->init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"),
+                                                     20.0, 3.5, 10.0, 10.0, std::move(events))),
+                  Status::Ok);
+        EXPECT_EQ(engine->step(0.5), Status::Ok);
+        return engine->state("ego")->y;
+    };
+    // Lead is at y = 3.5. Left of it is 5.5, right of it 1.5, and `any` keeps
+    // the side the ego is already on — the right.
+    EXPECT_NEAR(run_with(LateralDisplacement::LeftToReferencedEntity), 5.5, 1e-9);
+    EXPECT_NEAR(run_with(LateralDisplacement::RightToReferencedEntity), 1.5, 1e-9);
+    EXPECT_NEAR(run_with(LateralDisplacement::Any), 1.5, 1e-9);
+}
+
+TEST(LateralDistanceTest, DynamicConstraintsRateLimitTheApproach) {
+    // "The distance can be maintained by using a controller, requiring limiting
+    // values for lateral acceleration, lateral deceleration and lateral speed."
+    DynamicConstraints constraints;
+    constraints.max_acceleration = 1.0;
+    constraints.max_deceleration = 1.0;
+    constraints.max_speed = 0.5;
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LateralDistanceAction>("ego", "lead", 0.0, /*freespace=*/false,
+                                                /*continuous=*/false, CoordinateSystem::Entity,
+                                                LateralDisplacement::Any, constraints)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // A rigid controller would jump the whole 3.5 m at once; this one is
+    // limited to 0.5 m/s and ramps into it at 1 m/s^2.
+    ASSERT_EQ(engine.step(0.1), Status::Ok);
+    EXPECT_LT(engine.state("ego")->y, 0.02);
+    run(engine, 9, 0.1);
+    EXPECT_LT(engine.state("ego")->y, 0.5); // still well short after 1 s
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+
+    run(engine, 200, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-6);
+}
+
+TEST(LateralDistanceTest, ContinuousTracksAReferenceThatMovesSideways) {
+    // §7.5.3 / Table 10: continuous == true has "no regular ending".
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LateralDistanceAction>("ego", "lead", 1.5, /*freespace=*/false,
+                                                /*continuous=*/true, CoordinateSystem::Entity,
+                                                LateralDisplacement::RightToReferencedEntity)));
+    events.push_back(timed_event(
+        "shove", 5.0, std::make_shared<TeleportAction>("lead", WorldPosition{100.0, 9.0, 0.0})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_NEAR(engine.state("ego")->y, 2.0, 1e-9); // 1.5 m right of 3.5
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+
+    run(engine, 60, 0.1);                           // past the teleport
+    EXPECT_NEAR(engine.state("ego")->y, 7.5, 1e-9); // 1.5 m right of 9.0
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Running);
+}
+
+TEST(LateralDistanceTest, FreespaceMeasuresFlankToFlank) {
+    // "True: Lateral distance is measured using the distance between closest
+    // bounding box points." Both boxes are 2 m wide, so a 1 m freespace gap
+    // puts the reference points 3 m apart.
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 1.0, /*freespace=*/true,
+                                                            /*continuous=*/false)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(vehicle_entity("ego", 5.0, 2.0),
+                                                vehicle_entity("lead", 5.0, 2.0), 20.0, 6.0, 10.0,
+                                                10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_NEAR(engine.state("ego")->y, 3.0, 1e-9);
+    // A freespace gap couples to the actor's yaw — a vehicle angled across the
+    // axis presents a wider flank — and the yaw is itself a product of the
+    // sideways motion, so the rigid controller settles asymptotically rather
+    // than in a single step. Each residual is roughly half the last, so it
+    // converges geometrically; at the fixed point the entity is no longer
+    // moving sideways, its heading is back on the axis, and its flank is back
+    // to half its width.
+    run(engine, 40, 0.5);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.0, 1e-6);
+}
+
+TEST(LateralDistanceTest, FreespaceWithoutGeometryStopsTheAction) {
+    // A freespace gap needs both bounding boxes (§7.5.2.2).
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 1.0, /*freespace=*/true,
+                                                            /*continuous=*/true)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnsupportedFeature));
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0);
+}
+
+TEST(LateralDistanceTest, TheLaneCoordinateSystemGivesUpAtRuntimeToo) {
+    // §6.4.8.2.2: undefined in the lane coordinate system, warned at init and
+    // given up on at runtime.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "lateral", 0.0,
+        std::make_shared<LateralDistanceAction>("ego", "lead", 1.0, /*freespace=*/false,
+                                                /*continuous=*/true, CoordinateSystem::Lane)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.5), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0);
+}
+
+TEST(LateralDistanceTest, ADeletedReferenceStopsTheActionMidRun) {
+    // Unlike a LaneChangeAction, this one needs its reference throughout:
+    // §7.5.2.2 lists "Referenced entity exists" as its prerequisite.
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 1.5, /*freespace=*/false,
+                                                            /*continuous=*/true)));
+    events.push_back(
+        timed_event("remove", 1.0, std::make_shared<scena::ir::DeleteEntityAction>("lead")));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnknownEntity));
+}
+
+TEST(LateralDistanceTest, ATrajectoryStopsLateralKeeping) {
+    scena::ir::Trajectory path;
+    path.name = "away";
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    path.vertices.push_back(
+        scena::ir::TrajectoryVertex{WorldPosition{500.0, 0.0, 0.0}, std::nullopt});
+
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LateralDistanceAction>("ego", "lead", 1.5, /*freespace=*/false,
+                                                            /*continuous=*/true)));
+    events.push_back(
+        timed_event("path", 1.0, std::make_shared<scena::ir::FollowTrajectoryAction>("ego", path)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_EQ(state_of(engine, "story/act/group/maneuver/path"),
+              scena::runtime::ElementState::Running);
 }
 
 // --- Lateral supersession (§7.5.1, Annex A Table 10) -----------------------
