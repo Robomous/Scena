@@ -6,6 +6,13 @@
 
 namespace scena::ir {
 
+const std::string& GlobalAction::entity_id() const {
+    // One shared empty string so the reference stays valid for every global
+    // action; callers must recognize a global action by its type, not by this.
+    static const std::string kNoEntity;
+    return kNoEntity;
+}
+
 SpeedAction::SpeedAction(std::string entity_id, double target_speed)
     : entity_id_(std::move(entity_id)), target_speed_(target_speed) {}
 // dynamics_ defaults to a Step transition, so this reaches the target
@@ -260,6 +267,162 @@ bool VisibilityAction::sensors() const noexcept {
 
 bool VisibilityAction::traffic() const noexcept {
     return traffic_;
+}
+
+// --- Global actions (§7.4.2) ------------------------------------------------
+
+VariableSetAction::VariableSetAction(std::string variable_ref, std::string value)
+    : variable_ref_(std::move(variable_ref)), value_(std::move(value)) {}
+
+std::string_view VariableSetAction::kind() const noexcept {
+    return "VariableSetAction";
+}
+
+const std::string& VariableSetAction::variable_ref() const {
+    return variable_ref_;
+}
+
+const std::string& VariableSetAction::value() const {
+    return value_;
+}
+
+VariableModifyAction::VariableModifyAction(std::string variable_ref, ModifyOperator op,
+                                           double value)
+    : variable_ref_(std::move(variable_ref)), op_(op), value_(value) {}
+
+std::string_view VariableModifyAction::kind() const noexcept {
+    return "VariableModifyAction";
+}
+
+const std::string& VariableModifyAction::variable_ref() const {
+    return variable_ref_;
+}
+
+ModifyOperator VariableModifyAction::op() const noexcept {
+    return op_;
+}
+
+double VariableModifyAction::value() const noexcept {
+    return value_;
+}
+
+ParameterSetAction::ParameterSetAction(std::string parameter_ref, std::string value)
+    : parameter_ref_(std::move(parameter_ref)), value_(std::move(value)) {}
+
+std::string_view ParameterSetAction::kind() const noexcept {
+    return "ParameterSetAction";
+}
+
+const std::string& ParameterSetAction::parameter_ref() const {
+    return parameter_ref_;
+}
+
+const std::string& ParameterSetAction::value() const {
+    return value_;
+}
+
+ParameterModifyAction::ParameterModifyAction(std::string parameter_ref, ModifyOperator op,
+                                             double value)
+    : parameter_ref_(std::move(parameter_ref)), op_(op), value_(value) {}
+
+std::string_view ParameterModifyAction::kind() const noexcept {
+    return "ParameterModifyAction";
+}
+
+const std::string& ParameterModifyAction::parameter_ref() const {
+    return parameter_ref_;
+}
+
+ModifyOperator ParameterModifyAction::op() const noexcept {
+    return op_;
+}
+
+double ParameterModifyAction::value() const noexcept {
+    return value_;
+}
+
+EnvironmentAction::EnvironmentAction(Environment environment)
+    : environment_(std::move(environment)) {}
+
+std::string_view EnvironmentAction::kind() const noexcept {
+    return "EnvironmentAction";
+}
+
+const Environment& EnvironmentAction::environment() const {
+    return environment_;
+}
+
+CustomCommandAction::CustomCommandAction(std::string type, std::string content)
+    : type_(std::move(type)), content_(std::move(content)) {}
+
+std::string_view CustomCommandAction::kind() const noexcept {
+    return "CustomCommandAction";
+}
+
+const std::string& CustomCommandAction::type() const {
+    return type_;
+}
+
+const std::string& CustomCommandAction::content() const {
+    return content_;
+}
+
+TrafficSignalStateAction::TrafficSignalStateAction(std::string name, std::string state)
+    : name_(std::move(name)), state_(std::move(state)) {}
+
+std::string_view TrafficSignalStateAction::kind() const noexcept {
+    return "TrafficSignalStateAction";
+}
+
+const std::string& TrafficSignalStateAction::name() const {
+    return name_;
+}
+
+const std::string& TrafficSignalStateAction::state() const {
+    return state_;
+}
+
+TrafficSignalControllerAction::TrafficSignalControllerAction(
+    std::string traffic_signal_controller_ref, std::string phase)
+    : traffic_signal_controller_ref_(std::move(traffic_signal_controller_ref)),
+      phase_(std::move(phase)) {}
+
+std::string_view TrafficSignalControllerAction::kind() const noexcept {
+    return "TrafficSignalControllerAction";
+}
+
+const std::string& TrafficSignalControllerAction::traffic_signal_controller_ref() const {
+    return traffic_signal_controller_ref_;
+}
+
+const std::string& TrafficSignalControllerAction::phase() const {
+    return phase_;
+}
+
+AddEntityAction::AddEntityAction(std::string entity_ref, WorldPosition position)
+    : entity_ref_(std::move(entity_ref)), position_(position) {}
+
+std::string_view AddEntityAction::kind() const noexcept {
+    return "AddEntityAction";
+}
+
+const std::string& AddEntityAction::entity_ref() const {
+    return entity_ref_;
+}
+
+const WorldPosition& AddEntityAction::position() const {
+    return position_;
+}
+
+DeleteEntityAction::DeleteEntityAction(std::string entity_ref)
+    : entity_ref_(std::move(entity_ref)) {}
+
+std::string_view DeleteEntityAction::kind() const noexcept {
+    return "DeleteEntityAction";
+}
+
+const std::string& DeleteEntityAction::entity_ref() const {
+    return entity_ref_;
 }
 
 } // namespace scena::ir

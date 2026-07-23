@@ -107,6 +107,26 @@ public:
         return std::nullopt;
     }
 
+    /// Current observable state of the traffic signal `name` (§6.11.4,
+    /// TrafficSignalCondition). std::nullopt when nothing has written that
+    /// signal id — no controller phase names it and no TrafficSignalStateAction
+    /// has forced it — or when the context has no signal facet at all; the
+    /// condition is then a deterministic false. The returned view borrows from
+    /// the context and is valid only for the duration of the evaluate() call.
+    [[nodiscard]] virtual std::optional<std::string_view>
+    traffic_signal_state(std::string_view /*name*/) const {
+        return std::nullopt;
+    }
+
+    /// Name of the phase the traffic signal controller `controller_ref` is
+    /// currently in (§6.11.4, TrafficSignalControllerCondition). std::nullopt
+    /// when the controller is unknown, has no phases, or has not started yet
+    /// (a §6.11.3 delay still running). Same borrowing rules as above.
+    [[nodiscard]] virtual std::optional<std::string_view>
+    traffic_signal_controller_phase(std::string_view /*controller_ref*/) const {
+        return std::nullopt;
+    }
+
     /// Kinematic observation of the entity `id` (§7.6.5.1, by-entity
     /// conditions). std::nullopt when the entity is unknown or the context
     /// provides no entity facet at all (e.g. TimeOnlyEvaluationContext) — the

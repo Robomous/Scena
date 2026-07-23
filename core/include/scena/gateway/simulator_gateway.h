@@ -63,6 +63,24 @@ public:
     /// Engine::visibility_of reports the current flags either way.
     virtual void on_visibility_changed(const std::string& /*entity_id*/,
                                        const EntityVisibility& /*visibility*/) {}
+
+    /// Called when a CustomCommandAction fires (§7.4.3; Annex A Table 12: it
+    /// completes immediately). `type` and `content` are "defined as a contract
+    /// between the simulation environment provider and the author of a
+    /// scenario", so the engine hands them over verbatim and interprets
+    /// neither.
+    ///
+    /// Same timing, borrowing and default-no-op rules as
+    /// on_controller_assigned; also called during init for an init-phase
+    /// action. A host that does not implement it is not an error — §7.4.3 makes
+    /// executability depend on the environment "recognizing these actions", so
+    /// a no-op host *is* the documented contract and the engine emits no
+    /// diagnostic for it.
+    ///
+    /// Determinism: the host must not call back into the engine from this
+    /// callback. Reactions feed back only through the sanctioned setters
+    /// between steps.
+    virtual void on_custom_command(const std::string& /*type*/, const std::string& /*content*/) {}
 };
 
 } // namespace scena::gateway

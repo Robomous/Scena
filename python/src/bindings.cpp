@@ -26,6 +26,7 @@
 #include "scena/ir/entity.h"
 #include "scena/ir/entity_condition.h"
 #include "scena/ir/entity_types.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/interaction_condition.h"
 #include "scena/ir/position.h"
@@ -33,6 +34,7 @@
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/traffic_signal.h"
 #include "scena/ir/trajectory.h"
 #include "scena/ir/trigger.h"
 #include "scena/status.h"
@@ -788,6 +790,11 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::Action>(m, "Action")
         .def_prop_ro("kind", &ir::Action::kind,
                      "Stable ASAM element name of the action kind (e.g. 'SpeedAction').");
+    nb::class_<ir::GlobalAction, ir::Action>(
+        m, "GlobalAction",
+        "Base of the actor-less actions (§7.4.2 global, §7.4.3 user-defined). "
+        "entity_id is always the empty string; branch on the type, not on that.")
+        .def_prop_ro("entity_id", &ir::GlobalAction::entity_id);
     nb::class_<ir::SpeedAction, ir::Action>(m, "SpeedAction")
         .def(nb::init<std::string, double>(), "entity_id"_a, "target_speed"_a)
         .def(nb::init<std::string, double, ir::TransitionDynamics>(), "entity_id"_a,
@@ -1062,6 +1069,215 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("traffic", &ir::VisibilityAction::traffic);
 
     // Storyboard hierarchy (ASAM OpenSCENARIO XML 1.4.0 §8.3.2 nesting).
+    // --- Global and infrastructure actions (p5-s6, §7.4.2 / §7.4.3) --------
+
+    nb::enum_<ir::ModifyOperator>(m, "ModifyOperator",
+                                  "The arithmetic a modify action applies (§VariableModifyRule).")
+        .value("Add", ir::ModifyOperator::Add)
+        .value("Multiply", ir::ModifyOperator::Multiply);
+
+    nb::class_<ir::VariableSetAction, ir::GlobalAction>(m, "VariableSetAction")
+        .def(nb::init<std::string, std::string>(), "variable_ref"_a, "value"_a)
+        .def_prop_ro("variable_ref", &ir::VariableSetAction::variable_ref)
+        .def_prop_ro("value", &ir::VariableSetAction::value);
+
+    nb::class_<ir::VariableModifyAction, ir::GlobalAction>(m, "VariableModifyAction")
+        .def(nb::init<std::string, ir::ModifyOperator, double>(), "variable_ref"_a, "op"_a,
+             "value"_a)
+        .def_prop_ro("variable_ref", &ir::VariableModifyAction::variable_ref)
+        .def_prop_ro("op", &ir::VariableModifyAction::op)
+        .def_prop_ro("value", &ir::VariableModifyAction::value);
+
+    nb::class_<ir::ParameterSetAction, ir::GlobalAction>(
+        m, "ParameterSetAction",
+        "Deprecated with 1.2 in favour of VariableSetAction; executed against a "
+        "runtime overlay so a 1.0/1.1 file's ParameterCondition observes it.")
+        .def(nb::init<std::string, std::string>(), "parameter_ref"_a, "value"_a)
+        .def_prop_ro("parameter_ref", &ir::ParameterSetAction::parameter_ref)
+        .def_prop_ro("value", &ir::ParameterSetAction::value);
+
+    nb::class_<ir::ParameterModifyAction, ir::GlobalAction>(
+        m, "ParameterModifyAction", "Deprecated with 1.2; same overlay as ParameterSetAction.")
+        .def(nb::init<std::string, ir::ModifyOperator, double>(), "parameter_ref"_a, "op"_a,
+             "value"_a)
+        .def_prop_ro("parameter_ref", &ir::ParameterModifyAction::parameter_ref)
+        .def_prop_ro("op", &ir::ParameterModifyAction::op)
+        .def_prop_ro("value", &ir::ParameterModifyAction::value);
+
+    nb::class_<ir::AddEntityAction, ir::GlobalAction>(m, "AddEntityAction")
+        .def(nb::init<std::string, ir::WorldPosition>(), "entity_ref"_a, "position"_a)
+        .def_prop_ro("entity_ref", &ir::AddEntityAction::entity_ref)
+        .def_prop_ro("position", &ir::AddEntityAction::position);
+
+    nb::class_<ir::DeleteEntityAction, ir::GlobalAction>(m, "DeleteEntityAction")
+        .def(nb::init<std::string>(), "entity_ref"_a)
+        .def_prop_ro("entity_ref", &ir::DeleteEntityAction::entity_ref);
+
+    // Environment value types (§Environment and friends).
+    nb::enum_<ir::PrecipitationType>(m, "PrecipitationType", "Types of precipitation.")
+        .value("Dry", ir::PrecipitationType::Dry)
+        .value("Rain", ir::PrecipitationType::Rain)
+        .value("Snow", ir::PrecipitationType::Snow);
+
+    nb::class_<ir::TimeOfDay>(m, "TimeOfDay")
+        .def(
+            "__init__",
+            [](ir::TimeOfDay* self, bool animation, ir::DateTime date_time) {
+                new (self) ir::TimeOfDay{animation, date_time};
+            },
+            "animation"_a = false, "date_time"_a = ir::DateTime{},
+            "The simulated day and time; animation=False freezes the clock at date_time.")
+        .def_rw("animation", &ir::TimeOfDay::animation)
+        .def_rw("date_time", &ir::TimeOfDay::date_time);
+
+    nb::class_<ir::Sun>(m, "Sun")
+        .def(
+            "__init__",
+            [](ir::Sun* self, double azimuth, double elevation, double illuminance) {
+                new (self) ir::Sun{azimuth, elevation, illuminance};
+            },
+            "azimuth"_a = 0.0, "elevation"_a = 0.0, "illuminance"_a = 0.0)
+        .def_rw("azimuth", &ir::Sun::azimuth)
+        .def_rw("elevation", &ir::Sun::elevation)
+        .def_rw("illuminance", &ir::Sun::illuminance);
+
+    nb::class_<ir::Fog>(m, "Fog")
+        .def(
+            "__init__",
+            [](ir::Fog* self, double visual_range) { new (self) ir::Fog{visual_range}; },
+            "visual_range"_a = 0.0)
+        .def_rw("visual_range", &ir::Fog::visual_range);
+
+    nb::class_<ir::Precipitation>(m, "Precipitation")
+        .def(
+            "__init__",
+            [](ir::Precipitation* self, ir::PrecipitationType type, double intensity) {
+                new (self) ir::Precipitation{type, intensity};
+            },
+            "type"_a = ir::PrecipitationType::Dry, "intensity"_a = 0.0)
+        .def_rw("type", &ir::Precipitation::type)
+        .def_rw("intensity", &ir::Precipitation::intensity);
+
+    nb::class_<ir::Wind>(m, "Wind")
+        .def(
+            "__init__",
+            [](ir::Wind* self, double direction, double speed) {
+                new (self) ir::Wind{direction, speed};
+            },
+            "direction"_a = 0.0, "speed"_a = 0.0)
+        .def_rw("direction", &ir::Wind::direction)
+        .def_rw("speed", &ir::Wind::speed);
+
+    nb::class_<ir::Weather>(m, "Weather",
+                            "Weather state; every member is optional and None means "
+                            "'this condition doesn't change' (§Weather).")
+        .def(nb::init<>())
+        .def_rw("sun", &ir::Weather::sun)
+        .def_rw("fog", &ir::Weather::fog)
+        .def_rw("precipitation", &ir::Weather::precipitation)
+        .def_rw("wind", &ir::Weather::wind)
+        .def_rw("temperature", &ir::Weather::temperature)
+        .def_rw("atmospheric_pressure", &ir::Weather::atmospheric_pressure)
+        .def_rw("fractional_cloud_cover_oktas", &ir::Weather::fractional_cloud_cover_oktas);
+
+    nb::class_<ir::RoadCondition>(m, "RoadCondition")
+        .def(
+            "__init__",
+            [](ir::RoadCondition* self, double friction_scale_factor) {
+                new (self) ir::RoadCondition{friction_scale_factor};
+            },
+            "friction_scale_factor"_a = 1.0)
+        .def_rw("friction_scale_factor", &ir::RoadCondition::friction_scale_factor);
+
+    nb::class_<ir::Environment>(
+        m, "Environment", "Environment state; an absent member does not change (§Environment).")
+        .def(nb::init<>())
+        .def_rw("name", &ir::Environment::name)
+        .def_rw("time_of_day", &ir::Environment::time_of_day)
+        .def_rw("weather", &ir::Environment::weather)
+        .def_rw("road_condition", &ir::Environment::road_condition);
+
+    nb::class_<ir::EnvironmentAction, ir::GlobalAction>(m, "EnvironmentAction")
+        .def(nb::init<ir::Environment>(), "environment"_a)
+        .def_prop_ro("environment", &ir::EnvironmentAction::environment);
+
+    // Traffic signals (§6.11).
+    nb::class_<ir::TrafficSignalState>(m, "TrafficSignalState")
+        .def(
+            "__init__",
+            [](ir::TrafficSignalState* self, std::string traffic_signal_id, std::string state) {
+                new (self) ir::TrafficSignalState{std::move(traffic_signal_id), std::move(state)};
+            },
+            "traffic_signal_id"_a, "state"_a,
+            "The observable state of one signal during a phase; both strings are "
+            "opaque to the engine (§6.11.4).")
+        .def_rw("traffic_signal_id", &ir::TrafficSignalState::traffic_signal_id)
+        .def_rw("state", &ir::TrafficSignalState::state);
+
+    nb::class_<ir::Phase>(m, "Phase")
+        .def(
+            "__init__",
+            [](ir::Phase* self, std::string name, double duration,
+               std::vector<ir::TrafficSignalState> signal_states) {
+                new (self) ir::Phase{std::move(name), duration, std::move(signal_states)};
+            },
+            "name"_a, "duration"_a = 0.0, "signal_states"_a = std::vector<ir::TrafficSignalState>{})
+        .def_rw("name", &ir::Phase::name)
+        .def_rw("duration", &ir::Phase::duration)
+        .def_rw("signal_states", &ir::Phase::signal_states);
+
+    nb::class_<ir::TrafficSignalController>(m, "TrafficSignalController")
+        .def(
+            "__init__",
+            [](ir::TrafficSignalController* self, std::string name, std::optional<double> delay,
+               std::optional<std::string> reference, std::vector<ir::Phase> phases) {
+                new (self) ir::TrafficSignalController{std::move(name), delay, std::move(reference),
+                                                       std::move(phases)};
+            },
+            "name"_a, "delay"_a = nb::none(), "reference"_a = nb::none(),
+            "phases"_a = std::vector<ir::Phase>{},
+            "A signal cycle (§6.11.2); delay requires reference (§6.11.3).")
+        .def_rw("name", &ir::TrafficSignalController::name)
+        .def_rw("delay", &ir::TrafficSignalController::delay)
+        .def_rw("reference", &ir::TrafficSignalController::reference)
+        .def_rw("phases", &ir::TrafficSignalController::phases);
+
+    nb::class_<ir::TrafficSignalStateAction, ir::GlobalAction>(m, "TrafficSignalStateAction")
+        .def(nb::init<std::string, std::string>(), "name"_a, "state"_a)
+        .def_prop_ro("name", &ir::TrafficSignalStateAction::name)
+        .def_prop_ro("state", &ir::TrafficSignalStateAction::state);
+
+    nb::class_<ir::TrafficSignalControllerAction, ir::GlobalAction>(m,
+                                                                    "TrafficSignalControllerAction")
+        .def(nb::init<std::string, std::string>(), "traffic_signal_controller_ref"_a, "phase"_a)
+        .def_prop_ro("traffic_signal_controller_ref",
+                     &ir::TrafficSignalControllerAction::traffic_signal_controller_ref)
+        .def_prop_ro("phase", &ir::TrafficSignalControllerAction::phase);
+
+    nb::class_<ir::TrafficSignalCondition, ir::Condition>(
+        m, "TrafficSignalCondition",
+        "True while the signal is in `state`; combine with ConditionEdge.Rising "
+        "for the standard's 'reaches' wording.")
+        .def(nb::init<std::string, std::string>(), "name"_a, "state"_a)
+        .def_prop_ro("name", &ir::TrafficSignalCondition::name)
+        .def_prop_ro("state", &ir::TrafficSignalCondition::state);
+
+    nb::class_<ir::TrafficSignalControllerCondition, ir::Condition>(
+        m, "TrafficSignalControllerCondition",
+        "True while the controller is in `phase`; false before a delayed start.")
+        .def(nb::init<std::string, std::string>(), "traffic_signal_controller_ref"_a, "phase"_a)
+        .def_prop_ro("traffic_signal_controller_ref",
+                     &ir::TrafficSignalControllerCondition::traffic_signal_controller_ref)
+        .def_prop_ro("phase", &ir::TrafficSignalControllerCondition::phase);
+
+    nb::class_<ir::CustomCommandAction, ir::GlobalAction>(
+        m, "CustomCommandAction",
+        "A host-author contract handed to the gateway verbatim (§7.4.3); a "
+        "silent no-op without a gateway.")
+        .def(nb::init<std::string, std::string>(), "type"_a, "content"_a)
+        .def_prop_ro("type", &ir::CustomCommandAction::type)
+        .def_prop_ro("content", &ir::CustomCommandAction::content);
+
     nb::enum_<ir::EventPriority>(m, "EventPriority",
                                  "How a starting event interacts with the other events of its "
                                  "Maneuver (§7.3.2, §8.4.2.2). Distinct from TransitionKind.Skip, "
@@ -1206,6 +1422,14 @@ NB_MODULE(_scena, m) {
             },
             "action"_a, "Appends an init-phase action, applied before simulation time starts.")
         .def(
+            "add_traffic_signal_controller",
+            [](ir::Scenario& scenario, const ir::TrafficSignalController& controller) {
+                scenario.traffic_signal_controllers.push_back(controller);
+            },
+            "controller"_a,
+            "Declares a TrafficSignalController (§6.11.2); document order is the "
+            "order the engine ticks them in.")
+        .def(
             "add_story",
             [](ir::Scenario& scenario, const ir::Story& story) {
                 scenario.storyboard.stories.push_back(story);
@@ -1278,6 +1502,24 @@ NB_MODULE(_scena, m) {
             },
             "entity_id"_a,
             "The controller assigned to an entity (a copy), or None when it has none.")
+        .def("entity_active", &scena::Engine::entity_active, "entity_id"_a,
+             "Whether a declared entity is currently in the scenario (§EntityAction); "
+             "None when the id is not declared at all.")
+        .def("traffic_signal_state", &scena::Engine::traffic_signal_state, "name"_a,
+             "Current observable state of a traffic signal, or None when nothing has "
+             "written it yet.")
+        .def("traffic_signal_controller_phase", &scena::Engine::traffic_signal_controller_phase,
+             "name"_a,
+             "Name of the phase a controller is in, or None when it is unknown, has no "
+             "phases, or has not started yet.")
+        .def_prop_ro(
+            "environment",
+            [](const scena::Engine& engine) {
+                // A copy: the store is replaced by the next EnvironmentAction
+                // and by init/close, and a Python reference must not dangle.
+                return engine.environment();
+            },
+            "Environment state merged from the EnvironmentActions so far (a copy).")
         .def("controller_activation_of", &scena::Engine::controller_activation_of, "entity_id"_a,
              "Which movement domains the engine controls for an entity, or None when unknown.")
         .def("visibility_of", &scena::Engine::visibility_of, "entity_id"_a,

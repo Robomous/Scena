@@ -12,6 +12,7 @@
 #include "scena/ir/action.h"
 #include "scena/ir/entity.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/traffic_signal.h"
 
 namespace scena::ir {
 
@@ -42,6 +43,12 @@ struct Scenario {
     /// value that the engine seeds into its runtime store at init and that a
     /// VariableAction or the host may change during the run.
     std::map<std::string, std::string, std::less<>> variables;
+
+    /// Traffic signal controllers (§6.11.2), declared in the RoadNetwork
+    /// section of a scenario file and kept here in document order — that order
+    /// is the one the engine ticks them in and is part of the deterministic
+    /// run. Controller names are unique, which init() validates.
+    std::vector<TrafficSignalController> traffic_signal_controllers;
 
     Storyboard storyboard;
 };

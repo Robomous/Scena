@@ -904,3 +904,302 @@ TEST(CApiTest, NullArgumentsAreRejectedForPrivateActions) {
         SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }
+
+// --- Global and infrastructure actions (p5-s6) ----------------------------
+
+TEST(CApiTest, VariableAndParameterActionsThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_declare_variable(engine, "counter", "1"), SCN_OK);
+    ASSERT_EQ(scn_engine_set_parameter(engine, "gap", "8"), SCN_OK);
+
+    ASSERT_EQ(
+        scn_engine_add_variable_set_action(engine, "counter", "10", 1.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_add_variable_modify_action(engine, "counter", SCN_MODIFY_MULTIPLY, 2.5,
+                                                    2.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(
+        scn_engine_add_parameter_set_action(engine, "gap", "12", 3.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_add_parameter_modify_action(engine, "gap", SCN_MODIFY_ADD, 3.0, 4.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    }
+    const char* value = nullptr;
+    ASSERT_EQ(scn_engine_get_variable(engine, "counter", &value), SCN_OK);
+    EXPECT_STREQ(value, "25");
+
+    // The deprecated parameter actions warn through the diagnostic stream.
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    bool deprecated = false;
+    for (size_t i = 0; i < count; ++i) {
+        scn_diagnostic diagnostic{};
+        ASSERT_EQ(scn_engine_diagnostic_at(engine, i, &diagnostic), SCN_OK);
+        if (diagnostic.code == SCN_ERROR_DEPRECATED_FEATURE) {
+            deprecated = true;
+        }
+    }
+    EXPECT_TRUE(deprecated);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, EntityLifecycleThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_delete_entity_action(engine, "ego", 1.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_add_entity_action(engine, "ego", 5.0, 6.0, 0.0, 2.0,
+                                               SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    int active = -1;
+    ASSERT_EQ(scn_engine_entity_active(engine, "ego", &active), SCN_OK);
+    EXPECT_EQ(active, 1);
+    EXPECT_EQ(scn_engine_entity_active(engine, "ghost", &active), SCN_ERROR_UNKNOWN_ENTITY);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_entity_active(engine, "ego", &active), SCN_OK);
+    EXPECT_EQ(active, 0);
+    scn_entity_state state{};
+    EXPECT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_ERROR_UNKNOWN_ENTITY);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_entity_active(engine, "ego", &active), SCN_OK);
+    EXPECT_EQ(active, 1);
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.x, 5.0);
+    EXPECT_EQ(state.y, 6.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, EnvironmentActionThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+
+    // Zero-initialized: every has_* flag off, so only what is set is merged.
+    scn_environment environment{};
+    environment.name = "dusk";
+    environment.has_time_of_day = 1;
+    environment.time_of_day_animation = 1;
+    environment.year = 2026;
+    environment.month = 7;
+    environment.day = 22;
+    environment.hour = 18;
+    environment.has_weather = 1;
+    environment.has_fog = 1;
+    environment.fog_visual_range = 250.0;
+    environment.has_precipitation = 1;
+    environment.precipitation_type = SCN_PRECIPITATION_RAIN;
+    environment.precipitation_intensity = 3.0;
+    environment.has_road_condition = 1;
+    environment.friction_scale_factor = 0.7;
+    ASSERT_EQ(
+        scn_engine_add_environment_action(engine, &environment, 1.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    double instant = 0.0;
+    EXPECT_EQ(scn_engine_get_date_time(engine, &instant), SCN_ERROR_INVALID_ARGUMENT);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_get_date_time(engine, &instant), SCN_OK);
+    // The anchor advances with simulation time (animation is on).
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    double later = 0.0;
+    ASSERT_EQ(scn_engine_get_date_time(engine, &later), SCN_OK);
+    EXPECT_DOUBLE_EQ(later - instant, 2.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, FrozenTimeOfDayHoldsTheAbiClock) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    scn_environment environment{};
+    environment.has_time_of_day = 1;
+    environment.time_of_day_animation = 0; // frozen
+    environment.year = 2026;
+    environment.month = 7;
+    environment.day = 22;
+    environment.hour = 9;
+    ASSERT_EQ(
+        scn_engine_add_environment_action(engine, &environment, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    double anchor = 0.0;
+    ASSERT_EQ(scn_engine_get_date_time(engine, &anchor), SCN_OK);
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+        double now = 0.0;
+        ASSERT_EQ(scn_engine_get_date_time(engine, &now), SCN_OK);
+        EXPECT_EQ(now, anchor);
+    }
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, TrafficSignalsThroughTheAbi) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+
+    const scn_traffic_signal_state stop_states[] = {{"s1", "red"}};
+    const scn_traffic_signal_state go_states[] = {{"s1", "green"}};
+    const scn_signal_phase phases[] = {{"stop", 10.0, stop_states, 1}, {"go", 10.0, go_states, 1}};
+    ASSERT_EQ(
+        scn_engine_declare_traffic_signal_controller(engine, "group1", -1.0, nullptr, phases, 2),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_add_traffic_signal_controller_action(engine, "group1", "go", 3.0,
+                                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_add_traffic_signal_state_action(engine, "s1", "red;green", 6.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    const char* state = nullptr;
+    ASSERT_EQ(scn_engine_traffic_signal_state(engine, "s1", &state), SCN_OK);
+    EXPECT_STREQ(state, "red");
+    const char* phase = nullptr;
+    ASSERT_EQ(scn_engine_traffic_signal_controller_phase(engine, "group1", &phase), SCN_OK);
+    EXPECT_STREQ(phase, "stop");
+    EXPECT_EQ(scn_engine_traffic_signal_state(engine, "unwritten", &state), SCN_ERROR_UNKNOWN_NAME);
+    EXPECT_EQ(scn_engine_traffic_signal_controller_phase(engine, "nope", &phase),
+              SCN_ERROR_UNKNOWN_NAME);
+
+    for (int i = 0; i < 6; ++i) { // t = 3, the controller action fires
+        ASSERT_EQ(scn_engine_step(engine, 0.5), SCN_OK);
+    }
+    ASSERT_EQ(scn_engine_traffic_signal_controller_phase(engine, "group1", &phase), SCN_OK);
+    EXPECT_STREQ(phase, "go");
+
+    for (int i = 0; i < 6; ++i) { // t = 6, the forced state lands
+        ASSERT_EQ(scn_engine_step(engine, 0.5), SCN_OK);
+    }
+    ASSERT_EQ(scn_engine_traffic_signal_state(engine, "s1", &state), SCN_OK);
+    EXPECT_STREQ(state, "red;green");
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, TrafficSignalControllerActionUnknownPhaseFailsInit) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    const scn_signal_phase phases[] = {{"stop", 10.0, nullptr, 0}};
+    ASSERT_EQ(
+        scn_engine_declare_traffic_signal_controller(engine, "group1", -1.0, nullptr, phases, 1),
+        SCN_OK);
+    ASSERT_EQ(scn_engine_add_traffic_signal_controller_action(engine, "group1", "go", 1.0,
+                                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    EXPECT_EQ(scn_engine_init(engine), SCN_ERROR_SEMANTIC);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, CustomCommandActionIsAcceptedWithoutAGateway) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_custom_command_action(engine, "script", "run.py", 1.0,
+                                                   SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    // The C surface exposes no gateway, so the action is a documented no-op —
+    // and emits no diagnostic.
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    EXPECT_EQ(count, 0U);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, NullArgumentsAreRejectedForGlobalActions) {
+    const scn_signal_phase phases[] = {{"stop", 10.0, nullptr, 0}};
+    scn_environment environment{};
+
+    // A null engine is rejected by every entry point.
+    EXPECT_EQ(scn_engine_add_variable_set_action(nullptr, "v", "1", 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_variable_modify_action(nullptr, "v", SCN_MODIFY_ADD, 1.0, 0.0,
+                                                    SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_parameter_set_action(nullptr, "p", "1", 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_parameter_modify_action(nullptr, "p", SCN_MODIFY_ADD, 1.0, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_add_entity_action(nullptr, "e", 0.0, 0.0, 0.0, 0.0,
+                                               SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_delete_entity_action(nullptr, "e", 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_environment_action(nullptr, &environment, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_traffic_signal_state_action(nullptr, "s", "on", 0.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_traffic_signal_controller_action(nullptr, "c", "p", 0.0,
+                                                              SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_custom_command_action(nullptr, "t", "c", 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_declare_traffic_signal_controller(nullptr, "c", -1.0, nullptr, phases, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_traffic_signal_state(nullptr, "s", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_traffic_signal_controller_phase(nullptr, "c", nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_active(nullptr, "e", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_date_time(nullptr, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Null required strings and out pointers.
+    EXPECT_EQ(
+        scn_engine_add_variable_set_action(engine, nullptr, "1", 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_variable_set_action(engine, "v", nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_add_entity_action(engine, nullptr, 0.0, 0.0, 0.0, 0.0,
+                                               SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_environment_action(engine, nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_traffic_signal_state_action(engine, "s", nullptr, 0.0,
+                                                         SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_add_custom_command_action(engine, "t", nullptr, 0.0, SCN_PRIORITY_PARALLEL, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(
+        scn_engine_declare_traffic_signal_controller(engine, nullptr, -1.0, nullptr, phases, 1),
+        SCN_ERROR_INVALID_ARGUMENT);
+    // A non-zero phase count with a null array.
+    EXPECT_EQ(scn_engine_declare_traffic_signal_controller(engine, "c", -1.0, nullptr, nullptr, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_traffic_signal_state(engine, "s", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_active(engine, "e", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_date_time(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    // Out-of-range enums.
+    EXPECT_EQ(scn_engine_add_variable_modify_action(engine, "v",
+                                                    static_cast<scn_modify_operator>(9), 1.0, 0.0,
+                                                    SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_variable_set_action(engine, "v", "1", 0.0,
+                                                 static_cast<scn_event_priority>(9), 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // A negative maximumExecutionCount.
+    EXPECT_EQ(scn_engine_add_variable_set_action(engine, "v", "1", 0.0, SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}

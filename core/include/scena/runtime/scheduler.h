@@ -286,6 +286,14 @@ private:
         entity_kinematics(std::string_view id) const override {
             return host_->entity_kinematics(id);
         }
+        [[nodiscard]] std::optional<std::string_view>
+        traffic_signal_state(std::string_view name) const override {
+            return host_->traffic_signal_state(name);
+        }
+        [[nodiscard]] std::optional<std::string_view>
+        traffic_signal_controller_phase(std::string_view controller_ref) const override {
+            return host_->traffic_signal_controller_phase(controller_ref);
+        }
 
     private:
         const ir::EvaluationContext* host_;

@@ -27,8 +27,12 @@ element.
 | `UserDefinedValueCondition` | an external named value to a literal | host-injected values |
 | `TimeOfDayCondition` | the simulated date-time to a reference | the time-of-day anchor |
 | `StoryboardElementStateCondition` | an element's state/transition | the storyboard tree (§8.1–8.2) |
+| `TrafficSignalCondition` | a signal's observable state to a reference | the signal store (§6.11.4) |
+| `TrafficSignalControllerCondition` | a controller's phase to a reference | the signal cycle clock (§6.11.4) |
 
-All comparisons go through one shared `Rule` operator.
+The first six comparisons go through one shared `Rule` operator; the two
+signal conditions compare strings for equality only (see
+[Traffic signals](#traffic-signals) below).
 
 ## The Rule comparator
 
@@ -150,8 +154,61 @@ No wall clock is ever read.
   rejected — by the setter with `InvalidArgument`, at init with
   `ValidationError`.
 - Until an anchor is set the condition is a deterministic `false` and the
-  engine warns once. The same anchor will later be fed by the
-  EnvironmentAction time-of-day clock (p5-s6).
+  engine warns once.
+- An `EnvironmentAction` feeds the same anchor and may additionally **freeze**
+  it (`TimeOfDay animation="false"`), in which case the simulated instant never
+  moves and a reference in the future is never reached. The condition itself is
+  unchanged by that — it reads whatever instant the context reports. See
+  [Global actions](global-actions.md#the-time-of-day-clock).
+
+## Traffic signals
+
+`TrafficSignalCondition` and `TrafficSignalControllerCondition` read the
+traffic-signal state the §6.11 controllers and the infrastructure actions write
+(see [Global actions](global-actions.md#traffic-signals)):
+
+| Condition | Holds while |
+|---|---|
+| `TrafficSignalCondition` | signal `name` is in observable state `state` |
+| `TrafficSignalControllerCondition` | controller `trafficSignalControllerRef` is in phase `phase` |
+
+Both compare **byte for byte** and carry no `Rule`: the notation of a signal
+state is simulator-specific (§6.11.4), so the engine must not read meaning into
+the string.
+
+### Level, not edge
+
+The standard phrases both as "reaches" a state or phase. Scena models them as
+**level** predicates — true for as long as the value matches — exactly like
+every other condition in this catalog. "Reaches" is what the trigger's
+`conditionEdge rising` supplies on top:
+
+```python
+# True throughout the green phase.
+scn.make_trigger(scn.TrafficSignalCondition("signal-1", "green"))
+# True only in the evaluation it turns green.
+scn.make_trigger(scn.TrafficSignalCondition("signal-1", "green"), scn.ConditionEdge.Rising)
+```
+
+The storyboard already owns edge semantics ([Triggers](triggers.md)); building
+a second notion of "reaches" inside a condition would give two places to
+disagree.
+
+### When they are false
+
+- A controller still waiting out its §6.11.3 `delay` has **no phase** at all,
+  so a condition naming its first phase is a deterministic `false` until it
+  starts.
+- A signal id nothing has written — no controller phase names it and no
+  `TrafficSignalStateAction` has forced it — reads as `false`, and the engine
+  warns once. Signal ids name elements of the road network file (rule
+  `reference_control.traffic_signal_condition_references`, C.7.10), which Scena
+  cannot resolve until p3-s4.
+
+The controller condition's references *are* checkable within the scenario, and
+`init()` rejects an unknown controller or phase with `SemanticError`, citing
+rule `reference_control.traffic_signal_controller_condition_references`
+(C.7.12).
 
 ## Storyboard element state
 

@@ -10,6 +10,7 @@
 #include "scena/ir/controller.h"
 #include "scena/ir/coordinate_system.h"
 #include "scena/ir/dynamics.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/position.h"
 #include "scena/ir/route.h"
 #include "scena/ir/trajectory.h"
@@ -35,6 +36,22 @@ public:
     /// whose output is mangled and platform-dependent — the determinism
     /// contract requires a stable string.
     [[nodiscard]] virtual std::string_view kind() const noexcept = 0;
+};
+
+/// Base of the actor-less actions: the §7.4.2 global actions ("used to set or
+/// modify non-entity-related quantities") and the §7.4.3 user-defined
+/// CustomCommandAction.
+///
+/// A global action has no actor entity, so entity_id() is finalized here to a
+/// static empty string — every existing call site keeps a valid reference.
+/// Dispatch and validation branch on this base (a dynamic_cast), never on the
+/// empty string: an entity id is scenario content and must not carry meaning by
+/// being empty. Global actions are legal both in the init phase (§8.5) and in
+/// storyboard events, and both routes reach the same Engine::apply.
+class GlobalAction : public Action {
+public:
+    /// Always the empty string: a global action targets no entity.
+    [[nodiscard]] const std::string& entity_id() const final;
 };
 
 /// How a RelativeTargetSpeed value combines with the reference entity's speed.
@@ -450,6 +467,260 @@ private:
     bool graphics_;
     bool sensors_;
     bool traffic_;
+};
+
+// --- Global actions (§7.4.2) ------------------------------------------------
+
+/// The arithmetic a modify action applies to the value it references, per
+/// §VariableModifyRule (and the deprecated §ModifyRule, which has the same two
+/// members). "Either adding a value to a variable or multiply the variable by a
+/// value."
+enum class ModifyOperator {
+    /// §VariableAddValueRule / §ParameterAddValueRule: current + value.
+    Add,
+    /// §VariableMultiplyByValueRule / §ParameterMultiplyByValueRule:
+    /// current * value.
+    Multiply,
+};
+
+/// Sets a global variable to a given value, per §VariableSetAction (≥1.2).
+/// Variables are the one named-value namespace that changes during a run
+/// (§6.12); the new value is a string, exactly as the XSD spells it, and the
+/// VariableCondition comparison rules decide how it reads. Completes
+/// immediately (Annex A Table 11).
+class VariableSetAction final : public GlobalAction {
+public:
+    VariableSetAction(std::string variable_ref, std::string value);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Name of the variable to write; must be declared (§6.12, rule
+    /// reference_control.resolvable_variable_reference).
+    [[nodiscard]] const std::string& variable_ref() const;
+
+    /// The new value.
+    [[nodiscard]] const std::string& value() const;
+
+private:
+    std::string variable_ref_;
+    std::string value_;
+};
+
+/// Modifies a global variable arithmetically, per §VariableModifyAction (≥1.2).
+///
+/// Rule C.2.6 (`data_type.variable_modification_or_comparison_possible`)
+/// restricts this to numeric variables: Scena has no typed declarations yet
+/// (p4-s3), so it applies the operator when the current value parses as a
+/// scalar and reports the rule as a Warning otherwise, leaving the variable
+/// untouched. Completes immediately (Table 11).
+class VariableModifyAction final : public GlobalAction {
+public:
+    VariableModifyAction(std::string variable_ref, ModifyOperator op, double value);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    [[nodiscard]] const std::string& variable_ref() const;
+
+    /// Whether the value is added or multiplied in.
+    [[nodiscard]] ModifyOperator op() const noexcept;
+
+    /// The operand of the operator.
+    [[nodiscard]] double value() const noexcept;
+
+private:
+    std::string variable_ref_;
+    ModifyOperator op_;
+    double value_;
+};
+
+/// Sets a global parameter to a given value, per §ParameterSetAction —
+/// **deprecated with 1.2** in favor of VariableSetAction.
+///
+/// Parameters are immutable at runtime from 1.2 on (§9.1), so this action can
+/// only appear in a 1.0/1.1 file. Scena executes it against a runtime overlay
+/// that shadows the immutable declaration for the ParameterCondition that reads
+/// it, and warns once with Status::DeprecatedFeature. Completes immediately.
+class ParameterSetAction final : public GlobalAction {
+public:
+    ParameterSetAction(std::string parameter_ref, std::string value);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Name of the parameter to write; must be declared in the scenario.
+    [[nodiscard]] const std::string& parameter_ref() const;
+
+    [[nodiscard]] const std::string& value() const;
+
+private:
+    std::string parameter_ref_;
+    std::string value_;
+};
+
+/// Modifies a global parameter arithmetically, per §ParameterModifyAction —
+/// **deprecated with 1.2** in favor of VariableModifyAction. Same overlay,
+/// deprecation warning and numeric restriction as ParameterSetAction /
+/// VariableModifyAction.
+class ParameterModifyAction final : public GlobalAction {
+public:
+    ParameterModifyAction(std::string parameter_ref, ModifyOperator op, double value);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    [[nodiscard]] const std::string& parameter_ref() const;
+    [[nodiscard]] ModifyOperator op() const noexcept;
+    [[nodiscard]] double value() const noexcept;
+
+private:
+    std::string parameter_ref_;
+    ModifyOperator op_;
+    double value_;
+};
+
+/// Sets weather state, road conditions and the time of day, per
+/// §EnvironmentAction. Completes immediately (Annex A Table 11).
+///
+/// §Environment gives the merge its semantics: an absent member "doesn't
+/// change", so the action updates only what it carries and the engine keeps
+/// the rest. The catalog-reference form of the action (§EnvironmentAction is a
+/// union of an inline Environment and a CatalogReference) arrives with
+/// catalogs (P4).
+class EnvironmentAction final : public GlobalAction {
+public:
+    explicit EnvironmentAction(Environment environment);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The environment update to merge in.
+    [[nodiscard]] const Environment& environment() const;
+
+private:
+    Environment environment_;
+};
+
+/// Issues a user-defined command to the host, per §UserDefinedAction /
+/// §CustomCommandAction (§7.4.3): "Users may create their own actions which may
+/// incorporate a command or a script file." Completes immediately (Annex A
+/// Table 12).
+///
+/// Both strings are opaque to the engine: `type` and `content` are "defined as
+/// a contract between the simulation environment provider and the author of a
+/// scenario", so Scena hands them to the gateway verbatim and reads no meaning
+/// into either. Without a gateway the action is a silent no-op — §7.4.3 makes
+/// executability depend on "the ability of the specific simulation environment
+/// recognizing these actions", so a host that does not implement it is not an
+/// error.
+class CustomCommandAction final : public GlobalAction {
+public:
+    CustomCommandAction(std::string type, std::string content);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// The command type agreed between host and scenario author.
+    [[nodiscard]] const std::string& type() const;
+
+    /// The command itself, in whatever form that contract specifies.
+    [[nodiscard]] const std::string& content() const;
+
+private:
+    std::string type_;
+    std::string content_;
+};
+
+/// Forces the observable state of a named traffic signal, per
+/// §InfrastructureAction / §TrafficSignalAction / §TrafficSignalStateAction:
+/// "control the state of a traffic signal". Completes immediately (Annex A
+/// Table 11).
+///
+/// The write outlives the action: the forced state stands until the controlling
+/// TrafficSignalController's next phase transition overwrites it, which is what
+/// makes the §11.12 "traffic light failure" example work — a signal is forced
+/// into a broken state and stays there. `name` is a road-network signal id, so
+/// it is free-form (rule traffic_signal_state_action_references, C.7.14, is not
+/// checkable without a road network).
+class TrafficSignalStateAction final : public GlobalAction {
+public:
+    TrafficSignalStateAction(std::string name, std::string state);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// ID of the referenced signal in the road network file.
+    [[nodiscard]] const std::string& name() const;
+
+    /// The observable state to force, e.g. "off;off;on".
+    [[nodiscard]] const std::string& state() const;
+
+private:
+    std::string name_;
+    std::string state_;
+};
+
+/// Jumps a traffic signal controller to a named phase, per
+/// §TrafficSignalControllerAction: "set a specific phase of a traffic signal
+/// controller, typically affecting a collection of signals". Completes
+/// immediately (Table 11).
+///
+/// The cycle restarts at that phase and continues from there in declared order.
+/// Both references are checkable within the scenario (rule
+/// traffic_signal_controller_action_references, C.7.11).
+class TrafficSignalControllerAction final : public GlobalAction {
+public:
+    TrafficSignalControllerAction(std::string traffic_signal_controller_ref, std::string phase);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Name of the referenced TrafficSignalController.
+    [[nodiscard]] const std::string& traffic_signal_controller_ref() const;
+
+    /// Name of the targeted phase of that controller.
+    [[nodiscard]] const std::string& phase() const;
+
+private:
+    std::string traffic_signal_controller_ref_;
+    std::string phase_;
+};
+
+/// Adds a declared entity to the running scenario at a position, per
+/// §EntityAction / §AddEntityAction. "Entities to be added or deleted must be
+/// defined in the Entities section. An entity can only exist in one copy.
+/// Adding an already active entity will have no effect" — so the entity_ref
+/// resolves against the declaration, not against a live instance, and adding an
+/// active entity is a no-op. Completes immediately (Annex A Table 11).
+///
+/// Scena models the world-frame target only, the p5-s4 TeleportAction
+/// precedent; the other §6.3.8 position variants arrive with the
+/// PositionResolver (p2-s4/p3-s4).
+class AddEntityAction final : public GlobalAction {
+public:
+    AddEntityAction(std::string entity_ref, WorldPosition position);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    /// Name of the declared entity to add (§EntityAction entityRef).
+    [[nodiscard]] const std::string& entity_ref() const;
+
+    /// Where the entity appears (§WorldPosition).
+    [[nodiscard]] const WorldPosition& position() const;
+
+private:
+    std::string entity_ref_;
+    WorldPosition position_;
+};
+
+/// Removes an entity from the running scenario, per §EntityAction /
+/// §DeleteEntityAction. "Deleting an already inactive entity" has no effect.
+/// A deleted entity stops moving, stops being published to the host, and
+/// disappears from the by-entity conditions; its declaration survives, so an
+/// AddEntityAction can bring it back. Completes immediately (Table 11).
+class DeleteEntityAction final : public GlobalAction {
+public:
+    explicit DeleteEntityAction(std::string entity_ref);
+
+    [[nodiscard]] std::string_view kind() const noexcept override;
+
+    [[nodiscard]] const std::string& entity_ref() const;
+
+private:
+    std::string entity_ref_;
 };
 
 } // namespace scena::ir

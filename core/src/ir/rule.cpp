@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "scena/ir/rule.h"
 
+#include <array>
 #include <charconv>
+#include <string>
+#include <system_error>
 
 namespace scena::ir {
 
@@ -52,6 +55,22 @@ std::optional<double> parse_scalar(std::string_view text) {
         return std::nullopt;
     }
     return value;
+}
+
+std::string format_scalar(double value) {
+    // 32 chars hold every shortest round-trip double ("-1.7976931348623157e+308"
+    // is 24); the buffer is sized well past that so to_chars cannot fail with
+    // value_too_large for any input.
+    std::array<char, 64> buffer{};
+    const std::to_chars_result result =
+        std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    if (result.ec != std::errc{}) {
+        return {}; // unreachable for the buffer size above; no partial output
+    }
+    // The no-format overload emits the shortest representation that round-trips
+    // (the Ryū / Grisu shortest form), which is what makes format_scalar the
+    // exact inverse of parse_scalar.
+    return std::string(buffer.data(), result.ptr);
 }
 
 bool compare_values(std::string_view lhs, Rule rule, std::string_view rhs) {

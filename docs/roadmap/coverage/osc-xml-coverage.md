@@ -51,15 +51,15 @@ Rules of this document:
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| EnvironmentAction | §7.4.2 | In | p5-s6 | Environment state store + TimeOfDay clock only; no physics/visual coupling (documented simplification) |
-| AddEntityAction | §7.4.2 | In | p5-s6 | Deterministic entity-table update |
-| DeleteEntityAction | §7.4.2 | In | p5-s6 | Deterministic entity-table update |
-| ParameterSetAction | class ref | In | p5-s6 | Accepted, deprecated; lowered onto the runtime variable store (1.0/1.1 compat) |
-| ParameterModifyAction (+ ModifyRule, Add/MultiplyByValueRule) | class ref | In | p5-s6 | Accepted, deprecated; same lowering |
-| VariableSetAction | §6.12 | In | p5-s6 | ≥1.2 |
-| VariableModifyAction (+ rules) | §6.12 | In | p5-s6 | ≥1.2; numeric types only per rule C.2.6 |
-| TrafficSignalControllerAction | §6.11 | In | p5-s6 | Phase model; 1.4 phase *semantics* (TrafficSignalSemantics) excluded |
-| TrafficSignalStateAction | §6.11 | In | p5-s6 | Named signal observable state |
+| EnvironmentAction | §7.4.2 | In | p5-s6 | Kernel landed: Environment/Weather/Sun/Fog/Precipitation/Wind/RoadCondition value types merged member-wise per §Environment ("a missing condition doesn't change"), readable via `Engine::environment`; TimeOfDay re-anchors the simulated clock and its `animation` flag freezes or advances it, feeding TimeOfDayCondition unchanged (ADR-0015). No physics or visual coupling — weather is stored, never applied (documented simplification). `RoadCondition.wetness` (1.2) + Properties, the DomeImage, and the CatalogReference form → Post/P4. XML lowering deferred (P4) |
+| AddEntityAction | §7.4.2 | In | p5-s6 | Kernel landed: an `active` flag on the entity record (never an erase/insert, so iteration order and bookkeeping are untouched); a fresh state at the world-frame position with the observation baseline seeded as at init. Adding an active entity is a no-op (§7.4.2). Other §6.3.8 position variants → p2-s4/p3-s4. XML lowering deferred (P4) |
+| DeleteEntityAction | §7.4.2 | In | p5-s6 | Kernel landed: clears all runtime motion/assignment/observation state, keeps the declared immutables; the entity is skipped by poll/refresh/integrate/publish, reports nothing to the host, and is absent from the by-entity conditions. Running private actions on it or on it as a reference stop (§7.5.2.2), surfacing as the owning event ending one evaluation later (ADR-0015). Deleting an inactive entity is a no-op. XML lowering deferred (P4) |
+| ParameterSetAction | class ref | In | p5-s6 | Kernel landed: accepted, deprecated with 1.2, executed against a runtime overlay consulted ahead of the immutable §9.1 declaration so a 1.0/1.1 file's ParameterCondition observes it; warn-once `DeprecatedFeature` (ADR-0015). XML lowering deferred (P4) |
+| ParameterModifyAction (+ ModifyRule, Add/MultiplyByValueRule) | class ref | In | p5-s6 | Kernel landed: same overlay and deprecation warning; add/multiplyByValue over the overlay, numeric values only per rule C.2.6. XML lowering deferred (P4) |
+| VariableSetAction | §6.12 | In | p5-s6 | Kernel landed (≥1.2): writes the runtime variable store a VariableCondition and the host both read. Undeclared ref rejected at init (rule reference_control.resolvable_variable_reference). XML lowering deferred (P4) |
+| VariableModifyAction (+ rules) | §6.12 | In | p5-s6 | Kernel landed (≥1.2): add/multiplyByValue as one fixed IEEE expression, stored back through the shortest round-tripping decimal so a modify chain is exact. Non-numeric current value ⇒ warn-once citing rule data_type.variable_modification_or_comparison_possible (C.2.6) and no-op; typed declarations → p4-s3. XML lowering deferred (P4) |
+| TrafficSignalControllerAction | §6.11 | In | p5-s6 | Kernel landed: restarts a controller's cycle at a named phase (re-anchor + immediate tick, so same-evaluation conditions agree) and continues in declared order; both references validated at init (rule reference_control.traffic_signal_controller_action_references, C.7.11). 1.4 phase *semantics* (TrafficSignalSemantics) excluded. XML lowering deferred (P4) |
+| TrafficSignalStateAction | §6.11 | In | p5-s6 | Kernel landed: forces a named signal's observable state, which stands until the controlling cycle's next phase transition (actions-win precedence, the §11.12 bulb-failure shape, ADR-0015). Signal id free-form — rule C.7.14 needs a road network (p3-s4). XML lowering deferred (P4) |
 | TrafficSourceAction | §6.10 | Post | — | Ambient-traffic generation (with distributions) is a post-release feature family |
 | TrafficSinkAction | §6.10 | Post | — | Same family |
 | TrafficSwarmAction | §6.10 | Post | — | Same family; also inherently stochastic |
@@ -71,7 +71,7 @@ Rules of this document:
 
 | Element | Section | Status | Sprint | Notes |
 |---|---|---|---|---|
-| UserDefinedAction / CustomCommandAction | §7.4.3 | In | p5-s6 | Host callback through the gateway; no-op without a host (documented contract) |
+| UserDefinedAction / CustomCommandAction | §7.4.3 | In | p5-s6 | Kernel landed: `type` and `content` handed verbatim to `ISimulatorGateway::on_custom_command` (defaulted virtual, an ADR-0003 amendment); a silent no-op without a gateway, per §7.4.3 executability — no diagnostic (ADR-0015). XML lowering deferred (P4) |
 
 ## Conditions — by entity
 
@@ -118,8 +118,8 @@ IR lands (p4-s4).
 | SimulationTimeCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: gained the spec's `rule` (default greaterOrEqual); time starts when the Storyboard enters running (§8.4.7); NaN value ⇒ init `ValidationError`. XML lowering deferred (P4) |
 | StoryboardElementStateCondition | §7.6.5.2, §8.1–8.2 | In | p5-s1 | Kernel landed: level states + one-evaluation transition pulses; nameRef `::` resolution; zero/ambiguous ref ⇒ init `SemanticError` (rule `reference_control.resolvable_storyboard_element_ref`); `action` type unsupported until p5-s4 (warns). XML lowering deferred (P4) |
 | TimeOfDayCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: host-anchored simulated clock advancing with sim time, epoch-seconds compare (UTC offset honored), leap-year-correct; unset anchor ⇒ false + warn-once. Same anchor fed later by the EnvironmentAction clock (p5-s6). XML lowering deferred (P4) |
-| TrafficSignalCondition | §7.6.5.2, §6.11 | In | p5-s6 | Lands with the signal actions |
-| TrafficSignalControllerCondition | §7.6.5.2, §6.11 | In | p5-s6 | Phase reached; 1.4 semantics excluded |
+| TrafficSignalCondition | §7.6.5.2, §6.11 | In | p5-s6 | Kernel landed: a level predicate on the byte-for-byte signal state ("reaches" comes from conditionEdge rising, the p5-s1 catalog precedent); an unwritten signal id is a deterministic false + warn-once. Road-network id validation (rule C.7.10) → p3-s4. XML lowering deferred (P4) |
+| TrafficSignalControllerCondition | §7.6.5.2, §6.11 | In | p5-s6 | Kernel landed: a level predicate on the controller's phase name; a controller before its §6.11.3 delayed start has no phase, so the condition is a deterministic false. Both references validated at init (rule ...traffic_signal_controller_condition_references, C.7.12). 1.4 semantics excluded. XML lowering deferred (P4) |
 | UserDefinedValueCondition | §7.6.5.2 | In | p5-s1 | Kernel landed: host-provided named values (`set_user_defined_value`, stageable pre-init); unset name ⇒ false + warn-once. XML lowering deferred (P4) |
 
 ## Storyboard & runtime semantics
@@ -157,7 +157,7 @@ IR lands (p4-s4).
 | Trailer attributes on Vehicle | §7.2.2.6 | Post | — | With the trailer action family |
 | EntitySelection / ByType / ByObjectType | §7.2.2.2–7.2.2.5 | In | p4-s4 | Homogeneity rules cited |
 | ObjectController / Controller (+ properties) | §6.6 | In | p4-s4, p5-s5 | Controller IR (name, controllerType, ordered properties) + assignment and gateway hand-off landed p5-s5; ObjectController wrapper, catalogs and multiple controllers (≥1.2) → p4-s4 |
-| Environment / Weather / TimeOfDay / RoadCondition (as data) | §7.4.2 | In | p4-s4, p5-s6 | Stored + queryable; no physics coupling |
+| Environment / Weather / TimeOfDay / RoadCondition (as data) | §7.4.2 | In | p4-s4, p5-s6 | Kernel value types landed (p5-s6): stored, merged member-wise and queryable via `Engine::environment`; no physics coupling. Catalog instantiation + parameterDeclarations → p4-s4 |
 | TrafficDefinition / TrafficDistribution | §6.10 | Post | — | With the traffic family |
 
 ## Positions, trajectories, routes
@@ -178,7 +178,7 @@ IR lands (p4-s4).
 | Motion class / Polyline Interpolation | §6.9 | Excl | — | 1.4-only |
 | TimeReference / Timing / TrajectoryFollowingMode | §6.9.1–6.9.5 | In | p2-s5, p5-s5 | TimeReference none/timing with ReferenceContext, scale and offset landed p5-s5, incl. the §6.9.1–§6.9.3 start-state cases. `followingMode=follow` is accepted and executed as `position` with a warning until a steering controller exists (p2-s5) |
 | Route / Waypoint / RouteStrategy / RouteRef | §6.8 | In | p3-s3, p5-s5 | Route/Waypoint/RouteStrategy IR + per-entity assignment landed p5-s5 (world-frame waypoints; the strategy is stored, never interpreted, so `random` reaches no random generator). Road-network path selection and RouteRef → p3-s3/p3-s4 |
-| TrafficSignalController / Phase / TrafficSignalState | §6.11 | In | p5-s6 | 1.4 TrafficSignalSemantics / GroupState excluded |
+| TrafficSignalController / Phase / TrafficSignalState | §6.11 | In | p5-s6 | Kernel landed: the ordered cycle with an arithmetic (fmod) phase clock that cannot drift with the host's step pattern, half-open phase intervals, transitive §6.11.3 delay chains, and write-on-transition semantics; validated at init for unique names, non-negative durations (rule C.2.3) and acyclic resolvable references (C.7.13). 1.4 TrafficSignalSemantics / TrafficSignalGroupState excluded. XML lowering deferred (P4) |
 
 ## Version-handling decisions
 

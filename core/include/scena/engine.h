@@ -116,12 +116,23 @@ public:
     ///  5. engine-controlled entity states are published to the gateway, if any.
     Status step(double dt);
 
-    /// Current state of an entity, or std::nullopt when the id is unknown or
-    /// the engine is not initialized.
+    /// Current state of an entity, or std::nullopt when the id is unknown, the
+    /// entity is not currently in the scenario (a DeleteEntityAction removed
+    /// it, §EntityAction), or the engine is not initialized.
     [[nodiscard]] std::optional<EntityState> state(const std::string& entity_id) const;
 
+    /// Whether a declared entity is currently in the scenario (§EntityAction),
+    /// or std::nullopt when the id is not declared at all. Every entity starts
+    /// active; a DeleteEntityAction makes it inactive and an AddEntityAction
+    /// brings it back. An inactive entity does not move, is not published to
+    /// the gateway, and is invisible to the by-entity conditions.
+    [[nodiscard]] std::optional<bool> entity_active(const std::string& entity_id) const;
+
     /// The route currently assigned to an entity (§6.8.2), or nullptr when it
-    /// has none, the id is unknown, or the engine is not initialized. A route
+    /// has none, the id is unknown or inactive, or the engine is not
+    /// initialized. The same "unknown or inactive" rule applies to
+    /// assigned_controller_of, controller_activation_of and visibility_of: an
+    /// entity that is not in the scenario reports nothing. A route
     /// is installed by an AssignRouteAction or an AcquirePositionAction and
     /// stays until another routing action overwrites it. The pointer is
     /// borrowed and is invalidated by the next routing action on that entity,
@@ -147,7 +158,9 @@ public:
     [[nodiscard]] std::optional<EntityVisibility> visibility_of(const std::string& entity_id) const;
 
     /// Reports the authoritative state of a host-controlled entity. Fails with
-    /// InvalidControlMode for engine-controlled entities.
+    /// InvalidControlMode for engine-controlled entities, and with
+    /// UnknownEntity when the entity is not currently in the scenario — a
+    /// deleted entity has no state to report (§EntityAction).
     Status report_state(const std::string& entity_id, const EntityState& state);
 
     /// Sets the current value of a global variable (§6.12), the host-side half
@@ -178,13 +191,40 @@ public:
     /// current simulation instant and advances one-for-one with simulation
     /// time thereafter (TimeOfDayCondition). Rejected with InvalidArgument
     /// when the DateTime is out of range. May be set before or after init and
-    /// persists across init(); close() clears it. p5-s6's EnvironmentAction
-    /// will feed the same anchor.
+    /// persists across init(); close() clears it.
+    ///
+    /// The host setter always anchors an *advancing* clock. An
+    /// EnvironmentAction feeds the same anchor and may freeze it instead
+    /// (§TimeOfDay animation), which is the one difference between the two
+    /// routes to the simulated instant.
     Status set_date_time(const ir::DateTime& date_time);
 
     /// The current simulated instant as seconds since the Unix epoch, or
-    /// std::nullopt when no time-of-day anchor has been set.
+    /// std::nullopt when no time-of-day anchor has been set. Frozen at the
+    /// anchor while a non-animated §TimeOfDay is in force.
     [[nodiscard]] std::optional<double> date_time() const;
+
+    /// The current observable state of a traffic signal (§6.11.4), or
+    /// std::nullopt when nothing has written that signal id yet — no
+    /// controller phase names it and no TrafficSignalStateAction has forced
+    /// it. Signal ids are free-form road-network references, so an unknown id
+    /// is indistinguishable from an unwritten one.
+    [[nodiscard]] std::optional<std::string> traffic_signal_state(const std::string& name) const;
+
+    /// The name of the phase a traffic signal controller is currently in
+    /// (§6.11.4), or std::nullopt when the controller is unknown, has no
+    /// phases, or has not started yet — a controller with a `delay` has no
+    /// phase until its start offset elapses (§6.11.3).
+    [[nodiscard]] std::optional<std::string>
+    traffic_signal_controller_phase(const std::string& name) const;
+
+    /// The environment state accumulated by the EnvironmentActions applied so
+    /// far (§Environment). Every member starts absent and an action merges in
+    /// only what it carries, so an absent member means "never set", which is
+    /// the same thing the standard's "doesn't change" amounts to at t = 0.
+    /// The reference is borrowed and is invalidated by the next
+    /// EnvironmentAction, by init(), and by close().
+    [[nodiscard]] const ir::Environment& environment() const noexcept;
 
     /// Lifecycle state of a storyboard element, addressed by its name path
     /// from the story down, joined with '/'
@@ -250,6 +290,12 @@ private:
     struct EntityRecord {
         ir::ControlMode mode = ir::ControlMode::EngineControlled;
         EntityState state;
+        // Whether the entity is currently in the scenario (§EntityAction).
+        // A DeleteEntityAction clears this and an AddEntityAction sets it
+        // again; the map's structure never changes at runtime, so entity
+        // iteration order and per-record bookkeeping are unaffected — which is
+        // exactly why the lifecycle is a flag and not an erase/insert.
+        bool active = true;
         // Optional geometry (p5-s3), copied once from the scenario at init and
         // immutable at runtime. The interaction conditions read it through the
         // entity-kinematics facet for freespace math; absent ⇒ freespace
@@ -322,10 +368,42 @@ private:
     /// LongitudinalController; other kinds keep their one-shot behaviour.
     runtime::ActionOutcome apply(const ir::Action& action);
 
+    /// Applies an actor-less §7.4.2 / §7.4.3 action, or std::nullopt when the
+    /// kind is not implemented (the caller then reports it like any other
+    /// unsupported kind). Every global action completes in the evaluation it
+    /// fires (Annex A Tables 11 and 12), so the outcome is always Complete;
+    /// the optional distinguishes "handled" from "unknown", not the lifetime.
+    std::optional<runtime::ActionOutcome> apply_global_action(const ir::GlobalAction& action);
+
+    /// Reports `message` once per `path` during a run, through the same
+    /// warned_values_ dedup the evaluation-time facet warnings use. Repeated
+    /// applications of the same action (a re-executed event) must not grow the
+    /// diagnostic sink without bound.
+    void warn_once(std::string path, Status code, std::string message);
+
     /// The record `action` targets, or nullptr when the entity is unknown —
     /// which init() already rejects, so the lookup failing is defensive: it
     /// reports a Warning and the caller skips the action.
+    ///
+    /// Also nullptr when the entity is not currently in the scenario: a
+    /// private action needs "a valid entity" as its actor (§7.5.2.2), so a
+    /// DeleteEntityAction stops whatever was driving it. Every private-action
+    /// branch maps a null record to Complete, which is how the owning event
+    /// ends — one evaluation later than the spec's action-level stopTransition,
+    /// because Scena has no per-action observable transitions (ADR-0015).
     EntityRecord* record_for(const ir::Action& action);
+
+    /// Takes an entity out of the scenario (§DeleteEntityAction): clears every
+    /// piece of runtime motion, assignment and derived-observation state while
+    /// keeping the declared immutables (control mode, geometry, performance),
+    /// so a later AddEntityAction restarts from a clean slate.
+    void deactivate_entity(EntityRecord& record);
+
+    /// Puts an entity into the scenario at `position` (§AddEntityAction): a
+    /// fresh state, and the derived-observation baseline seeded from it exactly
+    /// as init() seeds it, so the first step after the add reports no phantom
+    /// acceleration.
+    void activate_entity(EntityRecord& record, const ir::WorldPosition& position);
 
     /// Drives one step of a LongitudinalDistanceAction on `record`: measures the
     /// current gap to the reference entity, commands the speed that closes it
@@ -409,6 +487,45 @@ private:
     /// snapshot, over `dt` (> 0). See step()'s documentation for the invariant.
     void refresh_observations(double dt);
 
+    /// The live cycle state of one traffic signal controller (§6.11).
+    ///
+    /// The phase is derived arithmetically from simulation time rather than
+    /// accumulated across steps: `fmod` is exact in IEEE, so a controller's
+    /// phase at time t depends only on t and never drifts with the host's step
+    /// pattern. `controller` is borrowed from the owned scenario_ and is never
+    /// dereferenced for ordering.
+    struct SignalControllerRuntime {
+        const ir::TrafficSignalController* controller = nullptr;
+        /// Cumulative phase-end offsets [0, d0, d0+d1, ..., total], summed
+        /// once in declared order so the partial sums are fixed.
+        std::vector<double> cumulative;
+        /// Cycle duration, the sum of the phase durations (§6.11.4).
+        double total = 0.0;
+        /// Simulation time at which phase[0] first starts: the transitively
+        /// resolved delay chain of §6.11.3. Zero for an unchained controller.
+        double start_offset = 0.0;
+        /// Simulation time the current cycle's phase[0] started. Equal to
+        /// start_offset until a TrafficSignalControllerAction re-anchors it.
+        double anchor = 0.0;
+        /// The phase index whose states were last written, or absent when the
+        /// controller has not started (or was just re-anchored).
+        std::optional<std::size_t> applied_phase;
+    };
+
+    /// Ticks every traffic signal controller to simulation time `t`, writing
+    /// the signal states of any phase it has just entered (§6.11.4).
+    ///
+    /// Runs at the top of the storyboard-evaluation phase, so a
+    /// TrafficSignalStateAction fired by the storyboard writes *after* the
+    /// controllers and its forced state survives until the next phase
+    /// transition — the actions-win precedence the §11.12 example needs.
+    void advance_signal_controllers(double t);
+
+    /// Writes the signal states and the observable phase name of `runtime`'s
+    /// phase `index`, in the phase's document order.
+    void apply_signal_phase(const std::string& controller_name, SignalControllerRuntime& runtime,
+                            std::size_t index);
+
     gateway::ISimulatorGateway* gateway_ = nullptr;
     ir::Scenario scenario_;
     runtime::Clock clock_;
@@ -426,6 +543,14 @@ private:
     // mutable through set_variable during the run (§6.12). std::less<> gives
     // heterogeneous lookup on a string_view. Cleared by close().
     std::map<std::string, std::string, std::less<>> variables_;
+    // Runtime overlay over scenario_.parameters, written only by the deprecated
+    // ParameterSetAction / ParameterModifyAction (§ParameterSetAction,
+    // deprecated with 1.2). A 1.0/1.1 file's parameter action must be visible to
+    // the ParameterCondition that reads it, and the overlay gives it that
+    // without breaking §9.1 immutability for 1.2+ content — which cannot
+    // contain these actions at all. Consulted before scenario_.parameters;
+    // cleared by init() and close().
+    std::map<std::string, std::string, std::less<>> parameter_overrides_;
     // Host-supplied external values (UserDefinedValueCondition). Persist across
     // init() so a host can stage them before the run; cleared only by close().
     std::map<std::string, std::string, std::less<>> user_defined_values_;
@@ -434,11 +559,27 @@ private:
     // cleared at init().
     std::set<std::string> warned_values_;
     // Time-of-day anchor: the simulated instant `anchor_epoch` (epoch seconds)
-    // holds at simulation time `anchor_sim`, advancing one-for-one after that.
-    // Persists across init(); cleared by close().
+    // holds at simulation time `anchor_sim`, advancing one-for-one after that
+    // while `animated` is true and standing still while it is false
+    // (§TimeOfDay animation). Persists across init(); cleared by close().
     bool date_time_set_ = false;
     double date_time_anchor_epoch_ = 0.0;
     double date_time_anchor_sim_ = 0.0;
+    bool date_time_animated_ = true;
+    // Environment state (§Environment), merged member by member by every
+    // EnvironmentAction. Per-run state: cleared by init() and close().
+    ir::Environment environment_;
+    // Observable traffic signal states, keyed by road-network signal id
+    // (§6.11.4). Written by a controller's phase transitions and by
+    // TrafficSignalStateAction, and read by TrafficSignalCondition. std::map
+    // with std::less<> for deterministic iteration and heterogeneous lookup.
+    std::map<std::string, std::string, std::less<>> signal_states_;
+    // Current phase name per controller, the observable half of
+    // signal_controllers_ that TrafficSignalControllerCondition reads. A
+    // controller with no phase yet (before its delayed start) has no entry.
+    std::map<std::string, std::string, std::less<>> controller_phases_;
+    // Live cycle state per controller name, ticked once per step.
+    std::map<std::string, SignalControllerRuntime, std::less<>> signal_controllers_;
     DiagnosticSink diagnostics_;
     bool initialized_ = false;
 };

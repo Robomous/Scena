@@ -684,6 +684,214 @@ SCN_API scn_status scn_engine_set_date_time(scn_engine* engine, int year, int mo
                                             int hour, int minute, int second, int millisecond,
                                             int utc_offset_minutes);
 
+/* Writes the current simulated instant as seconds since the Unix epoch into
+ * *out. Returns SCN_ERROR_INVALID_ARGUMENT with *out untouched when no
+ * time-of-day anchor has been set. Frozen at the anchor while a non-animated
+ * §TimeOfDay is in force. */
+SCN_API scn_status scn_engine_get_date_time(scn_engine* engine, double* out);
+
+/* Global and infrastructure actions (§7.4.2, §7.4.3).
+ *
+ * Each builder appends one event to the same flat storyboard the private-action
+ * builders use, triggered by a SimulationTimeCondition at `at_time`, with the
+ * event's priority (§7.3.2) and maximumExecutionCount (§8.3.3.2). A NULL engine
+ * or required string, an out-of-range enum, or a negative
+ * maximum_execution_count is rejected with SCN_ERROR_INVALID_ARGUMENT and adds
+ * nothing. Every action here completes in the evaluation it fires (Annex A
+ * Tables 11 and 12). References are validated at scn_engine_init, not here. */
+
+/* The arithmetic a modify action applies (§VariableModifyRule). */
+typedef enum scn_modify_operator {
+    SCN_MODIFY_ADD = 0,     /* current + value */
+    SCN_MODIFY_MULTIPLY = 1 /* current * value */
+} scn_modify_operator;
+
+/* Sets a declared variable to `value` (§VariableSetAction, >= 1.2). */
+SCN_API scn_status scn_engine_add_variable_set_action(scn_engine* engine, const char* variable_ref,
+                                                      const char* value, double at_time,
+                                                      scn_event_priority priority,
+                                                      int maximum_execution_count);
+
+/* Modifies a declared variable arithmetically (§VariableModifyAction). A
+ * non-numeric current value reports rule
+ * data_type.variable_modification_or_comparison_possible at runtime and leaves
+ * the variable alone; a non-finite `value` is rejected at scn_engine_init. */
+SCN_API scn_status scn_engine_add_variable_modify_action(
+    scn_engine* engine, const char* variable_ref, scn_modify_operator op, double value,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Sets a declared parameter (§ParameterSetAction) — deprecated with 1.2 in
+ * favour of the variable actions, and executed against a runtime overlay so a
+ * 1.0/1.1 file's ParameterCondition observes it. Each name warns once with
+ * SCN_ERROR_DEPRECATED_FEATURE. */
+SCN_API scn_status scn_engine_add_parameter_set_action(scn_engine* engine,
+                                                       const char* parameter_ref, const char* value,
+                                                       double at_time, scn_event_priority priority,
+                                                       int maximum_execution_count);
+
+/* Modifies a declared parameter (§ParameterModifyAction) — deprecated with 1.2;
+ * same overlay and deprecation warning. */
+SCN_API scn_status scn_engine_add_parameter_modify_action(
+    scn_engine* engine, const char* parameter_ref, scn_modify_operator op, double value,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a declared entity to the running scenario at the world position
+ * (`x`, `y`, `z`) [m] (§AddEntityAction). Adding an already active entity has
+ * no effect. */
+SCN_API scn_status scn_engine_add_add_entity_action(scn_engine* engine, const char* entity_ref,
+                                                    double x, double y, double z, double at_time,
+                                                    scn_event_priority priority,
+                                                    int maximum_execution_count);
+
+/* Removes an entity from the running scenario (§DeleteEntityAction). Deleting
+ * an already inactive entity has no effect. */
+SCN_API scn_status scn_engine_add_delete_entity_action(scn_engine* engine, const char* entity_ref,
+                                                       double at_time, scn_event_priority priority,
+                                                       int maximum_execution_count);
+
+/* Types of precipitation (§PrecipitationType). */
+typedef enum scn_precipitation_type {
+    SCN_PRECIPITATION_DRY = 0,
+    SCN_PRECIPITATION_RAIN = 1,
+    SCN_PRECIPITATION_SNOW = 2
+} scn_precipitation_type;
+
+/* An environment update (§Environment). Every group is optional and carries a
+ * `has_*` flag: a zero flag means "this condition doesn't change", the
+ * standard's own reading of an absent member, and the corresponding value
+ * fields are then ignored. `name` may be NULL or "" to leave the name alone.
+ *
+ * Transparent struct: the layout is frozen ABI. Append fields only; never
+ * reorder or remove. Zero-initialize it (`scn_environment env = {0};`) and set
+ * only what the update carries. */
+typedef struct scn_environment {
+    const char* name; /* NULL or "" leaves the current name */
+
+    /* §TimeOfDay — the one member with runtime meaning: it re-anchors the
+     * simulated clock, and `time_of_day_animation` decides whether that clock
+     * advances with simulation time or freezes at the anchor. */
+    int has_time_of_day;
+    int time_of_day_animation;
+    int year;
+    int month; /* 1..12 */
+    int day;   /* 1..days-in-month */
+    int hour;
+    int minute;
+    int second;
+    int millisecond;
+    int utc_offset_minutes;
+
+    /* §Weather; each member merges individually. */
+    int has_weather;
+    int has_sun;
+    double sun_azimuth;     /* [rad], 0..2*PI */
+    double sun_elevation;   /* [rad], -PI..PI */
+    double sun_illuminance; /* [lx], 0..inf */
+    int has_fog;
+    double fog_visual_range; /* [m], 0..inf */
+    int has_precipitation;
+    scn_precipitation_type precipitation_type;
+    double precipitation_intensity; /* [mm/h], 0..inf */
+    int has_wind;
+    double wind_direction; /* [rad], 0..2*PI */
+    double wind_speed;     /* [m/s], 0..inf */
+    int has_temperature;
+    double temperature; /* [K], 170..340 */
+    int has_atmospheric_pressure;
+    double atmospheric_pressure; /* [Pa], 80000..120000 */
+    int has_fractional_cloud_cover;
+    int fractional_cloud_cover_oktas; /* 0..9 (§FractionalCloudCover, 1.2+) */
+
+    /* §RoadCondition. */
+    int has_road_condition;
+    double friction_scale_factor; /* 0..inf; 1.0 is nominal */
+} scn_environment;
+
+/* Merges an environment update into the engine's environment store
+ * (§EnvironmentAction). A NULL `environment` is rejected. Out-of-range values
+ * are reported at scn_engine_init. Read-back of the merged store is C++ / Python
+ * only in this phase; the C surface ships the builders and the small getters
+ * below (see the p6-s1 C-ABI expansion). */
+SCN_API scn_status scn_engine_add_environment_action(scn_engine* engine,
+                                                     const scn_environment* environment,
+                                                     double at_time, scn_event_priority priority,
+                                                     int maximum_execution_count);
+
+/* Forces a named traffic signal into an observable state
+ * (§TrafficSignalStateAction). The forced state stands until the controlling
+ * cycle's next phase transition. Both strings are opaque to the engine. */
+SCN_API scn_status scn_engine_add_traffic_signal_state_action(scn_engine* engine, const char* name,
+                                                              const char* state, double at_time,
+                                                              scn_event_priority priority,
+                                                              int maximum_execution_count);
+
+/* Restarts a traffic signal controller's cycle at a named phase
+ * (§TrafficSignalControllerAction). Both references must exist in the scenario
+ * (rule traffic_signal_controller_action_references), checked at
+ * scn_engine_init. */
+SCN_API scn_status scn_engine_add_traffic_signal_controller_action(
+    scn_engine* engine, const char* traffic_signal_controller_ref, const char* phase,
+    double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Issues a user-defined command to the host (§CustomCommandAction). `type` and
+ * `content` are a host-author contract handed over verbatim through the
+ * gateway; without a gateway the action is a silent no-op. */
+SCN_API scn_status scn_engine_add_custom_command_action(scn_engine* engine, const char* type,
+                                                        const char* content, double at_time,
+                                                        scn_event_priority priority,
+                                                        int maximum_execution_count);
+
+/* One signal's observable state within a phase (§TrafficSignalState).
+ * Transparent struct; append fields only. */
+typedef struct scn_traffic_signal_state {
+    const char* traffic_signal_id; /* road-network signal id */
+    const char* state;             /* e.g. "off;off;on"; notation is host-specific */
+} scn_traffic_signal_state;
+
+/* One phase of a signal cycle (§Phase). `states` may be NULL when
+ * `state_count` is zero. Transparent struct; append fields only. */
+typedef struct scn_signal_phase {
+    const char* name; /* unique within its controller */
+    double duration;  /* [s], 0..inf */
+    const scn_traffic_signal_state* states;
+    size_t state_count;
+} scn_signal_phase;
+
+/* Declares a TrafficSignalController (§6.11.2) on the scenario under
+ * construction; takes effect at the next scn_engine_init. `phases` are the
+ * ordered cycle and may be NULL when `phase_count` is zero.
+ *
+ * `reference` may be NULL for an unchained controller; `delay` is negative to
+ * mean "unspecified" (the scn_performance rate-limit convention). A delay
+ * without a reference, an unresolvable or cyclic reference, a duplicate
+ * controller or phase name, and a negative phase duration are all reported at
+ * scn_engine_init. A NULL engine or name, or a NULL phase name inside a
+ * non-empty phase, is rejected here with SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_declare_traffic_signal_controller(scn_engine* engine,
+                                                                const char* name, double delay,
+                                                                const char* reference,
+                                                                const scn_signal_phase* phases,
+                                                                size_t phase_count);
+
+/* Writes the current observable state of a traffic signal into *out as a
+ * borrowed string with the same lifetime as scn_engine_get_variable's. A signal
+ * nothing has written yet returns SCN_ERROR_UNKNOWN_NAME with *out untouched. */
+SCN_API scn_status scn_engine_traffic_signal_state(scn_engine* engine, const char* name,
+                                                   const char** out);
+
+/* Writes the name of the phase a traffic signal controller is currently in into
+ * *out, borrowed with the same lifetime. A controller that is unknown, has no
+ * phases, or has not started yet (a §6.11.3 delay still running) returns
+ * SCN_ERROR_UNKNOWN_NAME with *out untouched. */
+SCN_API scn_status scn_engine_traffic_signal_controller_phase(scn_engine* engine, const char* name,
+                                                              const char** out);
+
+/* Writes 1 into *out when a declared entity is currently in the scenario and 0
+ * when a DeleteEntityAction has removed it (§EntityAction). An id the scenario
+ * does not declare at all returns SCN_ERROR_UNKNOWN_ENTITY with *out
+ * untouched. */
+SCN_API scn_status scn_engine_entity_active(scn_engine* engine, const char* id, int* out);
+
 #ifdef __cplusplus
 }
 #endif

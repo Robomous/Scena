@@ -14,6 +14,11 @@ The user guide grows sprint by sprint along the
   polyline trajectories with and without a time reference, controller
   assignment and per-domain activation, and entity visibility, plus which of
   those actions consume simulation time.
+- [Global and infrastructure actions](global-actions.md) — the actor-less
+  actions: variables and the deprecated parameter actions, the add/delete
+  entity lifecycle, the environment store and its time-of-day clock, traffic
+  signal controllers and their phase clock, and custom commands through the
+  gateway.
 - [The storyboard model](storyboard.md) — hierarchy, element lifecycle,
   init phase, event priority and execution counts, and how to observe
   element states.
@@ -23,7 +28,7 @@ The user guide grows sprint by sprint along the
   simulation time, parameter/variable/user-defined value, time of day,
   storyboard element state) and the by-entity conditions (triggering-entities
   any/all, speed/relative-speed/acceleration, stand still, traveled distance,
-  reach position), the scalar-velocity model, the observation-sampling
+  reach position), the traffic-signal conditions, the scalar-velocity model, the observation-sampling
   contract, and the host interface (C++/C/Python).
 - [Error handling](error-handling.md) — status codes, structured
   diagnostics, the severity/status invariant, the path grammar, and the

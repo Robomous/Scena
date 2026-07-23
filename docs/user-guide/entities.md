@@ -117,6 +117,31 @@ required and, for a vehicle, so is `scn_performance`. The read-back accessors
 `scn_engine_entity_performance` query the authored scenario and are valid before
 and after `scn_engine_init`.
 
+## Entering and leaving the scenario
+
+Every declared entity starts **active** — in the scenario. `DeleteEntityAction`
+takes one out and `AddEntityAction` puts it back at a position (§EntityAction);
+the declaration itself is untouched either way, which is why an entity can
+return after being deleted.
+
+An inactive entity does not move, is not polled from or published to the
+gateway, and reports nothing: `state`, `visibility_of`,
+`controller_activation_of` and `route_of` all come back empty, `report_state`
+fails with `UnknownEntity`, and every by-entity condition over it is a
+deterministic `false`. `entity_active` tells the two failure modes apart —
+`None` for an id the scenario never declared, `False` for one a delete removed:
+
+```python
+engine.entity_active("hazard")   # True / False / None
+```
+
+The lifecycle is a flag on the entity record, never an erase and insert: the
+entity table's structure stays fixed for the whole run, so iteration order and
+per-entity bookkeeping — what the determinism contract rests on — are
+unaffected. The full rules, including what a delete clears and what it keeps,
+are in
+[Global actions](global-actions.md#the-entity-lifecycle).
+
 ## Not yet modeled
 
 Entity **selections** (`EntitySelection`, `ByType`, `ByObjectType`) arrive with

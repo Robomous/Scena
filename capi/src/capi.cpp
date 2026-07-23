@@ -17,8 +17,10 @@
 #include "scena/ir/controller.h"
 #include "scena/ir/coordinate_system.h"
 #include "scena/ir/date_time.h"
+#include "scena/ir/environment.h"
 #include "scena/ir/route.h"
 #include "scena/ir/scenario.h"
+#include "scena/ir/traffic_signal.h"
 #include "scena/ir/trajectory.h"
 #include "scena/status.h"
 #include "scena/version.h"
@@ -1096,6 +1098,372 @@ scn_status scn_engine_get_user_defined_value(scn_engine* engine, const char* nam
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }
+}
+
+namespace {
+
+/* Maps and range-checks the modify operator arriving across the ABI. */
+bool to_ir_modify_operator(scn_modify_operator op, scena::ir::ModifyOperator& out) {
+    switch (op) {
+    case SCN_MODIFY_ADD:
+        out = scena::ir::ModifyOperator::Add;
+        return true;
+    case SCN_MODIFY_MULTIPLY:
+        out = scena::ir::ModifyOperator::Multiply;
+        return true;
+    }
+    return false;
+}
+
+/* The guard every global-action builder shares: a non-null engine, a valid
+ * priority and a non-negative execution count. */
+bool check_event_args(const scn_engine* engine, scn_event_priority priority,
+                      int maximum_execution_count, scena::ir::EventPriority& out_priority) {
+    return engine != nullptr && maximum_execution_count >= 0 &&
+           to_ir_priority(priority, out_priority);
+}
+
+} // namespace
+
+scn_status scn_engine_add_variable_set_action(scn_engine* engine, const char* variable_ref,
+                                              const char* value, double at_time,
+                                              scn_event_priority priority,
+                                              int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        variable_ref == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::VariableSetAction>(variable_ref, value));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_variable_modify_action(scn_engine* engine, const char* variable_ref,
+                                                 scn_modify_operator op, double value,
+                                                 double at_time, scn_event_priority priority,
+                                                 int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    scena::ir::ModifyOperator ir_op = scena::ir::ModifyOperator::Add;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        variable_ref == nullptr || !to_ir_modify_operator(op, ir_op)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::VariableModifyAction>(variable_ref, ir_op, value));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_parameter_set_action(scn_engine* engine, const char* parameter_ref,
+                                               const char* value, double at_time,
+                                               scn_event_priority priority,
+                                               int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        parameter_ref == nullptr || value == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::ParameterSetAction>(parameter_ref, value));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_parameter_modify_action(scn_engine* engine, const char* parameter_ref,
+                                                  scn_modify_operator op, double value,
+                                                  double at_time, scn_event_priority priority,
+                                                  int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    scena::ir::ModifyOperator ir_op = scena::ir::ModifyOperator::Add;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        parameter_ref == nullptr || !to_ir_modify_operator(op, ir_op)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::ParameterModifyAction>(parameter_ref, ir_op, value));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_add_entity_action(scn_engine* engine, const char* entity_ref, double x,
+                                            double y, double z, double at_time,
+                                            scn_event_priority priority,
+                                            int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        entity_ref == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::AddEntityAction>(
+                                    entity_ref, scena::ir::WorldPosition{x, y, z}));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_delete_entity_action(scn_engine* engine, const char* entity_ref,
+                                               double at_time, scn_event_priority priority,
+                                               int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        entity_ref == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::DeleteEntityAction>(entity_ref));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_environment_action(scn_engine* engine, const scn_environment* environment,
+                                             double at_time, scn_event_priority priority,
+                                             int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        environment == nullptr ||
+        static_cast<unsigned>(environment->precipitation_type) >
+            static_cast<unsigned>(SCN_PRECIPITATION_SNOW)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Environment update;
+        if (environment->name != nullptr) {
+            update.name = environment->name;
+        }
+        if (environment->has_time_of_day != 0) {
+            scena::ir::TimeOfDay time_of_day;
+            time_of_day.animation = environment->time_of_day_animation != 0;
+            time_of_day.date_time =
+                scena::ir::DateTime{environment->year,        environment->month,
+                                    environment->day,         environment->hour,
+                                    environment->minute,      environment->second,
+                                    environment->millisecond, environment->utc_offset_minutes};
+            update.time_of_day = time_of_day;
+        }
+        if (environment->has_weather != 0) {
+            scena::ir::Weather weather;
+            if (environment->has_sun != 0) {
+                weather.sun = scena::ir::Sun{environment->sun_azimuth, environment->sun_elevation,
+                                             environment->sun_illuminance};
+            }
+            if (environment->has_fog != 0) {
+                weather.fog = scena::ir::Fog{environment->fog_visual_range};
+            }
+            if (environment->has_precipitation != 0) {
+                weather.precipitation = scena::ir::Precipitation{
+                    static_cast<scena::ir::PrecipitationType>(environment->precipitation_type),
+                    environment->precipitation_intensity};
+            }
+            if (environment->has_wind != 0) {
+                weather.wind =
+                    scena::ir::Wind{environment->wind_direction, environment->wind_speed};
+            }
+            if (environment->has_temperature != 0) {
+                weather.temperature = environment->temperature;
+            }
+            if (environment->has_atmospheric_pressure != 0) {
+                weather.atmospheric_pressure = environment->atmospheric_pressure;
+            }
+            if (environment->has_fractional_cloud_cover != 0) {
+                weather.fractional_cloud_cover_oktas = environment->fractional_cloud_cover_oktas;
+            }
+            update.weather = weather;
+        }
+        if (environment->has_road_condition != 0) {
+            update.road_condition = scena::ir::RoadCondition{environment->friction_scale_factor};
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::EnvironmentAction>(std::move(update)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_traffic_signal_state_action(scn_engine* engine, const char* name,
+                                                      const char* state, double at_time,
+                                                      scn_event_priority priority,
+                                                      int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        name == nullptr || state == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::TrafficSignalStateAction>(name, state));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_traffic_signal_controller_action(
+    scn_engine* engine, const char* traffic_signal_controller_ref, const char* phase,
+    double at_time, scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        traffic_signal_controller_ref == nullptr || phase == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::TrafficSignalControllerAction>(
+                                    traffic_signal_controller_ref, phase));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_custom_command_action(scn_engine* engine, const char* type,
+                                                const char* content, double at_time,
+                                                scn_event_priority priority,
+                                                int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (!check_event_args(engine, priority, maximum_execution_count, ir_priority) ||
+        type == nullptr || content == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::CustomCommandAction>(type, content));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_declare_traffic_signal_controller(scn_engine* engine, const char* name,
+                                                        double delay, const char* reference,
+                                                        const scn_signal_phase* phases,
+                                                        size_t phase_count) {
+    if (engine == nullptr || name == nullptr || (phases == nullptr && phase_count > 0)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    for (size_t i = 0; i < phase_count; ++i) {
+        if (phases[i].name == nullptr ||
+            (phases[i].states == nullptr && phases[i].state_count > 0)) {
+            return SCN_ERROR_INVALID_ARGUMENT;
+        }
+        for (size_t j = 0; j < phases[i].state_count; ++j) {
+            if (phases[i].states[j].traffic_signal_id == nullptr ||
+                phases[i].states[j].state == nullptr) {
+                return SCN_ERROR_INVALID_ARGUMENT;
+            }
+        }
+    }
+    try {
+        scena::ir::TrafficSignalController controller;
+        controller.name = name;
+        // A negative delay means "unspecified" on the ABI, matching the
+        // scn_performance rate-limit convention.
+        if (delay >= 0.0) {
+            controller.delay = delay;
+        }
+        if (reference != nullptr) {
+            controller.reference = reference;
+        }
+        controller.phases.reserve(phase_count);
+        for (size_t i = 0; i < phase_count; ++i) {
+            scena::ir::Phase phase;
+            phase.name = phases[i].name;
+            phase.duration = phases[i].duration;
+            phase.signal_states.reserve(phases[i].state_count);
+            for (size_t j = 0; j < phases[i].state_count; ++j) {
+                phase.signal_states.push_back(scena::ir::TrafficSignalState{
+                    phases[i].states[j].traffic_signal_id, phases[i].states[j].state});
+            }
+            controller.phases.push_back(std::move(phase));
+        }
+        engine->scenario.traffic_signal_controllers.push_back(std::move(controller));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_traffic_signal_state(scn_engine* engine, const char* name, const char** out) {
+    if (engine == nullptr || name == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto state = engine->engine.traffic_signal_state(name);
+        if (!state.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out left untouched
+        }
+        engine->value_buffer = *state;
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_traffic_signal_controller_phase(scn_engine* engine, const char* name,
+                                                      const char** out) {
+    if (engine == nullptr || name == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto phase = engine->engine.traffic_signal_controller_phase(name);
+        if (!phase.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out left untouched
+        }
+        engine->value_buffer = *phase;
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_active(scn_engine* engine, const char* id, int* out) {
+    if (engine == nullptr || id == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    const std::optional<bool> active = engine->engine.entity_active(id);
+    if (!active.has_value()) {
+        return SCN_ERROR_UNKNOWN_ENTITY; // not declared at all
+    }
+    *out = *active ? 1 : 0;
+    return SCN_OK;
+}
+
+scn_status scn_engine_get_date_time(scn_engine* engine, double* out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    const std::optional<double> instant = engine->engine.date_time();
+    if (!instant.has_value()) {
+        return SCN_ERROR_INVALID_ARGUMENT; // no anchor set; *out untouched
+    }
+    *out = *instant;
+    return SCN_OK;
 }
 
 scn_status scn_engine_set_date_time(scn_engine* engine, int year, int month, int day, int hour,

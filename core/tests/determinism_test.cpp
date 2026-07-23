@@ -20,6 +20,7 @@
 #include "scena/ir/rule.h"
 #include "scena/ir/scenario.h"
 #include "scena/ir/storyboard.h"
+#include "scena/ir/traffic_signal.h"
 #include "scena/ir/trajectory.h"
 #include "scena/ir/trigger.h"
 #include "scena/runtime/detmath.h"
@@ -756,6 +757,200 @@ scena::ir::Scenario make_gs4_scenario() {
     return scenario;
 }
 
+/// An entity lifecycle scenario (p5-s6): three entities, one of which is
+/// deleted mid-run and added back at a new position while the others keep
+/// driving. The determinism anchor for §EntityAction — the active flag must
+/// leave entity iteration order, the derived-observation accumulators and every
+/// other entity's integration untouched.
+scena::ir::Scenario make_lifecycle_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "entity-lifecycle";
+
+    // Ids deliberately out of insertion order relative to the map's sorted
+    // order, so a lifecycle change that disturbed iteration would show up.
+    for (const char* id : {"charlie", "alpha", "bravo"}) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        Vehicle vehicle;
+        vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, 4.5, 1.9, 1.5};
+        vehicle.performance = Performance{50.0, 4.0, 6.0, std::nullopt, std::nullopt};
+        entity.object = vehicle;
+        scenario.entities.push_back(std::move(entity));
+    }
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("alpha", WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("bravo", WorldPosition{0.0, 4.0, 0.0}));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("charlie", WorldPosition{0.0, 8.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("alpha", 14.0));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("bravo", 11.0));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("charlie", 17.0));
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+
+    // A ramp on bravo that is still running when bravo disappears, so the
+    // §7.5.2.2 stop path is part of the anchor.
+    Event ramp;
+    ramp.name = "bravo-ramp";
+    ramp.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(1.0));
+    ramp.actions.push_back(std::make_shared<SpeedAction>(
+        "bravo", 30.0,
+        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 9.0}));
+    maneuver.events.push_back(std::move(ramp));
+
+    Event remove;
+    remove.name = "bravo-leaves";
+    remove.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(3.0));
+    remove.actions.push_back(std::make_shared<DeleteEntityAction>("bravo"));
+    maneuver.events.push_back(std::move(remove));
+
+    Event restore;
+    restore.name = "bravo-returns";
+    restore.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(6.0));
+    restore.actions.push_back(
+        std::make_shared<AddEntityAction>("bravo", WorldPosition{-25.0, 4.0, 0.0}));
+    maneuver.events.push_back(std::move(restore));
+
+    Event drive;
+    drive.name = "bravo-drives-again";
+    drive.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(6.5));
+    drive.actions.push_back(std::make_shared<SpeedAction>(
+        "bravo", 19.0, TransitionDynamics{DynamicsShape::Cubic, DynamicsDimension::Time, 3.0}));
+    maneuver.events.push_back(std::move(drive));
+
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+/// GS-11, the Signalized-intersection golden scenario (the §11.12 worked
+/// example): a controller cycles the straight and turning phases, the ego
+/// triggers a phase jump when it reaches the stop line, a rising-edge
+/// TrafficSignalControllerCondition releases the cross vehicle, a
+/// TrafficSignalStateAction forces one bulb into a broken state, and a
+/// TrafficSignalCondition notices it. The determinism anchor for p5-s6 — the
+/// signal clock, the actions-win precedence and the entity motion they gate all
+/// have to reproduce bit for bit.
+scena::ir::Scenario make_gs11_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "gs11-signalized-intersection";
+
+    const auto vehicle_entity = [](const char* id) {
+        Entity entity;
+        entity.id = id;
+        entity.name = id;
+        entity.control_mode = ControlMode::EngineControlled;
+        Vehicle vehicle;
+        vehicle.bounding_box = BoundingBox{0.0, 0.0, 0.75, 4.6, 1.9, 1.5};
+        vehicle.performance = Performance{45.0, 3.5, 7.0, std::nullopt, std::nullopt};
+        entity.object = vehicle;
+        return entity;
+    };
+    scenario.entities.push_back(vehicle_entity("cross"));
+    scenario.entities.push_back(vehicle_entity("ego"));
+
+    // The ego approaches the stop line at x = 120 along y = 0; the cross
+    // vehicle waits on the orthogonal approach.
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("ego", WorldPosition{0.0, 0.0, 0.0}));
+    scenario.init_actions.push_back(
+        std::make_shared<TeleportAction>("cross", WorldPosition{130.0, -60.0, 0.0}));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 13.5));
+
+    // Two chained controllers: the conflicting approach runs the same cycle a
+    // quarter-cycle behind (§6.11.3).
+    TrafficSignalController straight;
+    straight.name = "straight";
+    const auto phase_of = [](const char* name, double duration, const char* signal,
+                             const char* state) {
+        Phase phase;
+        phase.name = name;
+        phase.duration = duration;
+        phase.signal_states.push_back(TrafficSignalState{signal, state});
+        return phase;
+    };
+    straight.phases.push_back(phase_of("stop", 30.0, "signal-straight", "red"));
+    straight.phases.push_back(phase_of("caution", 2.5, "signal-straight", "red;amber"));
+    straight.phases.push_back(phase_of("go", 17.5, "signal-straight", "green"));
+    scenario.traffic_signal_controllers.push_back(std::move(straight));
+
+    TrafficSignalController turning;
+    turning.name = "turning";
+    turning.delay = 12.5;
+    turning.reference = "straight";
+    turning.phases.push_back(phase_of("go", 17.5, "signal-turning", "green"));
+    turning.phases.push_back(phase_of("amber", 2.5, "signal-turning", "amber"));
+    turning.phases.push_back(phase_of("stop", 30.0, "signal-turning", "red"));
+    scenario.traffic_signal_controllers.push_back(std::move(turning));
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+
+    // t1: the ego reaches the stop line and requests the phase change.
+    Event at_stop_line;
+    at_stop_line.name = "at-stop-line";
+    at_stop_line.start_trigger = make_trigger(std::make_shared<TraveledDistanceCondition>(
+        TriggeringEntities{TriggeringEntitiesRule::Any, {"ego"}}, 120.0));
+    at_stop_line.actions.push_back(
+        std::make_shared<TrafficSignalControllerAction>("straight", "caution"));
+    maneuver.events.push_back(std::move(at_stop_line));
+
+    // t2: the straight signal turns green and the cross vehicle moves off.
+    Event release;
+    release.name = "cross-releases";
+    release.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalControllerCondition>("straight", "go"),
+                     ConditionEdge::Rising);
+    release.actions.push_back(std::make_shared<SpeedAction>(
+        "cross", 11.0,
+        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 6.0}));
+    maneuver.events.push_back(std::move(release));
+
+    // t3: a bulb failure forces one signal into a state no phase produces.
+    Event failure;
+    failure.name = "bulb-failure";
+    failure.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(14.0));
+    failure.actions.push_back(
+        std::make_shared<TrafficSignalStateAction>("signal-turning", "red;green"));
+    maneuver.events.push_back(std::move(failure));
+
+    // The scenario ends a while after the failure is noticed.
+    Event noticed;
+    noticed.name = "failure-noticed";
+    noticed.start_trigger =
+        make_trigger(std::make_shared<TrafficSignalCondition>("signal-turning", "red;green"),
+                     ConditionEdge::Rising, /*delay=*/2.0);
+    noticed.actions.push_back(std::make_shared<SpeedAction>(
+        "ego", 6.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 4.0}));
+    maneuver.events.push_back(std::move(noticed));
+
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
 /// A vehicle following a timed polyline that turns a corner, so the trajectory
 /// follower's det_atan2 headings and its time interpolation reach the entity
 /// state. The p5-s5 anchor for the lateral half of the sprint.
@@ -884,6 +1079,86 @@ TEST(DeterminismTest, GoldenScenario1CruiseBaselineIsBitIdentical) {
     ASSERT_TRUE(engine_a.state("ego").has_value());
     EXPECT_EQ(engine_a.state("ego")->speed, 20.0);
     EXPECT_EQ(engine_a.state("ego")->heading, 0.0);
+}
+
+TEST(DeterminismTest, GoldenScenario11SignalizedIntersectionIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_gs11_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_gs11_scenario()), Status::Ok);
+
+    bool saw_forced_state = false;
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 400; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+        expect_bit_identical(engine_a, engine_b, "cross");
+        saw_forced_state = saw_forced_state || engine_a.traffic_signal_state("signal-turning") ==
+                                                   std::optional<std::string>("red;green");
+        // The signal state is a string, so it is compared as one — the
+        // determinism contract covers every observable, not only the doubles.
+        ASSERT_EQ(engine_a.traffic_signal_state("signal-straight"),
+                  engine_b.traffic_signal_state("signal-straight"));
+        ASSERT_EQ(engine_a.traffic_signal_state("signal-turning"),
+                  engine_b.traffic_signal_state("signal-turning"));
+        ASSERT_EQ(engine_a.traffic_signal_controller_phase("straight"),
+                  engine_b.traffic_signal_controller_phase("straight"));
+        ASSERT_EQ(engine_a.traffic_signal_controller_phase("turning"),
+                  engine_b.traffic_signal_controller_phase("turning"));
+    }
+    expect_same_diagnostics(engine_a, engine_b);
+
+    // Guard against a dead scenario: every stage of §11.12 really ran.
+    ASSERT_TRUE(engine_a.state("cross").has_value());
+    EXPECT_GT(engine_a.state("cross")->speed, 0.0); // the cross vehicle moved off
+    EXPECT_EQ(engine_a.state("ego")->speed, 6.0);   // the ego slowed after the failure
+    EXPECT_TRUE(saw_forced_state);                  // the bulb failure was injected and held
+    // …and the cycle eventually reclaimed the signal at its next phase
+    // transition, which is the documented end of a forced state.
+    EXPECT_NE(engine_a.traffic_signal_state("signal-turning"),
+              std::optional<std::string>("red;green"));
+    EXPECT_TRUE(engine_a.traffic_signal_controller_phase("turning").has_value());
+}
+
+TEST(DeterminismTest, EntityAddDeleteLifecycleIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_lifecycle_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_lifecycle_scenario()), Status::Ok);
+
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 200; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        // The entities that stay in the scenario are compared every step; the
+        // one cycling in and out is compared through its activity flag, and
+        // through its state whenever it has one.
+        expect_bit_identical(engine_a, engine_b, "alpha");
+        expect_bit_identical(engine_a, engine_b, "charlie");
+        ASSERT_EQ(engine_a.entity_active("bravo"), engine_b.entity_active("bravo"));
+        const auto bravo_a = engine_a.state("bravo");
+        const auto bravo_b = engine_b.state("bravo");
+        ASSERT_EQ(bravo_a.has_value(), bravo_b.has_value());
+        if (bravo_a.has_value()) {
+            expect_bit_identical(engine_a, engine_b, "bravo");
+        }
+    }
+    expect_same_diagnostics(engine_a, engine_b);
+
+    // Guard against a dead scenario: bravo really did leave, come back at the
+    // action's position, and drive off again from there.
+    ASSERT_EQ(engine_a.entity_active("bravo"), std::optional<bool>(true));
+    ASSERT_TRUE(engine_a.state("bravo").has_value());
+    EXPECT_GT(engine_a.state("bravo")->x, -25.0);
+    EXPECT_EQ(engine_a.state("bravo")->speed, 19.0);
+    // The entities that never left are unaffected by the lifecycle churn.
+    ASSERT_TRUE(engine_a.state("alpha").has_value());
+    EXPECT_EQ(engine_a.state("alpha")->speed, 14.0);
 }
 
 TEST(DeterminismTest, LongitudinalDynamicsAreBitIdenticalAcrossRuns) {
