@@ -17,6 +17,7 @@
 #include "scena/engine.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -28,6 +29,7 @@
 #include <utility>
 #include <variant>
 
+#include "scena/gateway/road_query.h"
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/controller.h"
@@ -2147,6 +2149,20 @@ std::optional<std::string> Engine::user_defined_value(const std::string& name) c
     return it->second;
 }
 
+Status Engine::set_default_lane_width(double width) {
+    // The negated comparison rejects NaN too. A zero or negative lane width
+    // would make every relative lane target collapse onto the actor's own lane.
+    if (!(width > 0.0) || !std::isfinite(width)) {
+        return Status::InvalidArgument;
+    }
+    default_lane_width_ = width;
+    return Status::Ok;
+}
+
+double Engine::default_lane_width() const noexcept {
+    return default_lane_width_;
+}
+
 Status Engine::set_date_time(const ir::DateTime& date_time) {
     if (!date_time.valid()) {
         return Status::InvalidArgument;
@@ -2229,6 +2245,7 @@ Status Engine::close() {
     user_defined_values_.clear();
     date_time_set_ = false;
     date_time_animated_ = true;
+    default_lane_width_ = kDefaultLaneWidth;
     environment_ = ir::Environment{};
     // The controller runtimes borrow into scenario_, so they must go before it.
     signal_controllers_.clear();
@@ -2684,8 +2701,9 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
                                       : build_profile_controller(*profile_action, record));
     }
 
+    const auto* lane_change_action = dynamic_cast<const ir::LaneChangeAction*>(&action);
     const auto* lane_offset_action = dynamic_cast<const ir::LaneOffsetAction*>(&action);
-    if (lane_offset_action != nullptr) {
+    if (lane_change_action != nullptr || lane_offset_action != nullptr) {
         // Lateral actions share the single lateral-domain ownership slot and
         // the offset axis (Annex A Table 10: LaneChangeAction, LaneOffsetAction
         // and LateralDistanceAction all assign a lateral control strategy).
@@ -2719,6 +2737,9 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
             record.lateral_transition.reset();
             record.lateral_rate = 0.0;
             record.lateral_dissolve_pending = false;
+        }
+        if (lane_change_action != nullptr) {
+            return drive_lane_change(*lane_change_action, record, !is_owner);
         }
         return drive_lane_offset(*lane_offset_action, record, !is_owner);
     }
@@ -3065,6 +3086,148 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     return runtime::ActionOutcome::Running;
 }
 
+std::optional<double> Engine::resolve_lane_change_target(const ir::LaneChangeAction& action,
+                                                         const EntityRecord& record) const {
+    gateway::IRoadQuery* road = gateway_ != nullptr ? gateway_->road_query() : nullptr;
+
+    if (action.is_relative()) {
+        const ir::RelativeTargetLane& target = *action.relative_target();
+        if (road != nullptr) {
+            // Road-backed resolution: find the reference entity's lane, step
+            // `value` lanes from it, and take the difference between that
+            // lane's centre line and the actor's own.
+            const auto reference_it = entities_.find(target.entity_ref);
+            gateway::LanePosition actor_lane;
+            gateway::LanePosition reference_lane;
+            int target_lane = 0;
+            double target_t = 0.0;
+            double actor_t = 0.0;
+            if (reference_it != entities_.end() &&
+                road->to_lane_position(record.state.x, record.state.y, record.state.z,
+                                       actor_lane) &&
+                road->to_lane_position(reference_it->second.state.x, reference_it->second.state.y,
+                                       reference_it->second.state.z, reference_lane) &&
+                road->relative_lane(reference_lane.road_id, reference_lane.lane_id, target.value,
+                                    target_lane) &&
+                road->lane_center_offset(reference_lane.road_id, target_lane, reference_lane.s,
+                                         target_t) &&
+                road->lane_center_offset(actor_lane.road_id, actor_lane.lane_id, actor_lane.s,
+                                         actor_t)) {
+                // The road t-axis and the axis normal both point left, so the
+                // lane-centre difference is the offset delta directly.
+                return record.lateral_offset + (target_t + action.target_lane_offset() - actor_t);
+            }
+            // A backend that cannot answer one of the queries falls through to
+            // the flat-world model rather than stopping the action: partial
+            // support degrades, it does not fail.
+        }
+        // Flat world: `value` default lane widths from the reference entity's
+        // lateral position. When the reference is the actor itself that
+        // position is the axis, which stands in for the actor's lane centre.
+        const double base = target.entity_ref == action.entity_id()
+                                ? 0.0
+                                : reference_lateral_offset(record, target.entity_ref);
+        return base + static_cast<double>(target.value) * default_lane_width_ +
+               action.target_lane_offset();
+    }
+
+    // An absolute lane id names an element of the road network, so it has no
+    // flat-world reading at all (ADR-0016, #23).
+    if (road != nullptr) {
+        const std::string& value = action.absolute_target()->value;
+        int lane_id = 0;
+        // std::from_chars, never std::stoi: the locale-independent rule.
+        const char* const begin = value.data();
+        const char* const end = begin + value.size();
+        const std::from_chars_result parsed = std::from_chars(begin, end, lane_id);
+        gateway::LanePosition actor_lane;
+        double target_t = 0.0;
+        double actor_t = 0.0;
+        if (parsed.ec == std::errc() && parsed.ptr == end &&
+            road->to_lane_position(record.state.x, record.state.y, record.state.z, actor_lane) &&
+            road->lane_center_offset(actor_lane.road_id, lane_id, actor_lane.s, target_t) &&
+            road->lane_center_offset(actor_lane.road_id, actor_lane.lane_id, actor_lane.s,
+                                     actor_t)) {
+            return record.lateral_offset + (target_t + action.target_lane_offset() - actor_t);
+        }
+    }
+    return std::nullopt;
+}
+
+runtime::ActionOutcome Engine::drive_lane_change(const ir::LaneChangeAction& action,
+                                                 EntityRecord& record, bool installing) {
+    const auto give_up = [this, &record, &action](Status code, std::string message) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
+        warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
+        return runtime::ActionOutcome::Complete;
+    };
+
+    if (installing) {
+        if (action.is_relative()) {
+            // §7.5.2.2: the reference entity whose lane the count is measured
+            // from has to be in the scenario.
+            const std::string& reference = action.relative_target()->entity_ref;
+            const auto it = entities_.find(reference); // heterogeneous lookup
+            if (it == entities_.end() || !it->second.active) {
+                return give_up(Status::UnknownEntity,
+                               "lane change action reference entity '" + reference +
+                                   "' is not in the scenario (§7.5.2.2); action completed");
+            }
+        }
+        ensure_lateral_axis(record);
+        // "Target lane exists" (§7.5.2.2). Resolved once, at install: a lane
+        // change commits to where it is going and then goes there.
+        const std::optional<double> target = resolve_lane_change_target(action, record);
+        if (!target.has_value()) {
+            return give_up(Status::UnsupportedFeature,
+                           "lane change action to an absolute target lane needs a road network "
+                           "(§7.5.2.2, #23); action completed");
+        }
+
+        const ir::TransitionDynamics& dynamics = action.dynamics();
+        runtime::LongitudinalController::Segment segment;
+        segment.from = record.lateral_offset;
+        segment.to = *target;
+        segment.shape = dynamics.shape;
+        if (dynamics.dimension == ir::DynamicsDimension::Distance &&
+            dynamics.shape != ir::DynamicsShape::Step) {
+            // "Time and distance are measured between the start position and
+            // the end position of the action" (Class `LaneChangeAction`): the
+            // distance dimension ties progress to the odometer, so a slower
+            // actor takes longer but changes lane over the same ground. An
+            // entity at a standstill never finishes, exactly as a
+            // distance-dimensioned SpeedAction does not (ADR-0011).
+            segment.by_distance = true;
+            segment.span = dynamics.value;
+        } else {
+            segment.by_distance = false;
+            segment.span = runtime::transition_duration(dynamics, segment.from, segment.to);
+        }
+        runtime::LongitudinalController controller;
+        controller.segments.push_back(segment);
+        controller.advance(0.0, 0.0); // settle a Step / zero-span transition
+        record.lateral_transition = std::move(controller);
+    } else {
+        // Distance-dimensioned progress is estimated from the speed at the
+        // start of the step, the same explicit scheme drive_longitudinal and
+        // the position integrator use.
+        record.lateral_transition->advance(last_dt_, record.state.speed * last_dt_);
+    }
+    record.lateral_offset_command = record.lateral_transition->speed();
+
+    if (record.lateral_transition->done()) {
+        // Annex A Table 10: ends "by reaching the lateral centerline offset on
+        // the target lane".
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        record.lateral_dissolve_pending = true;
+        return runtime::ActionOutcome::Complete;
+    }
+    return runtime::ActionOutcome::Running;
+}
+
 runtime::ActionOutcome Engine::drive_lane_offset(const ir::LaneOffsetAction& action,
                                                  EntityRecord& record, bool installing) {
     // Releases the lateral domain and completes: the §7.5.2.2 missing-
@@ -3072,6 +3235,7 @@ runtime::ActionOutcome Engine::drive_lane_offset(const ir::LaneOffsetAction& act
     const auto give_up = [this, &record, &action](Status code, std::string message) {
         record.active_lateral_action = nullptr;
         record.lateral_transition.reset();
+        dissolve_lateral_axis(record);
         warn(diagnostics_, code, std::move(message), "entities/" + action.entity_id());
         return runtime::ActionOutcome::Complete;
     };

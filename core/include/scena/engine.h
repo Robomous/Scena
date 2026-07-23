@@ -40,6 +40,12 @@ namespace gateway {
 class ISimulatorGateway;
 } // namespace gateway
 
+/// Lane width the engine assumes when no road network can supply a real one,
+/// in metres. A modeling default, not a value the standard prescribes: ASAM
+/// OpenSCENARIO defines lanes in the road network, which is external to it.
+/// Change it with Engine::set_default_lane_width (ADR-0016).
+inline constexpr double kDefaultLaneWidth = 3.5;
+
 /// Which movement domains of an entity the engine currently controls, per ASAM
 /// OpenSCENARIO XML 1.4.0 §ActivateControllerAction. Both start active: an
 /// entity with no controller action is driven by the engine's default
@@ -220,6 +226,19 @@ public:
     /// std::nullopt when no time-of-day anchor has been set. Frozen at the
     /// anchor while a non-animated §TimeOfDay is in force.
     [[nodiscard]] std::optional<double> date_time() const;
+
+    /// Sets the lane width a LaneChangeAction assumes when the target lane
+    /// cannot be resolved against a road network (ADR-0016). Rejected with
+    /// InvalidArgument when `width` is not finite and positive. May be set
+    /// before or after init and persists across init(); close() restores
+    /// kDefaultLaneWidth.
+    ///
+    /// A host with an IRoadQuery that answers the lane queries never sees this
+    /// value: real lane widths win.
+    Status set_default_lane_width(double width);
+
+    /// The lane width the flat-world lane model currently uses, in metres.
+    [[nodiscard]] double default_lane_width() const noexcept;
 
     /// The current observable state of a traffic signal (§6.11.4), or
     /// std::nullopt when nothing has written that signal id yet — no
@@ -547,6 +566,29 @@ private:
     runtime::ActionOutcome drive_lane_offset(const ir::LaneOffsetAction& action,
                                              EntityRecord& record, bool installing);
 
+    /// Drives one step of a LaneChangeAction on `record` (Class
+    /// `LaneChangeAction`): resolves the target lane once at install, then runs
+    /// the offset ramp its TransitionDynamics describe — over seconds for the
+    /// Time and Rate dimensions, over metres travelled for Distance. Returns
+    /// Complete on "reaching the lateral centerline offset on the target lane"
+    /// (Annex A Table 10).
+    runtime::ActionOutcome drive_lane_change(const ir::LaneChangeAction& action,
+                                             EntityRecord& record, bool installing);
+
+    /// The offset across the live axis that `action`'s target lane sits at, or
+    /// std::nullopt when it cannot be resolved and the action must stop.
+    ///
+    /// A relative target is resolved against the road network when the gateway
+    /// offers one — actor and reference lane positions, the lane `count` lanes
+    /// over, and both lane centre offsets — and otherwise against the
+    /// flat-world model: `count` default lane widths from the reference
+    /// entity's lateral position. An absolute lane id has no flat-world
+    /// reading, so without a backend that answers it there is nothing to
+    /// resolve (#23).
+    [[nodiscard]] std::optional<double>
+    resolve_lane_change_target(const ir::LaneChangeAction& action,
+                               const EntityRecord& record) const;
+
     /// The lateral offset of `record`'s reference entity measured across the
     /// live axis, i.e. `(p_ref - axis.origin) . axis_normal`. Flat-world: every
     /// entity is assumed to sit on its own lane centre, so this doubles as the
@@ -673,6 +715,10 @@ private:
     double date_time_anchor_epoch_ = 0.0;
     double date_time_anchor_sim_ = 0.0;
     bool date_time_animated_ = true;
+    // Flat-world lane width for target-lane resolution without a road network
+    // (ADR-0016). Host-settable state like the time-of-day anchor: persists
+    // across init(), restored to the default by close().
+    double default_lane_width_ = kDefaultLaneWidth;
     // Environment state (§Environment), merged member by member by every
     // EnvironmentAction. Per-run state: cleared by init() and close().
     ir::Environment environment_;

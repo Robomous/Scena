@@ -31,6 +31,9 @@
 
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
+#include "scena/entity_state.h"
+#include "scena/gateway/road_query.h"
+#include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/coordinate_system.h"
@@ -156,6 +159,383 @@ void run(Engine& engine, int count, double dt) {
     for (int i = 0; i < count; ++i) {
         ASSERT_EQ(engine.step(dt), Status::Ok);
     }
+}
+
+// --- LaneChangeAction ------------------------------------------------------
+
+/// A relative lane change, sinusoidal, over `seconds`.
+std::shared_ptr<LaneChangeAction> lane_change(const std::string& reference, int lanes,
+                                              double seconds, double target_lane_offset = 0.0) {
+    return std::make_shared<LaneChangeAction>("ego", RelativeTargetLane{reference, lanes},
+                                              TransitionDynamics{DynamicsShape::Sinusoidal,
+                                                                 DynamicsDimension::Time, seconds,
+                                                                 FollowingMode::Position},
+                                              target_lane_offset);
+}
+
+TEST(LaneChangeTest, RelativeToItselfMovesOneDefaultLaneWidth) {
+    // Flat world (ADR-0016): with no road network, "one lane over" is one
+    // default lane width across the axis. Positive counts go left (§7.4.1.4).
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("ego", 1, 4.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    EXPECT_DOUBLE_EQ(engine.default_lane_width(), 3.5);
+    run(engine, 50, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-9);
+    // The sinusoidal shape ends with zero lateral rate, so the entity comes out
+    // of the manoeuvre pointing straight down the axis again.
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+}
+
+TEST(LaneChangeTest, NegativeCountsGoRightAndTargetLaneOffsetIsAdded) {
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("ego", -1, 4.0, 0.4)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    // "the action will end there": one lane right, plus the target lane offset.
+    EXPECT_NEAR(engine.state("ego")->y, -3.5 + 0.4, 1e-9);
+}
+
+TEST(LaneChangeTest, ARelativeTargetIsMeasuredFromTheReferenceEntitysLane) {
+    // The reference sits 3.5 m left; one lane left of it is 7 m from the ego.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("lead", 1, 4.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    EXPECT_NEAR(engine.state("ego")->y, 7.0, 1e-9);
+}
+
+TEST(LaneChangeTest, TheDefaultLaneWidthIsConfigurableAndValidated) {
+    Engine engine;
+    EXPECT_DOUBLE_EQ(engine.default_lane_width(), 3.5);
+    EXPECT_EQ(engine.set_default_lane_width(0.0), Status::InvalidArgument);
+    EXPECT_EQ(engine.set_default_lane_width(-2.0), Status::InvalidArgument);
+    EXPECT_EQ(engine.set_default_lane_width(std::nan("")), Status::InvalidArgument);
+    EXPECT_DOUBLE_EQ(engine.default_lane_width(), 3.5); // unchanged by the rejections
+    ASSERT_EQ(engine.set_default_lane_width(2.75), Status::Ok);
+
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("ego", 2, 4.0)));
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // The setting survives init, like the time-of-day anchor.
+    EXPECT_DOUBLE_EQ(engine.default_lane_width(), 2.75);
+    run(engine, 50, 0.1);
+    EXPECT_NEAR(engine.state("ego")->y, 5.5, 1e-9);
+
+    ASSERT_EQ(engine.close(), Status::Ok);
+    EXPECT_DOUBLE_EQ(engine.default_lane_width(), 3.5); // close() forgets it
+}
+
+TEST(LaneChangeTest, AStepShapeIsInstantaneous) {
+    // §7.4.1.4: "when the DynamicsShape attribute is set to step, the lane
+    // change is performed instantaneously - not over time".
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0,
+                                 std::make_shared<LaneChangeAction>(
+                                     "ego", RelativeTargetLane{"ego", 1}, TransitionDynamics{})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    ASSERT_EQ(engine.step(0.1), Status::Ok);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-12);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+    // No axis was left behind: the ego integrates straight from here.
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(engine.state("ego")->y, 3.5, 1e-12);
+}
+
+TEST(LaneChangeTest, TheDistanceDimensionIsTiedToTheOdometerNotTheClock) {
+    // "Time and distance are measured between the start position and the end
+    // position of the action": half the speed covers the same ground in twice
+    // the time, and the lane change tracks the ground.
+    const auto make = [](double speed) {
+        std::vector<scena::ir::Event> events;
+        events.push_back(timed_event(
+            "lateral", 0.0,
+            std::make_shared<LaneChangeAction>(
+                "ego", RelativeTargetLane{"ego", 1},
+                TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Distance, 100.0,
+                                   FollowingMode::Position})));
+        return make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0, 3.5, speed,
+                                     10.0, std::move(events));
+    };
+    Engine fast;
+    Engine slow;
+    ASSERT_EQ(fast.init(make(20.0)), Status::Ok);
+    ASSERT_EQ(slow.init(make(10.0)), Status::Ok);
+    // Both run until they have covered 50 m: 2.5 s at 20 m/s, 5 s at 10 m/s.
+    run(fast, 25, 0.1);
+    run(slow, 50, 0.1);
+    EXPECT_NEAR(fast.state("ego")->x, 50.0, 1e-9);
+    EXPECT_NEAR(slow.state("ego")->x, 50.0, 1e-9);
+    // Same ground covered, same lateral progress — half way through the shape.
+    EXPECT_NEAR(fast.state("ego")->y, slow.state("ego")->y, 1e-9);
+    EXPECT_NEAR(fast.state("ego")->y, 1.75, 1e-6);
+
+    run(fast, 40, 0.1);
+    run(slow, 80, 0.1);
+    EXPECT_EQ(state_of(fast), scena::runtime::ElementState::Complete);
+    EXPECT_EQ(state_of(slow), scena::runtime::ElementState::Complete);
+    EXPECT_NEAR(fast.state("ego")->y, 3.5, 1e-9);
+    EXPECT_NEAR(slow.state("ego")->y, 3.5, 1e-9);
+}
+
+TEST(LaneChangeTest, AnAbsoluteTargetLaneWithoutARoadNetworkStopsTheAction) {
+    // A lane id names an element of the road network, so it has no flat-world
+    // reading: the action reports UnsupportedFeature and ends without moving
+    // the entity sideways (#23).
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 1.0,
+                    std::make_shared<LaneChangeAction>(
+                        "ego", AbsoluteTargetLane{"-2"},
+                        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 4.0,
+                                           FollowingMode::Position})));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    // Deliberately no init-time warning, unlike the road-coordinate-system
+    // deferrals: a host with a road backend can resolve absolute lanes, so only
+    // the runtime knows whether this one can (ADR-0016).
+    EXPECT_FALSE(has_warning(engine, Status::UnsupportedFeature));
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnsupportedFeature));
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0);
+    EXPECT_DOUBLE_EQ(engine.state("ego")->heading, 0.0);
+}
+
+TEST(LaneChangeTest, AReferenceThatIsGoneAtInstallStopsTheAction) {
+    // §7.5.2.2: a relative target needs the entity whose lane it counts from.
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("remove", 0.0, std::make_shared<scena::ir::DeleteEntityAction>("lead")));
+    events.push_back(timed_event("lateral", 1.0, lane_change("lead", 1, 4.0)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 20, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnknownEntity));
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0);
+}
+
+TEST(LaneChangeTest, AReferenceLostMidChangeDoesNotStopIt) {
+    // The target lane is resolved once, at install (Class `LaneChangeAction`:
+    // the transition "ends at the target lane position"). §7.5.2.2 lists only
+    // "Target lane exists" as the prerequisite of a LaneChangeAction — unlike a
+    // LateralDistanceAction, which needs its reference throughout — so losing
+    // the reference afterwards leaves the committed target standing.
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("lead", 1, 4.0)));
+    events.push_back(
+        timed_event("remove", 1.0, std::make_shared<scena::ir::DeleteEntityAction>("lead")));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // One lane left of where the reference was: 3.5 + 3.5.
+    EXPECT_NEAR(engine.state("ego")->y, 7.0, 1e-9);
+}
+
+// --- Road-backed target-lane resolution ------------------------------------
+
+/// A minimal straight-road IRoadQuery: lanes of `width` metres, lane 0 being
+/// the road centre line (never a real lane), lane +n centred at +n*width - a
+/// half width and lane -n mirrored. Only the three p2-s3 lane queries are
+/// implemented; the pure-virtual pair is enough to answer them.
+class StraightRoad final : public scena::gateway::IRoadQuery {
+public:
+    explicit StraightRoad(double width, bool answer_widths = true)
+        : width_(width), answer_widths_(answer_widths) {}
+
+    [[nodiscard]] bool to_lane_position(double x, double y, double z,
+                                        scena::gateway::LanePosition& out) const override {
+        (void)z;
+        out.road_id = "r0";
+        out.s = x;
+        out.t = y;
+        // Lane index from the t coordinate; lane 0 is the centre line.
+        const double lanes = y / width_;
+        out.lane_id = y >= 0.0 ? static_cast<int>(lanes) + 1 : static_cast<int>(lanes) - 1;
+        return true;
+    }
+
+    [[nodiscard]] bool to_world_position(const scena::gateway::LanePosition& position, double& x,
+                                         double& y, double& z) const override {
+        x = position.s;
+        y = position.t;
+        z = 0.0;
+        return true;
+    }
+
+    [[nodiscard]] bool lane_width(const std::string& road_id, int lane_id, double s,
+                                  double& out_width) const override {
+        (void)road_id;
+        (void)lane_id;
+        (void)s;
+        if (!answer_widths_) {
+            return false;
+        }
+        out_width = width_;
+        return true;
+    }
+
+    [[nodiscard]] bool lane_center_offset(const std::string& road_id, int lane_id, double s,
+                                          double& out_t) const override {
+        (void)road_id;
+        (void)s;
+        if (lane_id == 0) {
+            return false; // the centre line is not a lane (§7.4.1.4)
+        }
+        const double index = static_cast<double>(lane_id > 0 ? lane_id - 1 : lane_id + 1);
+        out_t = index * width_ + (lane_id > 0 ? 0.5 : -0.5) * width_;
+        return true;
+    }
+
+    [[nodiscard]] bool relative_lane(const std::string& road_id, int lane_id, int count,
+                                     int& out_lane_id) const override {
+        (void)road_id;
+        // Step `count` lanes, skipping 0: the road centre lane is not counted.
+        int current = lane_id;
+        for (int i = 0; i < std::abs(count); ++i) {
+            current += count > 0 ? 1 : -1;
+            if (current == 0) {
+                current += count > 0 ? 1 : -1;
+            }
+        }
+        out_lane_id = current;
+        return true;
+    }
+
+private:
+    double width_;
+    bool answer_widths_;
+};
+
+/// A gateway that answers nothing but the road query.
+class RoadGateway final : public scena::gateway::ISimulatorGateway {
+public:
+    explicit RoadGateway(scena::gateway::IRoadQuery* road) : road_(road) {}
+
+    bool poll_state(const std::string& entity_id, scena::EntityState& out) override {
+        (void)entity_id;
+        (void)out;
+        return false;
+    }
+    void publish_state(const std::string& entity_id, const scena::EntityState& state) override {
+        (void)entity_id;
+        (void)state;
+    }
+    scena::gateway::IRoadQuery* road_query() override { return road_; }
+
+private:
+    scena::gateway::IRoadQuery* road_;
+};
+
+TEST(LaneChangeRoadTest, ABackendsLaneWidthsWinOverTheFlatWorldDefault) {
+    // The road says lanes are 4 m wide; the engine's flat-world default of
+    // 3.5 m must not be used when a backend can answer.
+    StraightRoad road(4.0);
+    RoadGateway gateway(&road);
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event("lateral", 0.0, lane_change("ego", 1, 4.0)));
+    Engine engine(&gateway);
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // Ego starts at t = 0, i.e. lane +1, centred at +2; one lane left is lane
+    // +2 centred at +6, so the change covers 4 m.
+    EXPECT_NEAR(engine.state("ego")->y, 4.0, 1e-9);
+}
+
+TEST(LaneChangeRoadTest, AnAbsoluteTargetLaneResolvesAgainstTheBackend) {
+    StraightRoad road(4.0);
+    RoadGateway gateway(&road);
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LaneChangeAction>(
+                        "ego", AbsoluteTargetLane{"3"},
+                        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 4.0,
+                                           FollowingMode::Position})));
+    Engine engine(&gateway);
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_FALSE(has_warning(engine, Status::UnsupportedFeature));
+    // Lane +3 is centred at +10; the ego started in lane +1 at +2.
+    EXPECT_NEAR(engine.state("ego")->y, 8.0, 1e-9);
+}
+
+TEST(LaneChangeRoadTest, AnUnparsableAbsoluteLaneIdStopsTheActionEvenWithABackend) {
+    StraightRoad road(4.0);
+    RoadGateway gateway(&road);
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LaneChangeAction>(
+                        "ego", AbsoluteTargetLane{"outer"},
+                        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 4.0,
+                                           FollowingMode::Position})));
+    Engine engine(&gateway);
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 10, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    EXPECT_TRUE(has_warning(engine, Status::UnsupportedFeature));
+    EXPECT_DOUBLE_EQ(engine.state("ego")->y, 0.0);
+}
+
+TEST(LaneChangeRoadTest, PartialBackendSupportFallsBackToTheFlatWorldModel) {
+    // A backend that maps positions but cannot answer lane_center_offset for
+    // the target degrades to the default lane width instead of failing. Here
+    // the target is the road centre line, which is never a lane.
+    StraightRoad road(4.0, /*answer_widths=*/false);
+    RoadGateway gateway(&road);
+    std::vector<scena::ir::Event> events;
+    // Ego is in lane +1; two lanes right is lane -2, but stepping from lane +1
+    // by -1 lands on the centre line, which the stub refuses to centre.
+    events.push_back(
+        timed_event("lateral", 0.0,
+                    std::make_shared<LaneChangeAction>(
+                        "ego", RelativeTargetLane{"ego", 0},
+                        TransitionDynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 4.0,
+                                           FollowingMode::Position})));
+    Engine engine(&gateway);
+    ASSERT_EQ(engine.init(make_lateral_scenario(plain_entity("ego"), plain_entity("lead"), 20.0,
+                                                3.5, 10.0, 10.0, std::move(events))),
+              Status::Ok);
+    run(engine, 50, 0.1);
+    EXPECT_EQ(state_of(engine), scena::runtime::ElementState::Complete);
+    // Zero lanes over is the same lane either way, so the resolution route is
+    // invisible here — what matters is that no warning was raised and the
+    // action completed rather than giving up.
+    EXPECT_FALSE(has_warning(engine, Status::UnsupportedFeature));
+    EXPECT_NEAR(engine.state("ego")->y, 0.0, 1e-9);
 }
 
 // --- LaneOffsetAction ------------------------------------------------------
