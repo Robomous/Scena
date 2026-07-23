@@ -331,6 +331,16 @@ end-to-end through the C++ API (pre-CLI).
 - **Docs:** user-guide motion chapter §lateral.
 - **Exit:** named suites green; hex-pinned lateral trace fixture green
   cross-platform.
+- **Exit note (delivered).** The declared dependency p3-s1 (frozen
+  `IRoadQuery` v1) had not been executed, so target-lane resolution was met by
+  forward-pulling three *defaulted* lane queries onto `IRoadQuery`
+  (`lane_width`, `lane_center_offset`, `relative_lane`) plus a documented
+  flat-world fallback of one configurable default lane width — the p5-s3
+  bounding-box and p5-s5 gateway precedents. A host that answers the queries
+  gets real lane geometry; one that does not degrades rather than fails. p3-s1
+  still owns the v1 freeze and the shape of the pure-virtual core, and real
+  lane identity remains with p3-s4 (#23), which absolute lane targets need.
+  See [ADR-0016](../architecture/ADR-0016-lateral-kinematics.md).
 
 ### p2-s4 — Position resolution, teleport & host round-trip
 

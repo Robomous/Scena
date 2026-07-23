@@ -40,8 +40,8 @@ double shape_peak_curvature_factor(ir::DynamicsShape shape) noexcept {
         // max |g''(p)| of 3p^2 - 2p^3 is |6 - 12p| at p = 0 and p = 1: 6.
         return 6.0;
     case ir::DynamicsShape::Sinusoidal:
-        // max |g''(p)| of (1 - cos(pi*p))/2 is (pi^2/2)|cos(pi*p)| at p = 0
-        // and p = 1: pi^2/2.
+        // max |g''(p)| of the (1 - cosine)/2 shape is pi^2/2, at p = 0 and
+        // p = 1.
         return kPi * kPi * 0.5;
     }
     return 0.0; // unreachable; every enumerator is handled above

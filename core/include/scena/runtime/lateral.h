@@ -38,8 +38,8 @@ namespace scena::runtime {
 /// Peak absolute curvature |g''(p)| of a unit transition (span 1, delta 1) of
 /// this shape, the `k` of the duration derivation below (ADR-0016):
 ///
-/// - Sinusoidal: g(p) = (1 - cos(pi*p))/2, so g''(p) = (pi^2/2)*cos(pi*p) and
-///   the peak is pi^2/2, reached at the endpoints.
+/// - Sinusoidal: g(p) = (1 - cosine of pi*p)/2, so g''(p) is (pi^2/2) times
+///   that same cosine and the peak is pi^2/2, reached at the endpoints.
 /// - Cubic:      g(p) = 3p^2 - 2p^3, so g''(p) = 6 - 12p and the peak is 6,
 ///   likewise at the endpoints.
 /// - Linear:     g''(p) = 0 in the interior and unbounded at the two kinks, so

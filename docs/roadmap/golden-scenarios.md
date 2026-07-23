@@ -94,6 +94,12 @@ dynamics) into ego's lane, then an absolute `SpeedAction` slows it.
 - **Pass:** bit-identical trace; cutting vehicle's lane id changes exactly
   once; lateral offset settles within ±0.05 m of lane center by declared
   checkpoint; longitudinal gap at cut-in start within declared window.
+- **Status:** runs via the C++ API as of **p2-s3**
+  (`make_gs2_scenario` in `core/tests/determinism_test.cpp`, with a
+  bit-identity test and a hex-pinned final trace; the Python flavour is
+  `python/examples/lane_change.py`). Lane spacing is the flat-world default
+  lane width, so the "lane id changes exactly once" criterion is pending a
+  road backend (#23); the full `scena-run` trace lands at p6-s4.
 
 ### GS-3 — Overtake
 
