@@ -1120,6 +1120,115 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         }
         return;
     }
+    if (const auto* lane_change = dynamic_cast<const ir::LaneChangeAction*>(&action)) {
+        // Class `LaneChangeAction`: the transition dynamics are required and the
+        // target lane is a prerequisite (§7.5.2.2, "Target lane exists").
+        const ir::TransitionDynamics& td = lane_change->dynamics();
+        if (!std::isfinite(td.value) || td.value < 0.0) {
+            error(sink, Status::ValidationError,
+                  "lane change action transition dynamics value must be finite and in range "
+                  "[0..inf[",
+                  path);
+        }
+        // §TransitionDynamics: "`Step` is an immediate transition [...]; in that
+        // case `value` must be 0." A non-zero value contradicts the shape.
+        if (td.shape == ir::DynamicsShape::Step && td.value != 0.0) {
+            error(sink, Status::ValidationError,
+                  "lane change action with a step shape must have a zero dynamics value", path);
+        }
+        if (!std::isfinite(lane_change->target_lane_offset())) {
+            error(sink, Status::ValidationError,
+                  "lane change action targetLaneOffset must be finite", path);
+        }
+        if (lane_change->is_relative()) {
+            const ir::RelativeTargetLane& target = *lane_change->relative_target();
+            if (records.find(target.entity_ref) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "lane change action reference entity '" + target.entity_ref + "' is unknown",
+                      path);
+            }
+        } else if (lane_change->absolute_target()->value.empty()) {
+            error(sink, Status::ValidationError, "lane change action target lane id is empty",
+                  path);
+        }
+        return;
+    }
+    if (const auto* lane_offset = dynamic_cast<const ir::LaneOffsetAction*>(&action)) {
+        if (lane_offset->is_relative()) {
+            const ir::RelativeTargetLaneOffset& target = *lane_offset->relative_target();
+            if (records.find(target.entity_ref) == records.end()) {
+                error(sink, Status::SemanticError,
+                      "lane offset action reference entity '" + target.entity_ref + "' is unknown",
+                      path);
+            }
+            if (!std::isfinite(target.value)) {
+                error(sink, Status::ValidationError,
+                      "lane offset action target value must be finite", path);
+            }
+        } else if (!std::isfinite(lane_offset->absolute_target()->value)) {
+            error(sink, Status::ValidationError, "lane offset action target value must be finite",
+                  path);
+        }
+        // Class `LaneOffsetActionDynamics` gives maxLateralAcc the range
+        // [0..inf[, but a limit of exactly 0 permits no lateral motion at all,
+        // so the target offset could never be reached and the action would
+        // never end. Scena rejects that degenerate case rather than model an
+        // infinite transition (ADR-0016); an absent value means 'inf'.
+        if (lane_offset->max_lateral_acc().has_value() &&
+            !(*lane_offset->max_lateral_acc() > 0.0 &&
+              std::isfinite(*lane_offset->max_lateral_acc()))) {
+            error(sink, Status::ValidationError,
+                  "lane offset action maxLateralAcc must be finite and in range ]0..inf[", path);
+        }
+        return;
+    }
+    if (const auto* lateral = dynamic_cast<const ir::LateralDistanceAction*>(&action)) {
+        // Class `LateralDistanceAction`: the reference entity is a prerequisite
+        // (§7.5.2.2, "Referenced entity exists").
+        if (records.find(lateral->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "lateral distance action reference entity '" + lateral->entity_ref() +
+                      "' is unknown",
+                  path);
+        }
+        // "Lateral distance value. [...] Range: [0..inf[."; the negated
+        // comparison also rejects NaN.
+        if (!(lateral->distance() >= 0.0 && std::isfinite(lateral->distance()))) {
+            error(sink, Status::ValidationError,
+                  "lateral distance action distance must be finite and in range [0..inf[", path,
+                  kRuleDistancesNotNegative);
+        }
+        if (lateral->constraints().has_value()) {
+            const ir::DynamicConstraints& constraints = *lateral->constraints();
+            const auto invalid = [](const std::optional<double>& value) {
+                return value.has_value() && !(*value >= 0.0 && std::isfinite(*value));
+            };
+            if (invalid(constraints.max_acceleration) || invalid(constraints.max_deceleration) ||
+                invalid(constraints.max_acceleration_rate) ||
+                invalid(constraints.max_deceleration_rate) || invalid(constraints.max_speed)) {
+                error(sink, Status::ValidationError,
+                      "lateral distance action dynamic constraints must be finite and in range "
+                      "[0..inf[",
+                      path);
+            }
+        }
+        const ir::CoordinateSystem cs = lateral->coordinate_system();
+        if (cs == ir::CoordinateSystem::Lane) {
+            // §6.4.8.2.2 states outright that the lane-CS lateral distance "is
+            // undefined". No road backend can rescue this one, so it is warned
+            // about on its own terms rather than as a deferral.
+            warn(sink, Status::UnsupportedFeature,
+                 "the lateral distance in the lane coordinate system is undefined (§6.4.8.2.2); "
+                 "the lateral distance action completes immediately",
+                 path);
+        } else if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+            warn(sink, Status::UnsupportedFeature,
+                 "road-based coordinate system needs a road network (§6.4); the lateral distance "
+                 "action completes immediately",
+                 path);
+        }
+        return;
+    }
     if (const auto* assign_route = dynamic_cast<const ir::AssignRouteAction*>(&action)) {
         // §Route: "At least two waypoints are needed to define a route."
         const ir::Route& route = assign_route->route();

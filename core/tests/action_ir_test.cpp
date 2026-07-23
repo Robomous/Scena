@@ -39,6 +39,8 @@
 namespace {
 
 using scena::EntityVisibility;
+using scena::ir::AbsoluteTargetLane;
+using scena::ir::AbsoluteTargetLaneOffset;
 using scena::ir::AcquirePositionAction;
 using scena::ir::Action;
 using scena::ir::ActivateControllerAction;
@@ -50,9 +52,15 @@ using scena::ir::controls_lateral;
 using scena::ir::controls_longitudinal;
 using scena::ir::CoordinateSystem;
 using scena::ir::DynamicConstraints;
+using scena::ir::DynamicsDimension;
+using scena::ir::DynamicsShape;
 using scena::ir::FollowingMode;
 using scena::ir::FollowTrajectoryAction;
 using scena::ir::GlobalAction;
+using scena::ir::LaneChangeAction;
+using scena::ir::LaneOffsetAction;
+using scena::ir::LateralDisplacement;
+using scena::ir::LateralDistanceAction;
 using scena::ir::LongitudinalDisplacement;
 using scena::ir::LongitudinalDistanceAction;
 using scena::ir::ModifyOperator;
@@ -60,11 +68,14 @@ using scena::ir::ParameterModifyAction;
 using scena::ir::ParameterSetAction;
 using scena::ir::Property;
 using scena::ir::ReferenceContext;
+using scena::ir::RelativeTargetLane;
+using scena::ir::RelativeTargetLaneOffset;
 using scena::ir::Route;
 using scena::ir::RouteStrategy;
 using scena::ir::Timing;
 using scena::ir::Trajectory;
 using scena::ir::TrajectoryVertex;
+using scena::ir::TransitionDynamics;
 using scena::ir::VariableModifyAction;
 using scena::ir::VariableSetAction;
 using scena::ir::VisibilityAction;
@@ -191,6 +202,87 @@ TEST(LongitudinalDistanceActionIrTest, TimeGapTargetWithConstraintsAndDisplaceme
     EXPECT_FALSE(action.constraints()->max_acceleration_rate.has_value());
 }
 
+// --- Lateral actions (p2-s3, §7.4.1.4) -------------------------------------
+
+TEST(LaneChangeActionIrTest, RelativeTargetCarriesItsParameters) {
+    const TransitionDynamics dynamics{DynamicsShape::Sinusoidal, DynamicsDimension::Time, 3.0,
+                                      FollowingMode::Position};
+    const LaneChangeAction action("ego", RelativeTargetLane{"lead", -1}, dynamics, 0.25);
+    EXPECT_EQ(action.kind(), "LaneChangeAction");
+    EXPECT_EQ(action.entity_id(), "ego");
+    ASSERT_TRUE(action.is_relative());
+    ASSERT_TRUE(action.relative_target().has_value());
+    EXPECT_EQ(action.relative_target()->entity_ref, "lead");
+    EXPECT_EQ(action.relative_target()->value, -1);
+    EXPECT_FALSE(action.absolute_target().has_value());
+    EXPECT_EQ(action.dynamics().shape, DynamicsShape::Sinusoidal);
+    EXPECT_DOUBLE_EQ(action.dynamics().value, 3.0);
+    EXPECT_DOUBLE_EQ(action.target_lane_offset(), 0.25);
+}
+
+TEST(LaneChangeActionIrTest, AbsoluteTargetAndDefaultOffset) {
+    // "Missing value is interpreted as 0" (Class `LaneChangeAction`).
+    const LaneChangeAction action("ego", AbsoluteTargetLane{"-2"}, TransitionDynamics{});
+    EXPECT_FALSE(action.is_relative());
+    ASSERT_TRUE(action.absolute_target().has_value());
+    EXPECT_EQ(action.absolute_target()->value, "-2");
+    EXPECT_FALSE(action.relative_target().has_value());
+    EXPECT_DOUBLE_EQ(action.target_lane_offset(), 0.0);
+}
+
+TEST(LaneOffsetActionIrTest, AbsoluteAndRelativeTargets) {
+    const LaneOffsetAction absolute("ego", AbsoluteTargetLaneOffset{1.5}, /*continuous=*/true,
+                                    DynamicsShape::Cubic, 2.0);
+    EXPECT_EQ(absolute.kind(), "LaneOffsetAction");
+    EXPECT_FALSE(absolute.is_relative());
+    ASSERT_TRUE(absolute.absolute_target().has_value());
+    EXPECT_DOUBLE_EQ(absolute.absolute_target()->value, 1.5);
+    EXPECT_TRUE(absolute.continuous());
+    EXPECT_EQ(absolute.shape(), DynamicsShape::Cubic);
+    ASSERT_TRUE(absolute.max_lateral_acc().has_value());
+    EXPECT_DOUBLE_EQ(*absolute.max_lateral_acc(), 2.0);
+
+    const LaneOffsetAction relative("ego", RelativeTargetLaneOffset{"lead", -0.75},
+                                    /*continuous=*/false, DynamicsShape::Sinusoidal);
+    EXPECT_TRUE(relative.is_relative());
+    ASSERT_TRUE(relative.relative_target().has_value());
+    EXPECT_EQ(relative.relative_target()->entity_ref, "lead");
+    EXPECT_DOUBLE_EQ(relative.relative_target()->value, -0.75);
+    // "Missing value is interpreted as 'inf'" (Class `LaneOffsetActionDynamics`).
+    EXPECT_FALSE(relative.max_lateral_acc().has_value());
+}
+
+TEST(LateralDistanceActionIrTest, CarriesItsParametersAndDefaults) {
+    const LateralDistanceAction action("ego", "lead", 2.0, /*freespace=*/false,
+                                       /*continuous=*/true);
+    EXPECT_EQ(action.kind(), "LateralDistanceAction");
+    EXPECT_EQ(action.entity_ref(), "lead");
+    EXPECT_DOUBLE_EQ(action.distance(), 2.0);
+    EXPECT_FALSE(action.freespace());
+    EXPECT_TRUE(action.continuous());
+    // "If not provided the value is interpreted as entity"; "Where omitted,
+    // 'any' is assumed" (Class `LateralDistanceAction`).
+    EXPECT_EQ(action.coordinate_system(), CoordinateSystem::Entity);
+    EXPECT_EQ(action.displacement(), LateralDisplacement::Any);
+    // "Without this limiting parameters lateral distance is kept rigid."
+    EXPECT_FALSE(action.constraints().has_value());
+}
+
+TEST(LateralDistanceActionIrTest, DisplacementAndConstraintsAreCarried) {
+    DynamicConstraints constraints;
+    constraints.max_acceleration = 1.5;
+    constraints.max_speed = 2.0;
+    const LateralDistanceAction action("ego", "lead", 3.5, /*freespace=*/true,
+                                       /*continuous=*/false, CoordinateSystem::World,
+                                       LateralDisplacement::LeftToReferencedEntity, constraints);
+    EXPECT_TRUE(action.freespace());
+    EXPECT_EQ(action.coordinate_system(), CoordinateSystem::World);
+    EXPECT_EQ(action.displacement(), LateralDisplacement::LeftToReferencedEntity);
+    ASSERT_TRUE(action.constraints().has_value());
+    ASSERT_TRUE(action.constraints()->max_speed.has_value());
+    EXPECT_DOUBLE_EQ(*action.constraints()->max_speed, 2.0);
+}
+
 TEST(RoutingActionIrTest, AssignRouteCarriesTheRoute) {
     Route route;
     route.name = "r1";
@@ -286,6 +378,13 @@ TEST(ActionIrTest, EveryNewKindIsTheStableAsamElementName) {
         {ActivateControllerAction("e", std::nullopt, std::nullopt).kind().data(),
          "ActivateControllerAction"},
         {VisibilityAction("e", true, true, true).kind().data(), "VisibilityAction"},
+        {LaneChangeAction("e", RelativeTargetLane{"r", 1}, TransitionDynamics{}).kind().data(),
+         "LaneChangeAction"},
+        {LaneOffsetAction("e", AbsoluteTargetLaneOffset{}, false, DynamicsShape::Step)
+             .kind()
+             .data(),
+         "LaneOffsetAction"},
+        {LateralDistanceAction("e", "r", 0.0, false, false).kind().data(), "LateralDistanceAction"},
     };
     for (const auto& [actual, name] : expected) {
         EXPECT_EQ(actual, name);
