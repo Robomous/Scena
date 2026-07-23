@@ -481,13 +481,15 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::WorldPosition>(m, "WorldPosition")
         .def(
             "__init__",
-            [](ir::WorldPosition* self, double x, double y, double z) {
-                new (self) ir::WorldPosition{x, y, z};
-            },
-            "x"_a = 0.0, "y"_a = 0.0, "z"_a = 0.0)
+            [](ir::WorldPosition* self, double x, double y, double z, double h, double p,
+               double r) { new (self) ir::WorldPosition{x, y, z, h, p, r}; },
+            "x"_a = 0.0, "y"_a = 0.0, "z"_a = 0.0, "h"_a = 0.0, "p"_a = 0.0, "r"_a = 0.0)
         .def_rw("x", &ir::WorldPosition::x)
         .def_rw("y", &ir::WorldPosition::y)
-        .def_rw("z", &ir::WorldPosition::z);
+        .def_rw("z", &ir::WorldPosition::z)
+        .def_rw("h", &ir::WorldPosition::h)
+        .def_rw("p", &ir::WorldPosition::p)
+        .def_rw("r", &ir::WorldPosition::r);
 
     nb::class_<ir::SpeedCondition, ir::Condition>(m, "SpeedCondition")
         .def(nb::init<ir::TriggeringEntities, double, ir::Rule,
@@ -837,7 +839,7 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("entries", &ir::SpeedProfileAction::entries)
         .def_prop_ro("following_mode", &ir::SpeedProfileAction::following_mode);
     nb::class_<ir::TeleportAction, ir::Action>(m, "TeleportAction")
-        .def(nb::init<std::string, ir::WorldPosition>(), "entity_id"_a, "position"_a)
+        .def(nb::init<std::string, ir::Position>(), "entity_id"_a, "position"_a)
         .def_prop_ro("entity_id", &ir::TeleportAction::entity_id)
         .def_prop_ro("position", &ir::TeleportAction::position);
 
@@ -881,10 +883,72 @@ NB_MODULE(_scena, m) {
             "waypoint"_a);
 
     nb::enum_<ir::ReferenceContext>(m, "ReferenceContext",
-                                    "Whether trajectory vertex times are absolute or relative to "
-                                    "the action's start (§ReferenceContext).")
+                                    "Whether a value is absolute (world frame / simulation-time "
+                                    "origin) or relative to a reference (§ReferenceContext).")
         .value("Absolute", ir::ReferenceContext::Absolute)
         .value("Relative", ir::ReferenceContext::Relative);
+
+    nb::class_<ir::Orientation>(m, "Orientation")
+        .def(
+            "__init__",
+            [](ir::Orientation* self, double h, double p, double r, ir::ReferenceContext type) {
+                new (self) ir::Orientation{h, p, r, type};
+            },
+            "h"_a = 0.0, "p"_a = 0.0, "r"_a = 0.0, "type"_a = ir::ReferenceContext::Relative)
+        .def_rw("h", &ir::Orientation::h)
+        .def_rw("p", &ir::Orientation::p)
+        .def_rw("r", &ir::Orientation::r)
+        .def_rw("type", &ir::Orientation::type);
+
+    nb::class_<ir::RelativeWorldPosition>(m, "RelativeWorldPosition")
+        .def(
+            "__init__",
+            [](ir::RelativeWorldPosition* self, std::string entity_ref, double dx, double dy,
+               double dz, std::optional<ir::Orientation> orientation) {
+                new (self) ir::RelativeWorldPosition{std::move(entity_ref), dx, dy, dz,
+                                                     std::move(orientation)};
+            },
+            "entity_ref"_a, "dx"_a = 0.0, "dy"_a = 0.0, "dz"_a = 0.0, "orientation"_a = nb::none())
+        .def_rw("entity_ref", &ir::RelativeWorldPosition::entity_ref)
+        .def_rw("dx", &ir::RelativeWorldPosition::dx)
+        .def_rw("dy", &ir::RelativeWorldPosition::dy)
+        .def_rw("dz", &ir::RelativeWorldPosition::dz)
+        .def_rw("orientation", &ir::RelativeWorldPosition::orientation);
+
+    nb::class_<ir::RelativeObjectPosition>(m, "RelativeObjectPosition")
+        .def(
+            "__init__",
+            [](ir::RelativeObjectPosition* self, std::string entity_ref, double dx, double dy,
+               double dz, std::optional<ir::Orientation> orientation) {
+                new (self) ir::RelativeObjectPosition{std::move(entity_ref), dx, dy, dz,
+                                                      std::move(orientation)};
+            },
+            "entity_ref"_a, "dx"_a = 0.0, "dy"_a = 0.0, "dz"_a = 0.0, "orientation"_a = nb::none())
+        .def_rw("entity_ref", &ir::RelativeObjectPosition::entity_ref)
+        .def_rw("dx", &ir::RelativeObjectPosition::dx)
+        .def_rw("dy", &ir::RelativeObjectPosition::dy)
+        .def_rw("dz", &ir::RelativeObjectPosition::dz)
+        .def_rw("orientation", &ir::RelativeObjectPosition::orientation);
+
+    // GeoPosition is the one deferred (post-v0.0.1) variant exposed to Python:
+    // it resolves only against a geodetic datum, so a teleport to it reports the
+    // rule asam.net:xosc:1.1.0:positioning.geodetic_datum_defined. The road-,
+    // lane-, route- and trajectory-relative variants land with their backends
+    // (p3-s4/p2-s5).
+    nb::class_<ir::GeoPosition>(m, "GeoPosition")
+        .def(
+            "__init__",
+            [](ir::GeoPosition* self, double latitude_deg, double longitude_deg, double altitude,
+               std::optional<ir::Orientation> orientation) {
+                new (self)
+                    ir::GeoPosition{latitude_deg, longitude_deg, altitude, std::move(orientation)};
+            },
+            "latitude_deg"_a = 0.0, "longitude_deg"_a = 0.0, "altitude"_a = 0.0,
+            "orientation"_a = nb::none())
+        .def_rw("latitude_deg", &ir::GeoPosition::latitude_deg)
+        .def_rw("longitude_deg", &ir::GeoPosition::longitude_deg)
+        .def_rw("altitude", &ir::GeoPosition::altitude)
+        .def_rw("orientation", &ir::GeoPosition::orientation);
 
     nb::class_<ir::Timing>(m, "Timing")
         .def(
@@ -1142,7 +1206,7 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("route", &ir::AssignRouteAction::route);
 
     nb::class_<ir::AcquirePositionAction, ir::Action>(m, "AcquirePositionAction")
-        .def(nb::init<std::string, ir::WorldPosition>(), "entity_id"_a, "position"_a)
+        .def(nb::init<std::string, ir::Position>(), "entity_id"_a, "position"_a)
         .def_prop_ro("entity_id", &ir::AcquirePositionAction::entity_id)
         .def_prop_ro("position", &ir::AcquirePositionAction::position);
 
@@ -1219,7 +1283,7 @@ NB_MODULE(_scena, m) {
         .def_prop_ro("value", &ir::ParameterModifyAction::value);
 
     nb::class_<ir::AddEntityAction, ir::GlobalAction>(m, "AddEntityAction")
-        .def(nb::init<std::string, ir::WorldPosition>(), "entity_ref"_a, "position"_a)
+        .def(nb::init<std::string, ir::Position>(), "entity_ref"_a, "position"_a)
         .def_prop_ro("entity_ref", &ir::AddEntityAction::entity_ref)
         .def_prop_ro("position", &ir::AddEntityAction::position);
 

@@ -10,6 +10,10 @@ The user guide grows sprint by sprint along the
   dynamics (shapes × dimensions), the default controller and its Performance
   clamp, speed profiles, distance keeping, the point-mass simplifications, and
   how to drive speed from C++/C/Python.
+- [Positions and control ownership](positions.md) — the ten §6.3.8 position
+  variants and the one resolver that maps them to a world pose, orientation
+  composition, and engine- vs host-controlled entities (the report_state
+  round-trip and mode violations).
 - [Routing, trajectories and controllers](routing.md) — routes and waypoints,
   polyline trajectories with and without a time reference, controller
   assignment and per-domain activation, and entity visibility, plus which of

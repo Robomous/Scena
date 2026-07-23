@@ -24,15 +24,6 @@
 
 namespace scena::ir {
 
-/// Whether a value is given in absolute or relative terms, per ASAM
-/// OpenSCENARIO XML 1.4.0 §ReferenceContext. On a trajectory Timing it selects
-/// the origin of the vertex time values: simulation time zero (absolute) or the
-/// instant the FollowTrajectoryAction started (relative).
-enum class ReferenceContext {
-    Absolute,
-    Relative,
-};
-
 /// Timing adjustment applied to the time values of a trajectory, per §Timing.
 /// The effective time of a vertex is `time * scale + offset`, read in the
 /// `domain` context.

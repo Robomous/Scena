@@ -31,6 +31,7 @@
 #include "scena/ir/scenario.h"
 #include "scena/runtime/clock.h"
 #include "scena/runtime/longitudinal.h"
+#include "scena/runtime/position_resolver.h"
 #include "scena/runtime/scheduler.h"
 #include "scena/status.h"
 
@@ -475,6 +476,15 @@ private:
     /// ends — one evaluation later than the spec's action-level stopTransition,
     /// because Scena has no per-action observable transitions (ADR-0015).
     EntityRecord* record_for(const ir::Action& action);
+
+    /// Resolves `position` (any §6.3.8 variant) to a world pose through the
+    /// PositionResolver, looking reference entities up in the entity table. On
+    /// success fills `out` and returns true. On failure reports a Warning
+    /// anchored at `path` — carrying the resolver's message and any ASAM rule
+    /// id — and returns false, so the caller leaves the entity untouched and an
+    /// unresolved position is reported rather than silently wrong (ADR-0017).
+    [[nodiscard]] bool resolve_position(const ir::Position& position, runtime::Pose& out,
+                                        const std::string& path);
 
     /// Takes an entity out of the scenario (§DeleteEntityAction): clears every
     /// piece of runtime motion, assignment and derived-observation state while

@@ -514,6 +514,26 @@ TEST(GlobalActionTest, DeleteThenAddRespawnsAtPositionWithFreshObservations) {
     EXPECT_NEAR(after->x, -40.0, kTol); // still at rest, nothing drives it
 }
 
+TEST(GlobalActionTest, AddEntitySeedsOrientationFromResolvedPose) {
+    // AddEntity now accepts any §6.3.8 Position and seeds the full pose: a
+    // world-frame target with heading/pitch/roll places the re-added entity
+    // facing that way (ADR-0017).
+    Scenario scenario = make_scenario();
+    add_event(scenario, "remove", 1.0, std::make_shared<DeleteEntityAction>("ego"));
+    add_event(
+        scenario, "restore", 2.0,
+        std::make_shared<AddEntityAction>("ego", WorldPosition{1.0, 2.0, 0.0, 0.6, 0.0, 0.0}));
+
+    Engine engine;
+    ASSERT_EQ(engine.init(std::move(scenario)), Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // deleted
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // re-added with orientation
+
+    const std::optional<EntityState> state = engine.state("ego");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_NEAR(state->heading, 0.6, kTol);
+}
+
 TEST(GlobalActionTest, DeleteEntityStopsRunningPrivateActions) {
     // §7.5.2.2: a private action whose actor disappears is missing a
     // prerequisite and stops. Scena surfaces that as the owning event ending

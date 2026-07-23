@@ -209,6 +209,30 @@ TEST(RoutingActionTest, AcquirePositionBuildsTheImplicitTwoWaypointRoute) {
     EXPECT_EQ(route->waypoints[1].strategy, RouteStrategy::Shortest);
 }
 
+TEST(RoutingActionTest, AcquireResolvesARelativePositionIntoTheLastWaypoint) {
+    // AcquirePosition now accepts any §6.3.8 Position: a RelativeObjectPosition
+    // 100 m ahead of ego (heading 0 => +X) resolves into the route's last
+    // waypoint through the PositionResolver (ADR-0017).
+    scena::ir::RelativeObjectPosition ahead;
+    ahead.entity_ref = "ego";
+    ahead.dx = 100.0;
+    std::vector<scena::ir::Event> events;
+    events.push_back(
+        timed_event("acquire", 3.0, std::make_shared<AcquirePositionAction>("ego", ahead)));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    const Route* route = engine.route_of("ego");
+    ASSERT_NE(route, nullptr);
+    ASSERT_EQ(route->waypoints.size(), 2U);
+    // ego is at x = 20 m at apply time (storyboard runs before integrate); the
+    // target is 100 m ahead along its +X heading.
+    EXPECT_NEAR(route->waypoints[1].position.x, 120.0, kTol);
+    EXPECT_NEAR(route->waypoints[1].position.y, 0.0, kTol);
+}
+
 TEST(RoutingActionTest, RouteAssignmentLeavesARunningSpeedRampAlone) {
     // §7.4.1.4: AssignRouteAction "does not override any action that controls
     // either lateral or longitudinal domain".

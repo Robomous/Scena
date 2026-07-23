@@ -18,6 +18,7 @@ add_library(scena-core STATIC
     src/runtime/lateral.cpp
     src/runtime/longitudinal.cpp
     src/runtime/obb2.cpp
+    src/runtime/position_resolver.cpp
     src/runtime/scheduler.cpp
 )
 add_library(scena::core ALIAS scena-core)
