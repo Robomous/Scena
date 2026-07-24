@@ -16,11 +16,17 @@
 
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
 
 namespace scena::ir {
+
+// A TrajectoryPosition references a trajectory whose shape lives in
+// trajectory.h; that header includes this one for WorldPosition, so the
+// reference is held by (forward-declared) shared_ptr to break the cycle.
+struct Trajectory;
 
 /// Whether a value is stated in absolute (world-frame) or relative terms, per
 /// ASAM OpenSCENARIO XML 1.4.0 §ReferenceContext. On an Orientation it selects
@@ -153,12 +159,15 @@ struct GeoPosition {
 };
 
 /// Position relative to a trajectory (§TrajectoryPosition): arclength `s` along
-/// the trajectory, lateral `t`. Trajectory shapes land with p2-s5; the variant
-/// exists so the resolver can report it unsupported until then.
+/// the referenced trajectory and lateral offset `t` across it (positive to the
+/// left of the direction of travel). The resolver evaluates the trajectory
+/// geometry at `s` and steps `t` along the left-normal of the tangent.
 struct TrajectoryPosition {
     double s = 0.0;
     double t = 0.0;
     std::optional<Orientation> orientation;
+    /// The referenced trajectory; null is reported as a content defect.
+    std::shared_ptr<Trajectory> trajectory;
 };
 
 /// The ten ASAM OpenSCENARIO §6.3.8 position variants, in the spec's `Position`
