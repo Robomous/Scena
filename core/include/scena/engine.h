@@ -33,6 +33,7 @@
 #include "scena/runtime/longitudinal.h"
 #include "scena/runtime/position_resolver.h"
 #include "scena/runtime/scheduler.h"
+#include "scena/runtime/trajectory_eval.h"
 #include "scena/status.h"
 
 namespace scena {
@@ -322,6 +323,12 @@ private:
         bool timing = false;       ///< True ⇒ the vertex times drive the motion.
         bool started = false;      ///< The entity has been placed on the trajectory.
         double traveled = 0.0;     ///< Arc length covered [m] (time-free mode).
+        /// For the clothoid/NURBS shapes the geometry is driven by the arc-length
+        /// evaluator rather than the sampled `points`/`arc`/`heading` above (the
+        /// polyline keeps its own path so its determinism traces are stable).
+        std::optional<runtime::TrajectoryEvaluator> evaluator;
+        double eval_t0 = 0.0; ///< Effective start time of a timed evaluator follow [s].
+        double eval_t1 = 0.0; ///< Effective end time of a timed evaluator follow [s].
     };
 
     /// The straight reference line an in-progress lateral action displaces an
@@ -514,6 +521,13 @@ private:
     /// (Annex A Table 10).
     runtime::ActionOutcome drive_trajectory(const ir::FollowTrajectoryAction& action,
                                             EntityRecord& record);
+
+    /// Drives one step of a clothoid/NURBS FollowTrajectoryAction through the
+    /// arc-length evaluator (the polyline path stays on drive_trajectory's own
+    /// sampled machinery). Time-free mode advances by the entity's speed;
+    /// timing mode maps the clock onto the shape's [start,end] time linearly.
+    runtime::ActionOutcome drive_trajectory_eval(const ir::FollowTrajectoryAction& action,
+                                                 EntityRecord& record);
 
     /// Installs or advances the default longitudinal controller for a
     /// longitudinal action on `record`, returning its outcome (§7.4.1.2).

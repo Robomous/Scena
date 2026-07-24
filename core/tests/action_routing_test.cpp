@@ -612,4 +612,125 @@ TEST(FollowTrajectoryValidationTest, ClosedAndFollowModeAreAcceptedWithAWarning)
     EXPECT_NEAR(engine.state("ego")->x, 10.0, kTol);
 }
 
+// --- FollowTrajectoryAction, clothoid & NURBS shapes ----------------------
+
+// A quarter circle of radius R as a constant-curvature clothoid arc, starting
+// at the origin heading +x; the centre of curvature is at (0, R).
+Trajectory make_clothoid_arc(double radius, std::optional<double> t_start = std::nullopt,
+                             std::optional<double> t_stop = std::nullopt) {
+    scena::ir::Clothoid clothoid;
+    clothoid.start = WorldPosition{0.0, 0.0, 0.0};
+    clothoid.curvature = 1.0 / radius;
+    clothoid.curvature_prime = 0.0;
+    clothoid.length = radius * kHalfPi;
+    clothoid.start_time = t_start;
+    clothoid.stop_time = t_stop;
+    return Trajectory{"arc", false, clothoid};
+}
+
+// A quarter circle of radius R as an exact rational quadratic NURBS from (R,0)
+// to (0,R), centred on the origin.
+Trajectory make_nurbs_quarter_circle(double radius) {
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 3;
+    const double w = 1.0 / std::sqrt(2.0);
+    nurbs.control_points.push_back({WorldPosition{radius, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back({WorldPosition{radius, radius, 0.0}, std::nullopt, w});
+    nurbs.control_points.push_back({WorldPosition{0.0, radius, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+    return Trajectory{"circle", false, nurbs};
+}
+
+TEST(FollowTrajectoryShapeTest, ClothoidTimeFreeFollowsTheArcAndEndsOnIt) {
+    const double radius = 20.0;
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "follow", 1.0, std::make_shared<FollowTrajectoryAction>("ego", make_clothoid_arc(radius))));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // §6.9.1: teleport to the start (origin)
+    EXPECT_NEAR(engine.state("ego")->x, 0.0, kTol);
+    EXPECT_NEAR(engine.state("ego")->y, 0.0, kTol);
+    for (int i = 0; i < 2; ++i) { // advancing at 10 m/s, staying on the circle
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+        const double dx = engine.state("ego")->x;
+        const double dy = engine.state("ego")->y - radius;
+        EXPECT_NEAR(std::sqrt(dx * dx + dy * dy), radius, 1e-9);
+    }
+    // Arc length ~31.4 m at 10 m/s completes within a few more steps, at (R, R).
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_NEAR(engine.state("ego")->x, radius, 1e-9);
+    EXPECT_NEAR(engine.state("ego")->y, radius, 1e-9);
+    EXPECT_EQ(*engine.storyboard_element_state(path_of("follow")),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(FollowTrajectoryShapeTest, NurbsTimeFreeFollowsTheCircle) {
+    const double radius = 20.0;
+    std::vector<scena::ir::Event> events;
+    events.push_back(timed_event(
+        "follow", 1.0,
+        std::make_shared<FollowTrajectoryAction>("ego", make_nurbs_quarter_circle(radius))));
+    Engine engine;
+    ASSERT_EQ(engine.init(make_scenario(10.0, std::move(events))), Status::Ok);
+
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // teleport to the start (R, 0)
+    EXPECT_NEAR(engine.state("ego")->x, radius, 1e-9);
+    EXPECT_NEAR(engine.state("ego")->y, 0.0, 1e-9);
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+        const double x = engine.state("ego")->x;
+        const double y = engine.state("ego")->y;
+        EXPECT_NEAR(std::sqrt(x * x + y * y), radius, 1e-9);
+    }
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_NEAR(engine.state("ego")->x, 0.0, 1e-9);
+    EXPECT_NEAR(engine.state("ego")->y, radius, 1e-9);
+    EXPECT_EQ(*engine.storyboard_element_state(path_of("follow")),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(FollowTrajectoryShapeTest, ClothoidTimingModeDrivesToTheEndByTime) {
+    const double radius = 20.0;
+    const Timing timing{ReferenceContext::Absolute, 1.0, 0.0};
+    Engine engine;
+    ASSERT_EQ(engine.init(make_trajectory_scenario(std::make_shared<FollowTrajectoryAction>(
+                  "ego", make_clothoid_arc(radius, 0.0, 4.0), FollowingMode::Position, timing))),
+              Status::Ok);
+    // Within the [0, 4] s window the entity is on the arc at the time-fraction.
+    for (int i = 0; i < 2; ++i) { // t = 2 s, halfway
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    const double dx = engine.state("ego")->x;
+    const double dy = engine.state("ego")->y - radius;
+    EXPECT_NEAR(std::sqrt(dx * dx + dy * dy), radius, 1e-9);
+    EXPECT_EQ(*engine.storyboard_element_state(path_of("follow")),
+              scena::runtime::ElementState::Running);
+    // At t = 4 s it reaches the end and completes.
+    for (int i = 0; i < 2; ++i) {
+        ASSERT_EQ(engine.step(1.0), Status::Ok);
+    }
+    EXPECT_NEAR(engine.state("ego")->x, radius, 1e-9);
+    EXPECT_NEAR(engine.state("ego")->y, radius, 1e-9);
+    EXPECT_EQ(*engine.storyboard_element_state(path_of("follow")),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(FollowTrajectoryShapeTest, MalformedNurbsFailsInitWithTheCardinalityRule) {
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 3; // needs >= 3 control points and 6 knots
+    nurbs.control_points.push_back({WorldPosition{0.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back({WorldPosition{1.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 1.0};
+    Engine engine;
+    EXPECT_EQ(engine.init(make_trajectory_scenario(std::make_shared<FollowTrajectoryAction>(
+                  "ego", Trajectory{"bad", false, nurbs}))),
+              Status::ValidationError);
+}
+
 } // namespace

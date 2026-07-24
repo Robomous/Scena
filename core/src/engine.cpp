@@ -1359,6 +1359,36 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                       "trajectory initialDistanceOffset must be in range [0..arclength]", path,
                       kRuleTrajectoryOffset);
             }
+        } else {
+            // Clothoid/NURBS: the evaluator validates the shape (finiteness,
+            // NURBS cardinality) at construction; surface its diagnostic.
+            const runtime::TrajectoryEvaluator evaluator(trajectory);
+            if (!evaluator.ok()) {
+                error(sink, evaluator.status().status, evaluator.status().message, path,
+                      evaluator.status().rule_id);
+            } else {
+                const double offset = follow->initial_distance_offset();
+                if (!std::isfinite(offset) || offset < 0.0 || offset > evaluator.total_length()) {
+                    error(sink, Status::ValidationError,
+                          "trajectory initialDistanceOffset must be in range [0..arclength]", path,
+                          kRuleTrajectoryOffset);
+                }
+                // §Timing requires the shape to carry the times it scales.
+                if (follow->time_reference().has_value()) {
+                    bool has_times = false;
+                    if (const auto* clo = std::get_if<ir::Clothoid>(&trajectory.shape)) {
+                        has_times = clo->start_time.has_value() && clo->stop_time.has_value();
+                    } else if (const auto* nur = std::get_if<ir::Nurbs>(&trajectory.shape)) {
+                        has_times = nur->control_points.front().time.has_value() &&
+                                    nur->control_points.back().time.has_value();
+                    }
+                    if (!has_times) {
+                        error(sink, Status::ValidationError,
+                              "trajectory timing requires start and end times on the shape", path,
+                              kRuleTrajectoryTiming);
+                    }
+                }
+            }
         }
         if (trajectory.closed) {
             // §Trajectory: a closed trajectory loops and the action then has no
@@ -3627,15 +3657,65 @@ runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction
 
     // --- install, on the first fire -------------------------------------
     if (!record.trajectory.has_value() || record.trajectory->action != &action) {
-        // Clothoid/NURBS shapes drive through the evaluator (C4); the polyline
-        // keeps its own sampled fast path so its determinism traces are stable.
-        const auto* polyline = std::get_if<ir::Polyline>(&action.trajectory().shape);
-        if (polyline == nullptr) {
-            warn(diagnostics_, Status::UnsupportedFeature,
-                 "trajectory shape is not implemented yet; action completed",
-                 "entities/" + action.entity_id());
-            return runtime::ActionOutcome::Complete;
+        // Clothoid/NURBS shapes drive through the arc-length evaluator; the
+        // polyline keeps its own sampled fast path below so its determinism
+        // traces are stable.
+        if (!std::holds_alternative<ir::Polyline>(action.trajectory().shape)) {
+            // Retire the outgoing follower, and (timing) take the longitudinal
+            // domain — the same supersession the polyline install performs.
+            if (record.trajectory.has_value() && record.trajectory->action != nullptr) {
+                const ir::Action* outgoing = record.trajectory->action;
+                if (std::find(record.retired_actions.begin(), record.retired_actions.end(),
+                              outgoing) == record.retired_actions.end()) {
+                    record.retired_actions.push_back(outgoing);
+                }
+            }
+            if (timing) {
+                supersede_longitudinal(record, &action);
+                record.longitudinal.reset();
+                record.continuous_speed.reset();
+                record.active_longitudinal_action = &action;
+            }
+            TrajectoryFollower follower;
+            follower.action = &action;
+            follower.timing = timing;
+            follower.evaluator.emplace(action.trajectory());
+            if (!follower.evaluator->ok()) {
+                // init() rejects an ill-formed shape; defensive for a hand-built one.
+                warn(diagnostics_, follower.evaluator->status().status,
+                     "trajectory shape is ill-formed; action completed",
+                     "entities/" + action.entity_id());
+                if (timing) {
+                    record.active_longitudinal_action = nullptr;
+                }
+                record.trajectory.reset();
+                return runtime::ActionOutcome::Complete;
+            }
+            const double total = follower.evaluator->total_length();
+            follower.traveled = std::clamp(action.initial_distance_offset(), 0.0, total);
+            if (timing) {
+                // §Timing: the shape's start/end times, scaled and offset, bound
+                // the motion. The clothoid uses start/stopTime; the NURBS uses
+                // its first and last control-point times.
+                const ir::Timing& adjustment = *action.time_reference();
+                double t0 = 0.0;
+                double t1 = 0.0;
+                if (const auto* clo = std::get_if<ir::Clothoid>(&action.trajectory().shape)) {
+                    t0 = clo->start_time.value_or(0.0);
+                    t1 = clo->stop_time.value_or(0.0);
+                } else if (const auto* nur = std::get_if<ir::Nurbs>(&action.trajectory().shape)) {
+                    t0 = nur->control_points.front().time.value_or(0.0);
+                    t1 = nur->control_points.back().time.value_or(0.0);
+                }
+                const double base =
+                    adjustment.domain == ir::ReferenceContext::Relative ? clock_.now() : 0.0;
+                follower.eval_t0 = t0 * adjustment.scale + adjustment.offset + base;
+                follower.eval_t1 = t1 * adjustment.scale + adjustment.offset + base;
+            }
+            record.trajectory = std::move(follower);
+            return drive_trajectory_eval(action, record);
         }
+        const auto* polyline = std::get_if<ir::Polyline>(&action.trajectory().shape);
         const std::vector<ir::TrajectoryVertex>& vertices = polyline->vertices;
         if (vertices.size() < 2) {
             // init() rejects this; defensive, so a hand-built scenario cannot
@@ -3725,6 +3805,10 @@ runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction
         record.trajectory = std::move(follower);
     }
 
+    if (record.trajectory->evaluator.has_value()) {
+        return drive_trajectory_eval(action, record);
+    }
+
     TrajectoryFollower& follower = *record.trajectory;
     const std::size_t last = follower.points.size() - 1;
     const double arc_end = follower.arc[last];
@@ -3802,6 +3886,69 @@ runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction
     // conditions see a consistent state (deterministic division).
     const double length = follower.arc[index + 1] - follower.arc[index];
     record.state.speed = span > 0.0 ? length / span : 0.0;
+    return runtime::ActionOutcome::Running;
+}
+
+runtime::ActionOutcome Engine::drive_trajectory_eval(const ir::FollowTrajectoryAction& action,
+                                                     EntityRecord& record) {
+    TrajectoryFollower& follower = *record.trajectory;
+    const runtime::TrajectoryEvaluator& evaluator = *follower.evaluator;
+    const double total = evaluator.total_length();
+    const double start_s = std::clamp(action.initial_distance_offset(), 0.0, total);
+
+    const auto place = [&record](const runtime::Pose& pose) {
+        record.state.x = pose.x;
+        record.state.y = pose.y;
+        record.state.z = pose.z;
+        record.state.heading = pose.heading;
+        record.trajectory_moved = true;
+    };
+    // Ends the action at the end of the trajectory (Table 10), snapping exactly
+    // onto it and releasing the longitudinal domain in timing mode.
+    const auto finish = [&](double speed) {
+        place(evaluator.pose_at_arclength(total));
+        if (follower.timing) {
+            record.state.speed = speed;
+            record.active_longitudinal_action = nullptr;
+        }
+        record.trajectory.reset();
+        return runtime::ActionOutcome::Complete;
+    };
+
+    if (!follower.timing) {
+        // §6.9.1: on start the entity teleports to the beginning of the
+        // trajectory; its own longitudinal control then sets the pace.
+        if (!follower.started) {
+            follower.started = true;
+            place(evaluator.pose_at_arclength(follower.traveled));
+            return runtime::ActionOutcome::Running;
+        }
+        follower.traveled += record.state.speed * last_dt_;
+        if (follower.traveled >= total) {
+            return finish(record.state.speed);
+        }
+        place(evaluator.pose_at_arclength(follower.traveled));
+        return runtime::ActionOutcome::Running;
+    }
+
+    // timeReference=timing: the shape's [start,end] times drive the motion at a
+    // constant arc-length rate, so the action owns the longitudinal domain.
+    const double now = clock_.now();
+    if (now < follower.eval_t0) {
+        // §6.9.2: started but the first time reference is still in the future.
+        return runtime::ActionOutcome::Running;
+    }
+    const double span = follower.eval_t1 - follower.eval_t0;
+    const double covered = total - start_s;
+    if (span <= 0.0 || now >= follower.eval_t1) {
+        return finish(span > 0.0 ? covered / span : 0.0);
+    }
+    follower.started = true;
+    const double fraction = (now - follower.eval_t0) / span;
+    const double s = start_s + covered * fraction;
+    place(evaluator.pose_at_arclength(s));
+    follower.traveled = s;
+    record.state.speed = covered / span;
     return runtime::ActionOutcome::Running;
 }
 
