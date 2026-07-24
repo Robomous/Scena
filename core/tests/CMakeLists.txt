@@ -68,6 +68,7 @@ scn_add_test(action_ir_test)
 scn_add_test(action_distance_test)
 scn_add_test(action_lateral_test)
 scn_add_test(action_routing_test)
+scn_add_test(trajectory_test)
 scn_add_test(action_controller_visibility_test)
 scn_add_test(action_global_test)
 scn_add_test(traffic_signal_test)
@@ -80,6 +81,8 @@ target_link_libraries(detmath_test PRIVATE scena::testsupport)
 target_link_libraries(obb2_test PRIVATE scena::testsupport)
 # position_test hex-pins the RelativeObjectPosition rotation against det_sincos.
 target_link_libraries(position_test PRIVATE scena::testsupport)
+# trajectory_test hex-pins evaluator samples, so it needs hex_bits().
+target_link_libraries(trajectory_test PRIVATE scena::testsupport)
 
 if(SCN_BUILD_CAPI)
     scn_add_test(capi_test)

@@ -20,6 +20,7 @@ add_library(scena-core STATIC
     src/runtime/obb2.cpp
     src/runtime/position_resolver.cpp
     src/runtime/scheduler.cpp
+    src/runtime/trajectory_eval.cpp
 )
 add_library(scena::core ALIAS scena-core)
 
