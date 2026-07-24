@@ -853,13 +853,102 @@ scn_status scn_engine_add_follow_trajectory_action(
         scena::ir::Trajectory trajectory;
         trajectory.name = name != nullptr ? name : "";
         trajectory.closed = closed != 0;
-        trajectory.vertices.reserve(vertex_count);
+        trajectory.vertices().reserve(vertex_count);
         for (size_t index = 0; index < vertex_count; ++index) {
-            trajectory.vertices.push_back(scena::ir::TrajectoryVertex{
+            trajectory.vertices().push_back(scena::ir::TrajectoryVertex{
                 scena::ir::WorldPosition{vertices[index].x, vertices[index].y, vertices[index].z},
                 vertices[index].has_time != 0 ? std::optional<double>(vertices[index].time)
                                               : std::nullopt});
         }
+        std::optional<scena::ir::Timing> ir_timing;
+        if (timing != nullptr) {
+            ir_timing = scena::ir::Timing{static_cast<scena::ir::ReferenceContext>(timing->domain),
+                                          timing->scale, timing->offset};
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::FollowTrajectoryAction>(
+                                    entity_id, std::move(trajectory),
+                                    static_cast<scena::ir::FollowingMode>(following_mode),
+                                    ir_timing, initial_distance_offset));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_follow_clothoid_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name, double start_x, double start_y,
+    double start_z, double start_heading, double curvature, double curvature_prime, double length,
+    double start_time, double stop_time, int has_times, scn_following_mode following_mode,
+    const scn_timing* timing, double initial_distance_offset, double at_time,
+    scn_event_priority priority, int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(following_mode) > static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW) ||
+        (timing != nullptr && static_cast<unsigned>(timing->domain) >
+                                  static_cast<unsigned>(SCN_REFERENCE_CONTEXT_RELATIVE))) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Clothoid clothoid;
+        clothoid.start =
+            scena::ir::WorldPosition{start_x, start_y, start_z, start_heading, 0.0, 0.0};
+        clothoid.curvature = curvature;
+        clothoid.curvature_prime = curvature_prime;
+        clothoid.length = length;
+        if (has_times != 0) {
+            clothoid.start_time = start_time;
+            clothoid.stop_time = stop_time;
+        }
+        scena::ir::Trajectory trajectory{name != nullptr ? name : "", false, clothoid};
+        std::optional<scena::ir::Timing> ir_timing;
+        if (timing != nullptr) {
+            ir_timing = scena::ir::Timing{static_cast<scena::ir::ReferenceContext>(timing->domain),
+                                          timing->scale, timing->offset};
+        }
+        append_storyboard_event(engine, at_time, ir_priority, maximum_execution_count,
+                                std::make_shared<scena::ir::FollowTrajectoryAction>(
+                                    entity_id, std::move(trajectory),
+                                    static_cast<scena::ir::FollowingMode>(following_mode),
+                                    ir_timing, initial_distance_offset));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_add_follow_nurbs_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name, unsigned int order,
+    const scn_nurbs_control_point* control_points, size_t control_point_count, const double* knots,
+    size_t knot_count, int closed, scn_following_mode following_mode, const scn_timing* timing,
+    double initial_distance_offset, double at_time, scn_event_priority priority,
+    int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    // §Nurbs cardinality is enforced structurally here; the ascending-knot and
+    // positive-weight invariants are reported at scn_engine_init.
+    if (engine == nullptr || entity_id == nullptr || control_points == nullptr ||
+        knots == nullptr || order < 2 || control_point_count < order ||
+        knot_count != control_point_count + order || maximum_execution_count < 0 ||
+        !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(following_mode) > static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW) ||
+        (timing != nullptr && static_cast<unsigned>(timing->domain) >
+                                  static_cast<unsigned>(SCN_REFERENCE_CONTEXT_RELATIVE))) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::ir::Nurbs nurbs;
+        nurbs.order = order;
+        nurbs.control_points.reserve(control_point_count);
+        for (size_t index = 0; index < control_point_count; ++index) {
+            const scn_nurbs_control_point& cp = control_points[index];
+            nurbs.control_points.push_back(scena::ir::ControlPoint{
+                scena::ir::WorldPosition{cp.x, cp.y, cp.z},
+                cp.has_time != 0 ? std::optional<double>(cp.time) : std::nullopt, cp.weight});
+        }
+        nurbs.knots.assign(knots, knots + knot_count);
+        scena::ir::Trajectory trajectory{name != nullptr ? name : "", closed != 0,
+                                         std::move(nurbs)};
         std::optional<scena::ir::Timing> ir_timing;
         if (timing != nullptr) {
             ir_timing = scena::ir::Timing{static_cast<scena::ir::ReferenceContext>(timing->domain),

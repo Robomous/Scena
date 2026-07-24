@@ -592,7 +592,7 @@ private:
 ///
 /// Scena models `FollowingMode::Position` (strict adherence to the shape);
 /// `Follow` is accepted and treated as Position with a warning, the ADR-0011
-/// precedent — a true steering controller arrives with p2-s5.
+/// precedent — a true steering controller is a deferred follow-up (ADR-0018).
 class FollowTrajectoryAction final : public Action {
 public:
     FollowTrajectoryAction(std::string entity_id, Trajectory trajectory,

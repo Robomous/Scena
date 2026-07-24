@@ -54,11 +54,31 @@ or `scn_engine_entity_route_info` + `scn_engine_entity_route_waypoint_at` (C).
 
 ## Trajectories
 
-A `Trajectory` is a **polyline**: an ordered chain of at least two vertices,
-each a position and an optional time. `FollowTrajectoryAction` moves an entity
-along it. The other shapes of §6.9 (clothoid, clothoid spline, NURBS) arrive in
-a later sprint; a `closed` trajectory is accepted with a warning and followed as
-an open path for now.
+A `Trajectory` carries one of three **shapes** (§6.9), and
+`FollowTrajectoryAction` moves an entity along it:
+
+- **Polyline** — an ordered chain of at least two vertices, each a position and
+  an optional time; the path is the straight segments between them.
+- **Clothoid** — an Euler spiral whose curvature changes linearly with arc
+  length: `curvature` is the initial curvature and `curvaturePrime` its rate of
+  change. `curvaturePrime = 0` is a circular arc; both zero is a straight line.
+- **NURBS** — a non-uniform rational B-spline of a given `order` (= degree + 1)
+  over a control-point and knot vector; it expresses circles and other conics
+  exactly.
+
+`ClothoidSpline`, the 1.4 `Motion` element and the polyline `Interpolation`
+element are out of scope for v0.0.1 (see the coverage matrix). A `closed`
+trajectory is accepted with a warning and followed as an open path.
+
+**Numerical fidelity (risk R3).** The clothoid's straight-line and circular-arc
+cases are closed form; a general spiral integrates the Fresnel-type integrand
+with a deterministic composite-Simpson quadrature built on Scena's `det_sincos`,
+so it is bit-identical everywhere. The NURBS is evaluated by the rational de
+Boor recursion (IEEE operations only) and reparameterised to arc length through
+a fixed-resolution table. Sampled points match the analytic curve within
+`1e-9` m, and the whole evaluation is covered by the determinism contract.
+A trajectory-relative `Position` (`TrajectoryPosition`) resolves the same way:
+the geometry is evaluated at arc length `s` and offset laterally by `t`.
 
 ### Without a time reference
 
@@ -145,11 +165,16 @@ route.waypoints.push_back(Waypoint{WorldPosition{0.0, 0.0, 0.0}, RouteStrategy::
 route.waypoints.push_back(Waypoint{WorldPosition{200.0, 50.0, 0.0}, RouteStrategy::Fastest});
 event.actions.push_back(std::make_shared<AssignRouteAction>("ego", route));
 
-Trajectory trajectory;
-trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
-trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{100.0, 0.0, 0.0}, 10.0});
+Trajectory trajectory; // defaults to a polyline shape
+trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
+trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{100.0, 0.0, 0.0}, 10.0});
 event.actions.push_back(std::make_shared<FollowTrajectoryAction>(
     "ego", trajectory, FollowingMode::Position, Timing{ReferenceContext::Absolute, 1.0, 0.0}));
+
+// A clothoid arc, or a NURBS, is just a different shape on the Trajectory:
+Trajectory arc{"arc", false, Clothoid{WorldPosition{0.0, 0.0, 0.0}, /*curvature=*/0.05,
+                                      /*curvaturePrime=*/0.0, /*length=*/31.4}};
+event.actions.push_back(std::make_shared<FollowTrajectoryAction>("ego", arc));
 
 Controller controller;
 controller.name = "driver";
@@ -160,7 +185,9 @@ event.actions.push_back(std::make_shared<VisibilityAction>("ego", true, false, f
 
 **C ABI** — `scn_engine_add_assign_route_action`,
 `scn_engine_add_acquire_position_action`,
-`scn_engine_add_follow_trajectory_action`,
+`scn_engine_add_follow_trajectory_action` (polyline) with
+`scn_engine_add_follow_clothoid_trajectory_action` and
+`scn_engine_add_follow_nurbs_trajectory_action` for the other shapes,
 `scn_engine_add_assign_controller_action`,
 `scn_engine_add_activate_controller_action` and
 `scn_engine_add_visibility_action`:

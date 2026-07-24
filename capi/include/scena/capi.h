@@ -347,6 +347,18 @@ typedef struct scn_timing {
     double offset; /* s */
 } scn_timing;
 
+/* One control point of a NURBS trajectory (§ControlPoint): a world position, an
+ * optional time (read only when has_time != 0), and a homogeneous weight.
+ * Transparent struct; append fields only. */
+typedef struct scn_nurbs_control_point {
+    double x;      /* m */
+    double y;      /* m */
+    double z;      /* m */
+    double time;   /* s; read only when has_time != 0 */
+    int has_time;  /* 0 ⇒ the control point carries no time */
+    double weight; /* Range ]0..inf[; 1.0 for a non-rational point */
+} scn_nurbs_control_point;
+
 /* Detectability of an entity (§VisibilityAction); non-zero means visible.
  * Transparent struct; append fields only. */
 typedef struct scn_entity_visibility {
@@ -630,8 +642,8 @@ SCN_API scn_status scn_engine_add_acquire_position_action(scn_engine* engine, co
  * own longitudinal control sets the pace; with a timing, every vertex must
  * carry a time and the action drives the speed as well.
  * `initial_distance_offset` truncates the trajectory to start at that arc
- * length [m]. Only the Polyline shape is modeled; the clothoid and NURBS
- * shapes arrive with a later phase. A NULL engine/id/vertices, fewer than two
+ * length [m]. This builds the Polyline shape; the clothoid and NURBS shapes
+ * have their own builders below. A NULL engine/id/vertices, fewer than two
  * vertices, an out-of-range following_mode/domain, or a negative
  * maximum_execution_count is rejected with SCN_ERROR_INVALID_ARGUMENT. */
 SCN_API scn_status scn_engine_add_follow_trajectory_action(
@@ -639,6 +651,36 @@ SCN_API scn_status scn_engine_add_follow_trajectory_action(
     const scn_trajectory_vertex* vertices, size_t vertex_count, int closed,
     scn_following_mode following_mode, const scn_timing* timing, double initial_distance_offset,
     double at_time, scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a FollowTrajectoryAction over a §Clothoid (Euler spiral). The start pose
+ * is (start_x, start_y, start_z) with heading `start_heading`; `curvature` is
+ * the initial curvature kappa0 and `curvature_prime` its rate of change
+ * (curvature_prime == 0 ⇒ a circular arc; both == 0 ⇒ a straight line);
+ * `length` is the arc length [m]. When `has_times` is non-zero the shape
+ * carries `start_time`/`stop_time`, which a non-NULL `timing` then drives the
+ * motion by. A NULL engine/id, a non-finite parameter, a negative length, or an
+ * out-of-range following_mode/domain/maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT. */
+SCN_API scn_status scn_engine_add_follow_clothoid_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name, double start_x, double start_y,
+    double start_z, double start_heading, double curvature, double curvature_prime, double length,
+    double start_time, double stop_time, int has_times, scn_following_mode following_mode,
+    const scn_timing* timing, double initial_distance_offset, double at_time,
+    scn_event_priority priority, int maximum_execution_count);
+
+/* Adds a FollowTrajectoryAction over a §Nurbs of `order` (>= 2) with
+ * `control_point_count` control points (>= order) and `knot_count` knot values
+ * (must equal control_point_count + order, given in ascending order). A NULL
+ * engine/id/control_points/knots, a cardinality violation, an out-of-range
+ * following_mode/domain, or a negative maximum_execution_count is rejected with
+ * SCN_ERROR_INVALID_ARGUMENT; a knot vector that is not ascending or a
+ * non-positive weight is rejected at scn_engine_init. */
+SCN_API scn_status scn_engine_add_follow_nurbs_trajectory_action(
+    scn_engine* engine, const char* entity_id, const char* name, unsigned int order,
+    const scn_nurbs_control_point* control_points, size_t control_point_count, const double* knots,
+    size_t knot_count, int closed, scn_following_mode following_mode, const scn_timing* timing,
+    double initial_distance_offset, double at_time, scn_event_priority priority,
+    int maximum_execution_count);
 
 /* Adds an AssignControllerAction (§AssignControllerAction) assigning a
  * controller named `name` of `controller_type` to `entity_id`, with

@@ -19,7 +19,9 @@
 #include <utility>
 #include <variant>
 
+#include "scena/ir/trajectory.h"
 #include "scena/runtime/detmath.h"
+#include "scena/runtime/trajectory_eval.h"
 
 namespace scena::runtime {
 namespace {
@@ -135,10 +137,28 @@ PositionResolution PositionResolver::resolve(const ir::Position& position, Pose&
                            "asam.net:xosc:1.1.0:positioning.geodetic_datum_defined");
     }
 
-    // TrajectoryPosition (§TrajectoryPosition): needs the trajectory shape
-    // evaluation that lands with p2-s5.
-    if (std::holds_alternative<ir::TrajectoryPosition>(position)) {
-        return unsupported("trajectory-relative positions require trajectory shapes (p2-s5)");
+    // TrajectoryPosition (§TrajectoryPosition, §6.9.5): evaluate the referenced
+    // trajectory's geometry at arc length s, then step the lateral offset t
+    // along the left-normal of the tangent. Road-projected lateral distance
+    // (§6.4.6) is not needed here — the trajectory is its own reference line.
+    if (const auto* traj_pos = std::get_if<ir::TrajectoryPosition>(&position)) {
+        if (traj_pos->trajectory == nullptr) {
+            return PositionResolution{
+                Status::ValidationError, "trajectory position references no trajectory", {}};
+        }
+        const TrajectoryEvaluator evaluator(*traj_pos->trajectory);
+        if (!evaluator.ok()) {
+            return PositionResolution{evaluator.status().status, evaluator.status().message,
+                                      evaluator.status().rule_id};
+        }
+        const Pose on_curve = evaluator.pose_at_arclength(traj_pos->s);
+        // Left-normal of the tangent (heading + pi/2): (-sin h, cos h).
+        const SinCos tangent = det_sincos(on_curve.heading);
+        out.x = on_curve.x - traj_pos->t * tangent.sin;
+        out.y = on_curve.y + traj_pos->t * tangent.cos;
+        out.z = on_curve.z;
+        compose_orientation(on_curve.heading, 0.0, 0.0, traj_pos->orientation, out);
+        return ok();
     }
 
     // Unreachable: the variant has ten alternatives and all are handled above.

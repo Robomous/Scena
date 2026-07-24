@@ -64,8 +64,9 @@ struct PositionResolution {
 /// via deterministic `det_sincos`). The road-family variants (Road,
 /// RelativeRoad, Lane, RelativeLane, Route) require a road network and its
 /// s-axis tangents for orientation; they report Status::UnsupportedFeature
-/// until the road backend lands (p3-s4). TrajectoryPosition reports unsupported
-/// until trajectory shapes land (p2-s5). GeoPosition reports unsupported with
+/// until the road backend lands (p3-s4). TrajectoryPosition resolves through
+/// the trajectory evaluator (arc length s + lateral offset t on the tangent
+/// left-normal). GeoPosition reports unsupported with
 /// the rule `asam.net:xosc:1.1.0:positioning.geodetic_datum_defined`. Every
 /// variant either resolves or reports — none is silently wrong.
 class PositionResolver {

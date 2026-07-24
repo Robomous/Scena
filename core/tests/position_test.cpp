@@ -28,6 +28,7 @@
 
 #include "scena/entity_state.h"
 #include "scena/ir/position.h"
+#include "scena/ir/trajectory.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/position_resolver.h"
 #include "scena/status.h"
@@ -216,11 +217,33 @@ TEST(PositionResolverTest, GeoPositionCitesTheGeodeticRule) {
     EXPECT_EQ(result.rule_id, "asam.net:xosc:1.1.0:positioning.geodetic_datum_defined");
 }
 
-TEST(PositionResolverTest, TrajectoryPositionReportsUnsupported) {
+TEST(PositionResolverTest, TrajectoryPositionWithoutATrajectoryIsAContentDefect) {
     const PositionResolver resolver = resolver_over({});
     Pose pose;
     const auto result = resolver.resolve(ir::TrajectoryPosition{}, pose);
-    EXPECT_EQ(result.status, Status::UnsupportedFeature);
+    EXPECT_EQ(result.status, Status::ValidationError);
+}
+
+TEST(PositionResolverTest, TrajectoryPositionResolvesArcLengthAndLateralOffset) {
+    // A straight polyline along +x from (0,0) to (10,0). At s = 4 the point is
+    // (4, 0) heading 0; a lateral t = 3 steps to the left-normal -> (4, 3).
+    auto trajectory = std::make_shared<ir::Trajectory>();
+    trajectory->vertices().push_back(
+        ir::TrajectoryVertex{ir::WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    trajectory->vertices().push_back(
+        ir::TrajectoryVertex{ir::WorldPosition{10.0, 0.0, 0.0}, std::nullopt});
+    ir::TrajectoryPosition traj_pos;
+    traj_pos.s = 4.0;
+    traj_pos.t = 3.0;
+    traj_pos.trajectory = trajectory;
+
+    const PositionResolver resolver = resolver_over({});
+    Pose pose;
+    const auto result = resolver.resolve(traj_pos, pose);
+    ASSERT_EQ(result.status, Status::Ok);
+    EXPECT_NEAR(pose.x, 4.0, 1e-9);
+    EXPECT_NEAR(pose.y, 3.0, 1e-9);
+    EXPECT_NEAR(pose.heading, 0.0, 1e-12);
 }
 
 // Exhaustiveness: no variant may return Ok without filling a pose, and none may
@@ -239,7 +262,8 @@ TEST(PositionResolverTest, EveryVariantResolvesOrReports) {
         // report a missing reference; the rest report unsupported. What matters
         // is that the resolver always answers with a defined status.
         EXPECT_TRUE(result.status == Status::Ok || result.status == Status::SemanticError ||
-                    result.status == Status::UnsupportedFeature);
+                    result.status == Status::UnsupportedFeature ||
+                    result.status == Status::ValidationError);
     }
 }
 

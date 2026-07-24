@@ -1059,10 +1059,10 @@ scena::ir::Scenario make_trajectory_scenario() {
     trajectory.name = "dogleg";
     // Deliberately off-axis segments: the headings are irrational angles, so a
     // libm atan2 would show up as a last-ulp divergence.
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{37.0, 11.0, 0.0}, 4.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{58.0, -23.0, 0.0}, 9.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{95.5, 4.25, 0.0}, 17.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{37.0, 11.0, 0.0}, 4.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{58.0, -23.0, 0.0}, 9.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{95.5, 4.25, 0.0}, 17.0});
 
     Event follow;
     follow.name = "follow";
@@ -1073,6 +1073,70 @@ scena::ir::Scenario make_trajectory_scenario() {
     Maneuver maneuver;
     maneuver.name = "maneuver";
     maneuver.events.push_back(std::move(follow));
+    ManeuverGroup group;
+    group.name = "group";
+    group.maneuvers.push_back(std::move(maneuver));
+    Act act;
+    act.name = "act";
+    act.groups.push_back(std::move(group));
+    Story story;
+    story.name = "story";
+    story.acts.push_back(std::move(act));
+    scenario.storyboard.stories.push_back(std::move(story));
+    return scenario;
+}
+
+// GS-7 (trajectory-fidelity slalom, programmatic form): one engine-controlled
+// entity follows a general Euler spiral (curvature_prime != 0, so the Simpson
+// quadrature — not just the closed-form arc — is on the hot path), then an
+// off-axis rational quadratic NURBS. Exercises det_sincos (clothoid) and the de
+// Boor recursion (NURBS) inside drive_trajectory_eval; both reach EntityState,
+// so both are covered by the bit-identity contract (risk R3).
+scena::ir::Scenario make_clothoid_nurbs_scenario() {
+    using namespace scena::ir;
+    Scenario scenario;
+    scenario.name = "shape-determinism";
+
+    Entity ego;
+    ego.id = "ego";
+    ego.name = "ego";
+    ego.control_mode = ControlMode::EngineControlled;
+    scenario.entities.push_back(std::move(ego));
+    scenario.init_actions.push_back(std::make_shared<SpeedAction>("ego", 9.0));
+
+    Clothoid clothoid;
+    clothoid.start = WorldPosition{0.0, 0.0, 0.0};
+    clothoid.curvature = 0.02;
+    clothoid.curvature_prime = 0.0008;
+    clothoid.length = 70.0;
+
+    Nurbs nurbs;
+    nurbs.order = 3;
+    nurbs.control_points.push_back(
+        ControlPoint{WorldPosition{50.0, -20.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back(ControlPoint{WorldPosition{80.0, 15.0, 0.0}, std::nullopt, 0.6});
+    nurbs.control_points.push_back(
+        ControlPoint{WorldPosition{110.0, -5.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back(
+        ControlPoint{WorldPosition{140.0, 30.0, 0.0}, std::nullopt, 1.2});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0};
+
+    Event follow_clothoid;
+    follow_clothoid.name = "clothoid";
+    follow_clothoid.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(1.0));
+    follow_clothoid.actions.push_back(
+        std::make_shared<FollowTrajectoryAction>("ego", Trajectory{"spiral", false, clothoid}));
+
+    Event follow_nurbs;
+    follow_nurbs.name = "nurbs";
+    follow_nurbs.start_trigger = make_trigger(std::make_shared<SimulationTimeCondition>(12.0));
+    follow_nurbs.actions.push_back(
+        std::make_shared<FollowTrajectoryAction>("ego", Trajectory{"curve", false, nurbs}));
+
+    Maneuver maneuver;
+    maneuver.name = "maneuver";
+    maneuver.events.push_back(std::move(follow_clothoid));
+    maneuver.events.push_back(std::move(follow_nurbs));
     ManeuverGroup group;
     group.name = "group";
     group.maneuvers.push_back(std::move(maneuver));
@@ -1199,6 +1263,43 @@ TEST(DeterminismTest, TrajectorySegmentHeadingsAreHexPinned) {
     EXPECT_EQ(hex_bits(det_atan2(11.0 - 0.0, 37.0 - 0.0)), "3fd27e92b7d10a7a");
     EXPECT_EQ(hex_bits(det_atan2(-23.0 - 11.0, 58.0 - 37.0)), "bff047b02dbf07b0");
     EXPECT_EQ(hex_bits(det_atan2(4.25 - -23.0, 95.5 - 58.0)), "3fe41bd9d8b26dd0");
+}
+
+TEST(DeterminismTest, ClothoidAndNurbsFollowingIsBitIdentical) {
+    Engine engine_a;
+    Engine engine_b;
+    ASSERT_EQ(engine_a.init(make_clothoid_nurbs_scenario()), Status::Ok);
+    ASSERT_EQ(engine_b.init(make_clothoid_nurbs_scenario()), Status::Ok);
+
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 300; ++i) {
+        const double dt = pattern[i % 4];
+        SCOPED_TRACE("step " + std::to_string(i));
+        ASSERT_EQ(engine_a.step(dt), Status::Ok);
+        ASSERT_EQ(engine_b.step(dt), Status::Ok);
+        expect_bit_identical(engine_a, engine_b, "ego");
+    }
+    // Guard against a dead scenario: both shapes were followed to completion.
+    EXPECT_EQ(*engine_a.storyboard_element_state("story/act/group/maneuver/clothoid"),
+              scena::runtime::ElementState::Complete);
+    EXPECT_EQ(*engine_a.storyboard_element_state("story/act/group/maneuver/nurbs"),
+              scena::runtime::ElementState::Complete);
+}
+
+TEST(DeterminismTest, ClothoidNurbsFollowingSamplesAreHexPinned) {
+    // The clothoid quadrature (det_sincos) and the NURBS de Boor recursion feed
+    // EntityState, so their bits are part of the contract. Captured once from
+    // the local build; the 3-OS CI matrix proves they are universal.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_clothoid_nurbs_scenario()), Status::Ok);
+    const double pattern[] = {0.05, 0.13, 0.09, 0.07};
+    for (int i = 0; i < 40; ++i) { // ~3.4 s: mid-clothoid
+        ASSERT_EQ(engine.step(pattern[i % 4]), Status::Ok);
+    }
+    ASSERT_TRUE(engine.state("ego").has_value());
+    EXPECT_EQ(hex_bits(engine.state("ego")->x), "40344ac5bcdb8105");
+    EXPECT_EQ(hex_bits(engine.state("ego")->y), "4016eae37866f34c");
+    EXPECT_EQ(hex_bits(engine.state("ego")->heading), "3fe394e702581ef9");
 }
 
 TEST(DeterminismTest, GoldenScenario1CruiseBaselineIsBitIdentical) {
