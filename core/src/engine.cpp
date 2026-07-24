@@ -1392,15 +1392,15 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         }
         if (trajectory.closed) {
             // §Trajectory: a closed trajectory loops and the action then has no
-            // regular ending. The loop needs the other shapes' machinery, so it
-            // is deferred to p2-s5 and the open path is followed instead.
+            // regular ending. Closed-loop following is a deferred follow-up
+            // (ADR-0018); the open path is followed instead.
             warn(sink, Status::UnsupportedFeature,
                  "closed trajectories are not implemented yet (§6.9); the open path is followed",
                  path);
         }
         if (follow->following_mode() == ir::FollowingMode::Follow) {
             // ADR-0011 precedent: follow is accepted and executed as position
-            // until a steering controller exists (p2-s5).
+            // until a steering controller exists (deferred follow-up, ADR-0018).
             warn(sink, Status::UnsupportedFeature,
                  "trajectoryFollowingMode 'follow' is executed as 'position' (§6.9)", path);
         }
