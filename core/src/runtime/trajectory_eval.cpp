@@ -37,6 +37,15 @@ constexpr double kClothoidStep = 0.01;
 // memory; beyond it the step grows (coarser, still deterministic).
 constexpr std::size_t kMaxClothoidNodes = 1u << 20;
 
+// Samples in the NURBS arc-length table. The s->u inversion is linear within a
+// cell, so the arc-length error is O(1/kNurbsArcSamples^2); the evaluated point
+// is always exactly on the curve regardless. See ADR-0018.
+constexpr std::size_t kNurbsArcSamples = 4096;
+
+// per rule asam.net:xosc:1.0.0:routing.cardinality_of_control_points_in_nurbs
+constexpr const char* kRuleNurbsCardinality =
+    "asam.net:xosc:1.0.0:routing.cardinality_of_control_points_in_nurbs";
+
 [[nodiscard]] bool is_finite_position(const ir::WorldPosition& p) noexcept {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
@@ -230,14 +239,161 @@ Pose TrajectoryEvaluator::clothoid_pose(double s) const noexcept {
     return pose;
 }
 
-void TrajectoryEvaluator::build_nurbs(const ir::Nurbs& nurbs) {
-    // Filled in the NURBS commit (de Boor + arc-length table).
-    n_order_ = nurbs.order;
-    status_ = {Status::UnsupportedFeature, "NURBS evaluation not implemented yet", {}};
+TrajectoryEvaluator::HControlPoint
+TrajectoryEvaluator::de_boor(const std::vector<HControlPoint>& cp, const std::vector<double>& knots,
+                             unsigned int order, double u) noexcept {
+    const unsigned int p = order - 1;
+    const std::size_t n = cp.size() - 1;
+    // Clamp into the valid parameter domain [knots[p], knots[n+1]].
+    const double u0 = knots[p];
+    const double u1 = knots[n + 1];
+    u = std::clamp(u, u0, u1);
+    // Knot span l with knots[l] <= u <= knots[l+1], l in [p, n].
+    std::size_t l = p;
+    if (u >= u1) {
+        l = n;
+    } else {
+        while (l < n && u >= knots[l + 1]) {
+            ++l;
+        }
+    }
+    HControlPoint d[64];
+    for (unsigned int j = 0; j <= p; ++j) {
+        d[j] = cp[l - p + j];
+    }
+    for (unsigned int r = 1; r <= p; ++r) {
+        for (unsigned int j = p; j >= r; --j) {
+            const std::size_t i = l - p + j;
+            const double denom = knots[i + p - r + 1] - knots[i];
+            const double alpha = denom > 0.0 ? (u - knots[i]) / denom : 0.0;
+            const double beta = 1.0 - alpha;
+            d[j].x = beta * d[j - 1].x + alpha * d[j].x;
+            d[j].y = beta * d[j - 1].y + alpha * d[j].y;
+            d[j].z = beta * d[j - 1].z + alpha * d[j].z;
+            d[j].w = beta * d[j - 1].w + alpha * d[j].w;
+        }
+    }
+    return d[p];
 }
 
-Pose TrajectoryEvaluator::nurbs_pose(double /*s*/) const noexcept {
-    return Pose{c_x0_, c_y0_, c_z0_, 0.0, 0.0, 0.0};
+void TrajectoryEvaluator::build_nurbs(const ir::Nurbs& nurbs) {
+    n_order_ = nurbs.order;
+    const unsigned int order = nurbs.order;
+    const std::size_t cp_count = nurbs.control_points.size();
+    // §Nurbs cardinality: order >= 2, control_points >= order, knots ==
+    // control_points + order.
+    if (order < 2 || cp_count < order || nurbs.knots.size() != cp_count + order) {
+        status_ = {Status::ValidationError,
+                   "NURBS needs order>=2, control_points>=order and knots==control_points+order",
+                   kRuleNurbsCardinality};
+        return;
+    }
+    if (order - 1u >= 64u) { // de Boor scratch bound; realistic orders are 2..4
+        status_ = {Status::UnsupportedFeature, "NURBS order is too high", {}};
+        return;
+    }
+    for (std::size_t i = 0; i < nurbs.knots.size(); ++i) {
+        if (!std::isfinite(nurbs.knots[i]) || (i > 0 && nurbs.knots[i] < nurbs.knots[i - 1])) {
+            status_ = {Status::ValidationError, "NURBS knot vector must be finite and ascending",
+                       kRuleNurbsCardinality};
+            return;
+        }
+    }
+    n_cp_.reserve(cp_count);
+    for (const ir::ControlPoint& cp : nurbs.control_points) {
+        if (!is_finite_position(cp.position) || !std::isfinite(cp.weight) || cp.weight <= 0.0) {
+            status_ = {Status::ValidationError,
+                       "NURBS control point needs a finite position and a positive weight",
+                       {}};
+            return;
+        }
+        n_cp_.push_back(HControlPoint{cp.position.x * cp.weight, cp.position.y * cp.weight,
+                                      cp.position.z * cp.weight, cp.weight});
+    }
+    n_knots_ = nurbs.knots;
+
+    const unsigned int p = order - 1;
+    const double u0 = n_knots_[p];
+    const double u1 = n_knots_[cp_count]; // knots[n+1], n = cp_count - 1
+    if (!(u1 > u0)) {
+        status_ = {Status::ValidationError, "NURBS parameter domain is empty",
+                   kRuleNurbsCardinality};
+        return;
+    }
+
+    // Derivative homogeneous control points (a degree p-1 B-spline), for exact
+    // tangents: Q_i = p * (P_{i+1} - P_i) / (knots[i+p+1] - knots[i+1]).
+    if (p >= 1) {
+        n_dcp_.reserve(cp_count - 1);
+        for (std::size_t i = 0; i + 1 < cp_count; ++i) {
+            const double denom = n_knots_[i + p + 1] - n_knots_[i + 1];
+            const double scale = denom > 0.0 ? static_cast<double>(p) / denom : 0.0;
+            n_dcp_.push_back(HControlPoint{
+                (n_cp_[i + 1].x - n_cp_[i].x) * scale, (n_cp_[i + 1].y - n_cp_[i].y) * scale,
+                (n_cp_[i + 1].z - n_cp_[i].z) * scale, (n_cp_[i + 1].w - n_cp_[i].w) * scale});
+        }
+        n_dknots_.assign(n_knots_.begin() + 1, n_knots_.end() - 1);
+    }
+
+    // Arc-length table: fine uniform sampling in u, cumulative chord length.
+    // The s->u inversion is linear within a table cell, so the error is
+    // O(1/kNurbsArcSamples^2) in arc length; the evaluated point is always
+    // exactly on the curve (de Boor is exact). See ADR-0018.
+    n_u_.assign(kNurbsArcSamples + 1, 0.0);
+    n_arc_.assign(kNurbsArcSamples + 1, 0.0);
+    HControlPoint start = de_boor(n_cp_, n_knots_, order, u0);
+    double prev_x = start.x / start.w;
+    double prev_y = start.y / start.w;
+    double prev_z = start.z / start.w;
+    n_u_[0] = u0;
+    double cumulative = 0.0;
+    for (std::size_t j = 1; j <= kNurbsArcSamples; ++j) {
+        const double u =
+            u0 + (u1 - u0) * (static_cast<double>(j) / static_cast<double>(kNurbsArcSamples));
+        const HControlPoint h = de_boor(n_cp_, n_knots_, order, u);
+        const double x = h.x / h.w;
+        const double y = h.y / h.w;
+        const double z = h.z / h.w;
+        const double dx = x - prev_x;
+        const double dy = y - prev_y;
+        const double dz = z - prev_z;
+        cumulative += std::sqrt(dx * dx + dy * dy + dz * dz);
+        n_u_[j] = u;
+        n_arc_[j] = cumulative;
+        prev_x = x;
+        prev_y = y;
+        prev_z = z;
+    }
+    total_length_ = cumulative;
+}
+
+Pose TrajectoryEvaluator::nurbs_pose(double s) const noexcept {
+    Pose pose;
+    if (n_cp_.empty() || n_u_.size() < 2) {
+        return pose;
+    }
+    const double clamped = std::clamp(s, 0.0, total_length_);
+    // Invert the arc-length table linearly to get the curve parameter u.
+    const std::size_t j = segment_index(n_arc_, clamped);
+    const double span = n_arc_[j + 1] - n_arc_[j];
+    const double fraction = span > 0.0 ? (clamped - n_arc_[j]) / span : 0.0;
+    const double u = n_u_[j] + (n_u_[j + 1] - n_u_[j]) * fraction;
+
+    const HControlPoint c = de_boor(n_cp_, n_knots_, n_order_, u);
+    pose.x = c.x / c.w;
+    pose.y = c.y / c.w;
+    pose.z = c.z / c.w;
+
+    // Tangent of the rational curve: C' = (A'*w - A*w') / w^2, heading from the
+    // planar (x, y) components.
+    if (!n_dcp_.empty()) {
+        const HControlPoint d = de_boor(n_dcp_, n_dknots_, n_order_ - 1, u);
+        const double w = c.w;
+        const double dx = (d.x * w - c.x * d.w) / (w * w);
+        const double dy = (d.y * w - c.y * d.w) / (w * w);
+        pose.heading = det_atan2(dy, dx);
+    }
+    return pose;
 }
 
 Pose TrajectoryEvaluator::pose_at_arclength(double s) const noexcept {

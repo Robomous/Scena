@@ -55,7 +55,7 @@ struct TrajectoryEvalStatus {
 ///    O(h^4) per unit length with `h == kClothoidStep`; see trajectory_eval.cpp.
 ///  - NURBS: rational de Boor recursion (IEEE ops only, deterministic by
 ///    construction); arc length via a fixed-resolution cumulative table with a
-///    Newton refinement (added in the NURBS commit).
+///    linear s->u inversion; exact tangents from the rational derivative.
 class TrajectoryEvaluator {
 public:
     explicit TrajectoryEvaluator(const ir::Trajectory& trajectory);
@@ -98,22 +98,29 @@ private:
     double c_theta0_ = 0.0;
     double c_kappa0_ = 0.0;
     double c_kappa_prime_ = 0.0;
-    double c_ds_ = 0.0;              ///< quadrature node spacing (0 for arc/line)
-    std::vector<double> c_cum_x_;    ///< cumulative integral of cos(theta) at each node
-    std::vector<double> c_cum_y_;    ///< cumulative integral of sin(theta) at each node
+    double c_ds_ = 0.0;           ///< quadrature node spacing (0 for arc/line)
+    std::vector<double> c_cum_x_; ///< cumulative integral of cosine-theta at each node
+    std::vector<double> c_cum_y_; ///< cumulative integral of sine-theta at each node
 
-    // --- nurbs state (built in the NURBS commit) ---
+    // --- nurbs state ---
     struct HControlPoint {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
         double w = 1.0;
     };
+    /// de Boor evaluation of a homogeneous B-spline of the given `order` at
+    /// parameter `u`. IEEE ops only, so bit-identical across platforms.
+    [[nodiscard]] static HControlPoint de_boor(const std::vector<HControlPoint>& cp,
+                                               const std::vector<double>& knots, unsigned int order,
+                                               double u) noexcept;
     unsigned int n_order_ = 2;
-    std::vector<HControlPoint> n_cp_; ///< homogeneous control points (w-scaled)
-    std::vector<double> n_knots_;
-    std::vector<double> n_u_;         ///< arc-length table: parameter samples
-    std::vector<double> n_arc_;       ///< arc-length table: cumulative length at n_u_
+    std::vector<HControlPoint> n_cp_;  ///< homogeneous control points (w-scaled)
+    std::vector<double> n_knots_;      ///< knot vector
+    std::vector<HControlPoint> n_dcp_; ///< derivative homogeneous control points
+    std::vector<double> n_dknots_;     ///< derivative knot vector
+    std::vector<double> n_u_;          ///< arc-length table: parameter samples
+    std::vector<double> n_arc_;        ///< arc-length table: cumulative length at n_u_
 };
 
 } // namespace scena::runtime

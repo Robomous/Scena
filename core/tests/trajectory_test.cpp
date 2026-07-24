@@ -51,8 +51,9 @@ Trajectory polyline_of(std::vector<WorldPosition> points) {
 }
 
 TEST(TrajectoryEvaluatorTest, PolylineInterpolatesSegmentsAndTangents) {
-    const Trajectory trajectory = polyline_of(
-        {WorldPosition{0.0, 0.0, 0.0}, WorldPosition{10.0, 0.0, 0.0}, WorldPosition{10.0, 4.0, 2.0}});
+    const Trajectory trajectory =
+        polyline_of({WorldPosition{0.0, 0.0, 0.0}, WorldPosition{10.0, 0.0, 0.0},
+                     WorldPosition{10.0, 4.0, 2.0}});
     const TrajectoryEvaluator evaluator(trajectory);
     ASSERT_TRUE(evaluator.ok());
     EXPECT_DOUBLE_EQ(evaluator.total_length(), 10.0 + std::sqrt(16.0 + 4.0));
@@ -142,9 +143,7 @@ TEST(TrajectoryEvaluatorTest, GeneralClothoidMatchesAnIndependentFineReference) 
     const TrajectoryEvaluator evaluator(Trajectory{"spiral", false, clothoid});
     ASSERT_TRUE(evaluator.ok());
 
-    const auto theta = [&](double u) {
-        return 0.1 + 0.02 * u + 0.5 * 0.001 * u * u;
-    };
+    const auto theta = [&](double u) { return 0.1 + 0.02 * u + 0.5 * 0.001 * u * u; };
     for (const double s : {5.0, 17.3, 33.0, 40.0}) {
         // Reference: 200000-panel Simpson over [0, s].
         const int panels = 200000;
@@ -155,8 +154,10 @@ TEST(TrajectoryEvaluatorTest, GeneralClothoidMatchesAnIndependentFineReference) 
             const double a = k * h;
             const double m = a + h * 0.5;
             const double b = a + h;
-            ref_x += (h / 6.0) * (std::cos(theta(a)) + 4.0 * std::cos(theta(m)) + std::cos(theta(b)));
-            ref_y += (h / 6.0) * (std::sin(theta(a)) + 4.0 * std::sin(theta(m)) + std::sin(theta(b)));
+            ref_x +=
+                (h / 6.0) * (std::cos(theta(a)) + 4.0 * std::cos(theta(m)) + std::cos(theta(b)));
+            ref_y +=
+                (h / 6.0) * (std::sin(theta(a)) + 4.0 * std::sin(theta(m)) + std::sin(theta(b)));
         }
         const Pose pose = evaluator.pose_at_arclength(s);
         EXPECT_NEAR(pose.x, ref_x, 1e-8);
@@ -165,12 +166,76 @@ TEST(TrajectoryEvaluatorTest, GeneralClothoidMatchesAnIndependentFineReference) 
     }
 }
 
+Trajectory quarter_circle_nurbs(double radius) {
+    // Standard exact rational quadratic quarter circle: control polygon
+    // (R,0)-(R,R)-(0,R), middle weight cos(45deg) = 1/sqrt(2), knots {0,0,0,1,1,1}.
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 3;
+    const double w = 1.0 / std::sqrt(2.0);
+    nurbs.control_points.push_back({WorldPosition{radius, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back({WorldPosition{radius, radius, 0.0}, std::nullopt, w});
+    nurbs.control_points.push_back({WorldPosition{0.0, radius, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+    return Trajectory{"circle", false, nurbs};
+}
+
+TEST(TrajectoryEvaluatorTest, NurbsQuadraticTracesAnExactCircle) {
+    const double radius = 20.0;
+    const TrajectoryEvaluator evaluator(quarter_circle_nurbs(radius));
+    ASSERT_TRUE(evaluator.ok());
+    // Arc length of a quarter circle is (pi/2) * R.
+    EXPECT_NEAR(evaluator.total_length(), (kPi / 2.0) * radius, 1e-3);
+
+    for (int i = 0; i <= 40; ++i) {
+        const double s = evaluator.total_length() * (static_cast<double>(i) / 40.0);
+        const Pose pose = evaluator.pose_at_arclength(s);
+        // Every point lies exactly on the circle of radius R about the origin.
+        EXPECT_NEAR(std::sqrt(pose.x * pose.x + pose.y * pose.y), radius, 1e-9);
+    }
+    // Endpoints hit the first and last control points exactly.
+    const Pose begin = evaluator.pose_at_arclength(0.0);
+    EXPECT_NEAR(begin.x, radius, 1e-12);
+    EXPECT_NEAR(begin.y, 0.0, 1e-12);
+    const Pose end = evaluator.pose_at_arclength(evaluator.total_length());
+    EXPECT_NEAR(end.x, 0.0, 1e-9);
+    EXPECT_NEAR(end.y, radius, 1e-9);
+}
+
+TEST(TrajectoryEvaluatorTest, NurbsDegreeOneIsAStraightLine) {
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 2;
+    nurbs.control_points.push_back({WorldPosition{0.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back({WorldPosition{10.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 1.0, 1.0};
+    const TrajectoryEvaluator evaluator(Trajectory{"seg", false, nurbs});
+    ASSERT_TRUE(evaluator.ok());
+    EXPECT_NEAR(evaluator.total_length(), 10.0, 1e-9);
+    const Pose mid = evaluator.pose_at_arclength(5.0);
+    EXPECT_NEAR(mid.x, 5.0, 1e-9);
+    EXPECT_NEAR(mid.y, 0.0, 1e-12);
+    EXPECT_NEAR(mid.heading, 0.0, 1e-12);
+}
+
+TEST(TrajectoryEvaluatorTest, MalformedNurbsIsRejected) {
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 3;
+    // Only two control points for order 3 -> violates the cardinality rule.
+    nurbs.control_points.push_back({WorldPosition{0.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back({WorldPosition{1.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 1.0};
+    const TrajectoryEvaluator evaluator(Trajectory{"bad", false, nurbs});
+    EXPECT_FALSE(evaluator.ok());
+    EXPECT_EQ(evaluator.status().rule_id,
+              "asam.net:xosc:1.0.0:routing.cardinality_of_control_points_in_nurbs");
+}
+
 TEST(TrajectoryEvaluatorTest, EvaluatorSamplesAreHexPinned) {
     // Bit-identity anchors captured once from the local build; the 3-OS CI
     // matrix proves they are universal. Regenerate only on an intentional
     // numeric change (release-noted, breaks trace goldens).
-    const Trajectory poly = polyline_of(
-        {WorldPosition{0.0, 0.0, 0.0}, WorldPosition{10.0, 3.0, 0.0}, WorldPosition{4.0, 9.0, 1.0}});
+    const Trajectory poly =
+        polyline_of({WorldPosition{0.0, 0.0, 0.0}, WorldPosition{10.0, 3.0, 0.0},
+                     WorldPosition{4.0, 9.0, 1.0}});
     const TrajectoryEvaluator poly_eval(poly);
     const Pose p = poly_eval.pose_at_arclength(7.5);
     EXPECT_EQ(hex_bits(p.x), "401cbc1b1a54386b");
@@ -188,6 +253,12 @@ TEST(TrajectoryEvaluatorTest, EvaluatorSamplesAreHexPinned) {
     EXPECT_EQ(hex_bits(c.x), "403a6fb8696a3ff6");
     EXPECT_EQ(hex_bits(c.y), "4033bf9a264b29de");
     EXPECT_EQ(hex_bits(c.heading), "3ff4df3b645a1cac");
+
+    const TrajectoryEvaluator circle(quarter_circle_nurbs(20.0));
+    const Pose n = circle.pose_at_arclength(11.0);
+    EXPECT_EQ(hex_bits(n.x), "40310cecf0d8881c");
+    EXPECT_EQ(hex_bits(n.y), "4024e851363c0fe9");
+    EXPECT_EQ(hex_bits(n.heading), "4000f76410ae1817");
 }
 
 } // namespace
