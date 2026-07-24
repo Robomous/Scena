@@ -171,10 +171,13 @@ via `TimeReference`), on a straight road.
   values match analytically computed curve points within 1e-9 m on the same
   platform; curvature continuity checkpoints at segment joins.
 - **Role:** retires the trajectory numerical-fidelity risk (R3).
-- **Status (p5-s5):** does **not** run yet. p5-s5 landed the polyline half of
-  `FollowTrajectoryAction` (both `timeReference` modes, position following);
-  the clothoid and NURBS segments this scenario chains need p2-s5, so GS-7
-  moves with it.
+- **Status (p2-s5):** runs in its **programmatic form** and is a determinism
+  anchor (`determinism_test.cpp`, `make_clothoid_nurbs_scenario`): an
+  engine-controlled entity follows a general clothoid then a NURBS, bit-identical
+  across two engines and hex-pinned for the 3-OS matrix — retiring R3. The
+  analytic-fidelity checks (points on the circle within 1e-9) live in
+  `trajectory_test.cpp`. The full **XML-parsed** form still awaits the XML
+  frontend (P4), as with GS-4.
 
 ### GS-8 — Route through a junction
 
