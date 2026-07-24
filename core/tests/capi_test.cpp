@@ -16,6 +16,8 @@
 
 #include "scena/capi.h"
 
+#include <cmath>
+
 #include <gtest/gtest.h>
 
 TEST(CApiTest, VersionString) {
@@ -984,6 +986,82 @@ TEST(CApiTest, FollowTrajectoryActionMovesTheEntityAlongThePolyline) {
     // Teleported to the trajectory start, then 30 m along it.
     EXPECT_NEAR(state.x, 0.0, 1e-9);
     EXPECT_NEAR(state.y, 30.0, 1e-9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, FollowClothoidTrajectoryFollowsTheArc) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+    const double pi = 3.14159265358979323846;
+    // A quarter circle of radius 20 (curvature 0.05, curvature_prime 0).
+    ASSERT_EQ(scn_engine_add_follow_clothoid_trajectory_action(
+                  engine, "ego", "c1", 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 20.0 * (pi / 2.0), 0.0, 0.0,
+                  /*has_times=*/0, SCN_FOLLOWING_MODE_POSITION, /*timing=*/nullptr, 0.0, 1.0,
+                  SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // teleport to the origin
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // 10 m along the arc
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    const double dx = state.x;
+    const double dy = state.y - 20.0; // centre of curvature at (0, 20)
+    EXPECT_NEAR(std::sqrt(dx * dx + dy * dy), 20.0, 1e-9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, FollowNurbsTrajectoryFollowsTheCircle) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 0.0), SCN_OK);
+    const double w = 0.70710678118654752440; // 1 / sqrt(2)
+    const scn_nurbs_control_point control_points[] = {
+        {20.0, 0.0, 0.0, 0.0, 0, 1.0},
+        {20.0, 20.0, 0.0, 0.0, 0, w},
+        {0.0, 20.0, 0.0, 0.0, 0, 1.0},
+    };
+    const double knots[] = {0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+    ASSERT_EQ(scn_engine_add_follow_nurbs_trajectory_action(
+                  engine, "ego", "n1", 3, control_points, 3, knots, 6, /*closed=*/0,
+                  SCN_FOLLOWING_MODE_POSITION, /*timing=*/nullptr, 0.0, 1.0, SCN_PRIORITY_PARALLEL,
+                  1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK); // teleport to (20, 0)
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_NEAR(std::sqrt(state.x * state.x + state.y * state.y), 20.0, 1e-9);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, ShapeTrajectoryBuildersRejectNullAndMalformedArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Clothoid: NULL engine and NULL entity id.
+    EXPECT_EQ(scn_engine_add_follow_clothoid_trajectory_action(
+                  nullptr, "ego", "c", 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 10.0, 0.0, 0.0, 0,
+                  SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_follow_clothoid_trajectory_action(
+                  engine, nullptr, "c", 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 10.0, 0.0, 0.0, 0,
+                  SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    // NURBS: NULL control points, and a cardinality violation (2 points, order 3).
+    const scn_nurbs_control_point cps[] = {{0.0, 0.0, 0.0, 0.0, 0, 1.0},
+                                           {1.0, 0.0, 0.0, 0.0, 0, 1.0}};
+    const double knots[] = {0.0, 0.0, 0.0, 1.0, 1.0};
+    EXPECT_EQ(scn_engine_add_follow_nurbs_trajectory_action(
+                  engine, "ego", "n", 3, nullptr, 3, knots, 6, 0, SCN_FOLLOWING_MODE_POSITION,
+                  nullptr, 0.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_follow_nurbs_trajectory_action(engine, "ego", "n", 3, cps, 2, knots, 5,
+                                                            0, SCN_FOLLOWING_MODE_POSITION, nullptr,
+                                                            0.0, 0.0, SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
     scn_engine_destroy(engine);
 }
 
