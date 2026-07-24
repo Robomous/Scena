@@ -972,6 +972,61 @@ NB_MODULE(_scena, m) {
         .def_rw("position", &ir::TrajectoryVertex::position)
         .def_rw("time", &ir::TrajectoryVertex::time);
 
+    nb::class_<ir::Polyline>(m, "Polyline")
+        .def(
+            "__init__",
+            [](ir::Polyline* self, std::vector<ir::TrajectoryVertex> vertices) {
+                new (self) ir::Polyline{std::move(vertices)};
+            },
+            "vertices"_a = std::vector<ir::TrajectoryVertex>{},
+            "A concatenation of straight segments across >= 2 vertices (§Polyline).")
+        .def_rw("vertices", &ir::Polyline::vertices);
+
+    nb::class_<ir::Clothoid>(m, "Clothoid")
+        .def(
+            "__init__",
+            [](ir::Clothoid* self, ir::WorldPosition start, double curvature,
+               double curvature_prime, double length, std::optional<double> start_time,
+               std::optional<double> stop_time) {
+                new (self)
+                    ir::Clothoid{start, curvature, curvature_prime, length, start_time, stop_time};
+            },
+            "start"_a = ir::WorldPosition{}, "curvature"_a = 0.0, "curvature_prime"_a = 0.0,
+            "length"_a = 0.0, "start_time"_a = nb::none(), "stop_time"_a = nb::none(),
+            "An Euler spiral; curvature_prime == 0 is a circular arc, both 0 a line (§Clothoid).")
+        .def_rw("start", &ir::Clothoid::start)
+        .def_rw("curvature", &ir::Clothoid::curvature)
+        .def_rw("curvature_prime", &ir::Clothoid::curvature_prime)
+        .def_rw("length", &ir::Clothoid::length)
+        .def_rw("start_time", &ir::Clothoid::start_time)
+        .def_rw("stop_time", &ir::Clothoid::stop_time);
+
+    nb::class_<ir::ControlPoint>(m, "ControlPoint")
+        .def(
+            "__init__",
+            [](ir::ControlPoint* self, ir::WorldPosition position, std::optional<double> time,
+               double weight) { new (self) ir::ControlPoint{position, time, weight}; },
+            "position"_a = ir::WorldPosition{}, "time"_a = nb::none(), "weight"_a = 1.0,
+            "One control point of a NURBS trajectory (§ControlPoint).")
+        .def_rw("position", &ir::ControlPoint::position)
+        .def_rw("time", &ir::ControlPoint::time)
+        .def_rw("weight", &ir::ControlPoint::weight);
+
+    nb::class_<ir::Nurbs>(m, "Nurbs")
+        .def(
+            "__init__",
+            [](ir::Nurbs* self, unsigned int order, std::vector<ir::ControlPoint> control_points,
+               std::vector<double> knots) {
+                new (self) ir::Nurbs{order, std::move(control_points), std::move(knots)};
+            },
+            "order"_a = 2, "control_points"_a = std::vector<ir::ControlPoint>{},
+            "knots"_a = std::vector<double>{},
+            "A NURBS of order = degree + 1; control_points >= order, knots == "
+            "control_points + order (§Nurbs).")
+        .def_rw("order", &ir::Nurbs::order)
+        .def_rw("control_points", &ir::Nurbs::control_points)
+        .def_rw("knots", &ir::Nurbs::knots);
+
     nb::class_<ir::Trajectory>(m, "Trajectory")
         .def(
             "__init__",
@@ -982,8 +1037,21 @@ NB_MODULE(_scena, m) {
             "name"_a = std::string(), "closed"_a = false,
             "vertices"_a = std::vector<ir::TrajectoryVertex>{},
             "A polyline path; at least two vertices (§Trajectory, §Polyline).")
+        .def(
+            "__init__",
+            [](ir::Trajectory* self, std::string name, bool closed, ir::Shape shape) {
+                new (self) ir::Trajectory{std::move(name), closed, std::move(shape)};
+            },
+            "name"_a, "closed"_a, "shape"_a,
+            "A trajectory over a polyline, clothoid or NURBS shape (§Shape).")
         .def_rw("name", &ir::Trajectory::name)
         .def_rw("closed", &ir::Trajectory::closed)
+        .def_prop_rw(
+            "shape", [](const ir::Trajectory& trajectory) { return trajectory.shape; },
+            [](ir::Trajectory& trajectory, ir::Shape shape) {
+                trajectory.shape = std::move(shape);
+            },
+            "The trajectory geometry (Polyline, Clothoid or Nurbs).")
         .def_prop_rw(
             "vertices", [](const ir::Trajectory& trajectory) { return trajectory.vertices(); },
             [](ir::Trajectory& trajectory, std::vector<ir::TrajectoryVertex> vertices) {
