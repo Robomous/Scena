@@ -970,9 +970,9 @@ TEST(LateralDistanceTest, ADeletedReferenceStopsTheActionMidRun) {
 TEST(LateralDistanceTest, ATrajectoryStopsLateralKeeping) {
     scena::ir::Trajectory path;
     path.name = "away";
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{500.0, 0.0, 0.0}, std::nullopt});
 
     std::vector<scena::ir::Event> events;
@@ -1028,9 +1028,9 @@ TEST(LateralSupersessionTest, ATrajectoryAndALateralActionStopEachOther) {
     // since both assign a lateral control strategy (Table 10).
     scena::ir::Trajectory path;
     path.name = "shift";
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{200.0, -6.0, 0.0}, std::nullopt});
 
     std::vector<scena::ir::Event> events;
@@ -1055,9 +1055,9 @@ TEST(LateralSupersessionTest, ATrajectoryAndALateralActionStopEachOther) {
 TEST(LateralSupersessionTest, ALateralActionStopsARunningTrajectory) {
     scena::ir::Trajectory path;
     path.name = "long";
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
-    path.vertices.push_back(
+    path.vertices().push_back(
         scena::ir::TrajectoryVertex{WorldPosition{1000.0, 0.0, 0.0}, std::nullopt});
 
     std::vector<scena::ir::Event> events;

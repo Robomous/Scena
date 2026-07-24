@@ -984,11 +984,16 @@ NB_MODULE(_scena, m) {
             "A polyline path; at least two vertices (§Trajectory, §Polyline).")
         .def_rw("name", &ir::Trajectory::name)
         .def_rw("closed", &ir::Trajectory::closed)
-        .def_rw("vertices", &ir::Trajectory::vertices)
+        .def_prop_rw(
+            "vertices", [](const ir::Trajectory& trajectory) { return trajectory.vertices(); },
+            [](ir::Trajectory& trajectory, std::vector<ir::TrajectoryVertex> vertices) {
+                trajectory.shape = ir::Polyline{std::move(vertices)};
+            },
+            "The polyline vertices (requires a polyline trajectory).")
         .def(
             "add_vertex",
             [](ir::Trajectory& trajectory, const ir::TrajectoryVertex& vertex) {
-                trajectory.vertices.push_back(vertex);
+                trajectory.vertices().push_back(vertex);
             },
             "vertex"_a);
 

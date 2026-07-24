@@ -1297,59 +1297,68 @@ void validate_action_content(const ir::Action& action, const std::string& path,
     }
     if (const auto* follow = dynamic_cast<const ir::FollowTrajectoryAction*>(&action)) {
         const ir::Trajectory& trajectory = follow->trajectory();
-        // §Polyline: an ordered chain of at least two vertices.
-        if (trajectory.vertices.size() < 2) {
-            error(sink, Status::ValidationError, "trajectory needs at least two vertices", path);
-            return;
-        }
-        double arc_length = 0.0;
-        bool finite_geometry = true;
-        for (std::size_t index = 0; index < trajectory.vertices.size(); ++index) {
-            const ir::WorldPosition& position = trajectory.vertices[index].position;
-            if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
-                !std::isfinite(position.z)) {
-                error(sink, Status::ValidationError, "trajectory vertex position must be finite",
-                      path + "/vertex[" + std::to_string(index) + "]");
-                finite_geometry = false;
-                continue;
+        // Clothoid and NURBS shape validation is added with the shape numerics
+        // (C4); only the polyline is reachable through the public API here.
+        if (const auto* polyline = std::get_if<ir::Polyline>(&trajectory.shape)) {
+            // §Polyline: an ordered chain of at least two vertices.
+            if (polyline->vertices.size() < 2) {
+                error(sink, Status::ValidationError, "trajectory needs at least two vertices",
+                      path);
+                return;
             }
-            if (index > 0) {
-                arc_length += segment_length(trajectory.vertices[index - 1].position, position);
-            }
-        }
-        if (follow->time_reference().has_value()) {
-            const ir::Timing& timing = *follow->time_reference();
-            // §Timing: scale is Range ]0..inf[, offset is finite.
-            if (!(timing.scale > 0.0) || !std::isfinite(timing.scale) ||
-                !std::isfinite(timing.offset)) {
-                error(sink, Status::ValidationError,
-                      "trajectory timing needs a positive finite scale and a finite offset", path);
-            }
-            // per rule asam.net:xosc:1.0.0:routing.trajectory_timing_exists_if_requested
-            std::optional<double> previous;
-            for (std::size_t index = 0; index < trajectory.vertices.size(); ++index) {
-                const std::optional<double>& time = trajectory.vertices[index].time;
-                if (!time.has_value() || !std::isfinite(*time)) {
+            double arc_length = 0.0;
+            bool finite_geometry = true;
+            for (std::size_t index = 0; index < polyline->vertices.size(); ++index) {
+                const ir::WorldPosition& position = polyline->vertices[index].position;
+                if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+                    !std::isfinite(position.z)) {
                     error(sink, Status::ValidationError,
-                          "trajectory timing requires a time on every vertex",
-                          path + "/vertex[" + std::to_string(index) + "]", kRuleTrajectoryTiming);
-                    break;
-                }
-                if (previous.has_value() && !(*time > *previous)) {
-                    error(sink, Status::ValidationError,
-                          "trajectory vertex times must be strictly increasing",
+                          "trajectory vertex position must be finite",
                           path + "/vertex[" + std::to_string(index) + "]");
-                    break;
+                    finite_geometry = false;
+                    continue;
                 }
-                previous = time;
+                if (index > 0) {
+                    arc_length += segment_length(polyline->vertices[index - 1].position, position);
+                }
             }
-        }
-        // per rule asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length
-        const double offset = follow->initial_distance_offset();
-        if (!std::isfinite(offset) || offset < 0.0 || (finite_geometry && offset > arc_length)) {
-            error(sink, Status::ValidationError,
-                  "trajectory initialDistanceOffset must be in range [0..arclength]", path,
-                  kRuleTrajectoryOffset);
+            if (follow->time_reference().has_value()) {
+                const ir::Timing& timing = *follow->time_reference();
+                // §Timing: scale is Range ]0..inf[, offset is finite.
+                if (!(timing.scale > 0.0) || !std::isfinite(timing.scale) ||
+                    !std::isfinite(timing.offset)) {
+                    error(sink, Status::ValidationError,
+                          "trajectory timing needs a positive finite scale and a finite offset",
+                          path);
+                }
+                // per rule asam.net:xosc:1.0.0:routing.trajectory_timing_exists_if_requested
+                std::optional<double> previous;
+                for (std::size_t index = 0; index < polyline->vertices.size(); ++index) {
+                    const std::optional<double>& time = polyline->vertices[index].time;
+                    if (!time.has_value() || !std::isfinite(*time)) {
+                        error(sink, Status::ValidationError,
+                              "trajectory timing requires a time on every vertex",
+                              path + "/vertex[" + std::to_string(index) + "]",
+                              kRuleTrajectoryTiming);
+                        break;
+                    }
+                    if (previous.has_value() && !(*time > *previous)) {
+                        error(sink, Status::ValidationError,
+                              "trajectory vertex times must be strictly increasing",
+                              path + "/vertex[" + std::to_string(index) + "]");
+                        break;
+                    }
+                    previous = time;
+                }
+            }
+            // per rule asam.net:xosc:1.1.0:routing.offset_should_be_less_than_trajectory_length
+            const double offset = follow->initial_distance_offset();
+            if (!std::isfinite(offset) || offset < 0.0 ||
+                (finite_geometry && offset > arc_length)) {
+                error(sink, Status::ValidationError,
+                      "trajectory initialDistanceOffset must be in range [0..arclength]", path,
+                      kRuleTrajectoryOffset);
+            }
         }
         if (trajectory.closed) {
             // §Trajectory: a closed trajectory loops and the action then has no
@@ -3618,7 +3627,16 @@ runtime::ActionOutcome Engine::drive_trajectory(const ir::FollowTrajectoryAction
 
     // --- install, on the first fire -------------------------------------
     if (!record.trajectory.has_value() || record.trajectory->action != &action) {
-        const std::vector<ir::TrajectoryVertex>& vertices = action.trajectory().vertices;
+        // Clothoid/NURBS shapes drive through the evaluator (C4); the polyline
+        // keeps its own sampled fast path so its determinism traces are stable.
+        const auto* polyline = std::get_if<ir::Polyline>(&action.trajectory().shape);
+        if (polyline == nullptr) {
+            warn(diagnostics_, Status::UnsupportedFeature,
+                 "trajectory shape is not implemented yet; action completed",
+                 "entities/" + action.entity_id());
+            return runtime::ActionOutcome::Complete;
+        }
+        const std::vector<ir::TrajectoryVertex>& vertices = polyline->vertices;
         if (vertices.size() < 2) {
             // init() rejects this; defensive, so a hand-built scenario cannot
             // walk off the end of the vertex list.

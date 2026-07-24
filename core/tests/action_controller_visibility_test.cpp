@@ -344,8 +344,8 @@ TEST(ActivateControllerTest, ReactivationResumesNormalDispatch) {
 
 TEST(ActivateControllerTest, DeactivatingLateralStopsAndSuppressesTrajectoryFollowing) {
     Trajectory trajectory;
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 500.0, 0.0}, std::nullopt});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 500.0, 0.0}, std::nullopt});
     std::vector<scena::ir::Event> events;
     events.push_back(
         timed_event("follow", 1.0, std::make_shared<FollowTrajectoryAction>("ego", trajectory)));

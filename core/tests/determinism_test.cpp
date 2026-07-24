@@ -1059,10 +1059,10 @@ scena::ir::Scenario make_trajectory_scenario() {
     trajectory.name = "dogleg";
     // Deliberately off-axis segments: the headings are irrational angles, so a
     // libm atan2 would show up as a last-ulp divergence.
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{37.0, 11.0, 0.0}, 4.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{58.0, -23.0, 0.0}, 9.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{95.5, 4.25, 0.0}, 17.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{37.0, 11.0, 0.0}, 4.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{58.0, -23.0, 0.0}, 9.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{95.5, 4.25, 0.0}, 17.0});
 
     Event follow;
     follow.name = "follow";

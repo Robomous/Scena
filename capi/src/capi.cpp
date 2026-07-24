@@ -853,9 +853,9 @@ scn_status scn_engine_add_follow_trajectory_action(
         scena::ir::Trajectory trajectory;
         trajectory.name = name != nullptr ? name : "";
         trajectory.closed = closed != 0;
-        trajectory.vertices.reserve(vertex_count);
+        trajectory.vertices().reserve(vertex_count);
         for (size_t index = 0; index < vertex_count; ++index) {
-            trajectory.vertices.push_back(scena::ir::TrajectoryVertex{
+            trajectory.vertices().push_back(scena::ir::TrajectoryVertex{
                 scena::ir::WorldPosition{vertices[index].x, vertices[index].y, vertices[index].z},
                 vertices[index].has_time != 0 ? std::optional<double>(vertices[index].time)
                                               : std::nullopt});

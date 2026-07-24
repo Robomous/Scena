@@ -308,21 +308,21 @@ TEST(RoutingActionIrTest, AcquirePositionCarriesTheTarget) {
 TEST(RoutingActionIrTest, FollowTrajectoryDefaultsToPositionModeWithoutTiming) {
     Trajectory trajectory;
     trajectory.name = "t1";
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{10.0, 0.0, 0.0}, std::nullopt});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{10.0, 0.0, 0.0}, std::nullopt});
     const FollowTrajectoryAction action("ego", trajectory);
     EXPECT_EQ(action.kind(), "FollowTrajectoryAction");
     EXPECT_EQ(action.following_mode(), FollowingMode::Position);
     EXPECT_FALSE(action.time_reference().has_value()); // §TimeReference "None"
     EXPECT_DOUBLE_EQ(action.initial_distance_offset(), 0.0);
-    ASSERT_EQ(action.trajectory().vertices.size(), 2U);
+    ASSERT_EQ(action.trajectory().vertices().size(), 2U);
     EXPECT_FALSE(action.trajectory().closed);
 }
 
 TEST(RoutingActionIrTest, FollowTrajectoryCarriesTimingAndOffset) {
     Trajectory trajectory;
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{10.0, 0.0, 0.0}, 2.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, 0.0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{10.0, 0.0, 0.0}, 2.0});
     const Timing timing{ReferenceContext::Relative, 2.0, 0.5};
     const FollowTrajectoryAction action("ego", trajectory, FollowingMode::Follow, timing, 2.5);
     ASSERT_TRUE(action.time_reference().has_value());
@@ -331,6 +331,48 @@ TEST(RoutingActionIrTest, FollowTrajectoryCarriesTimingAndOffset) {
     EXPECT_DOUBLE_EQ(action.time_reference()->offset, 0.5);
     EXPECT_EQ(action.following_mode(), FollowingMode::Follow);
     EXPECT_DOUBLE_EQ(action.initial_distance_offset(), 2.5);
+}
+
+TEST(TrajectoryShapeIrTest, DefaultTrajectoryHoldsAnEmptyPolyline) {
+    const Trajectory trajectory;
+    ASSERT_TRUE(std::holds_alternative<scena::ir::Polyline>(trajectory.shape));
+    EXPECT_TRUE(trajectory.vertices().empty());
+}
+
+TEST(TrajectoryShapeIrTest, ClothoidCarriesCurvatureAndLength) {
+    scena::ir::Clothoid clothoid;
+    clothoid.start = WorldPosition{1.0, 2.0, 0.0};
+    clothoid.curvature = 0.05;
+    clothoid.curvature_prime = 0.001;
+    clothoid.length = 40.0;
+    const Trajectory trajectory{"spiral", false, clothoid};
+    ASSERT_TRUE(std::holds_alternative<scena::ir::Clothoid>(trajectory.shape));
+    const auto& shape = std::get<scena::ir::Clothoid>(trajectory.shape);
+    EXPECT_DOUBLE_EQ(shape.curvature, 0.05);
+    EXPECT_DOUBLE_EQ(shape.curvature_prime, 0.001);
+    EXPECT_DOUBLE_EQ(shape.length, 40.0);
+    EXPECT_DOUBLE_EQ(shape.start.x, 1.0);
+    EXPECT_FALSE(shape.start_time.has_value());
+}
+
+TEST(TrajectoryShapeIrTest, NurbsCarriesOrderControlPointsAndKnots) {
+    scena::ir::Nurbs nurbs;
+    nurbs.order = 3;
+    nurbs.control_points.push_back(
+        scena::ir::ControlPoint{WorldPosition{0.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.control_points.push_back(
+        scena::ir::ControlPoint{WorldPosition{1.0, 1.0, 0.0}, std::nullopt, 0.5});
+    nurbs.control_points.push_back(
+        scena::ir::ControlPoint{WorldPosition{2.0, 0.0, 0.0}, std::nullopt, 1.0});
+    nurbs.knots = {0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+    const Trajectory trajectory{"curve", false, nurbs};
+    ASSERT_TRUE(std::holds_alternative<scena::ir::Nurbs>(trajectory.shape));
+    const auto& shape = std::get<scena::ir::Nurbs>(trajectory.shape);
+    EXPECT_EQ(shape.order, 3U);
+    ASSERT_EQ(shape.control_points.size(), 3U);
+    EXPECT_DOUBLE_EQ(shape.control_points[1].weight, 0.5);
+    // knots.size() == control_points.size() + order.
+    EXPECT_EQ(shape.knots.size(), shape.control_points.size() + shape.order);
 }
 
 TEST(ControllerActionIrTest, AssignControllerCarriesActivationFlags) {

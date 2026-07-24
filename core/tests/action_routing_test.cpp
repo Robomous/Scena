@@ -125,9 +125,9 @@ Trajectory make_corner_trajectory(std::optional<double> t0 = std::nullopt,
                                   std::optional<double> t2 = std::nullopt) {
     Trajectory trajectory;
     trajectory.name = "corner";
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, t0});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{100.0, 0.0, 0.0}, t1});
-    trajectory.vertices.push_back(TrajectoryVertex{WorldPosition{100.0, 100.0, 0.0}, t2});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, t0});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{100.0, 0.0, 0.0}, t1});
+    trajectory.vertices().push_back(TrajectoryVertex{WorldPosition{100.0, 100.0, 0.0}, t2});
     return trajectory;
 }
 
@@ -542,7 +542,7 @@ scena::ir::Scenario make_trajectory_scenario(std::shared_ptr<scena::ir::Action> 
 
 TEST(FollowTrajectoryValidationTest, NeedsAtLeastTwoVertices) {
     Trajectory single;
-    single.vertices.push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
+    single.vertices().push_back(TrajectoryVertex{WorldPosition{0.0, 0.0, 0.0}, std::nullopt});
     Engine engine;
     EXPECT_EQ(engine.init(make_trajectory_scenario(
                   std::make_shared<FollowTrajectoryAction>("ego", single))),
