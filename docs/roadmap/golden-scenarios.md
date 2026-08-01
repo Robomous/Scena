@@ -12,10 +12,14 @@ unit and conformance tests.
   this suite is authored from the ASAM specification texts (or adapted from
   the spec's own examples) — never taken from any other project's corpus
   (ADR-0002). Maps are small hand-written `.xodr` files.
-- **Planned layout** (created by sprint p6-s4, extended by later sprints):
+- **Layout** (live as of p6-s4; extended by later sprints):
   - `tests/golden/scenarios/` — `.xosc` and `.osc` files, GS-numbered.
   - `tests/golden/catalogs/`, `tests/golden/maps/` — shared fixtures.
-  - `tests/golden/traces/<platform>/` — committed reference traces.
+  - `tests/golden/traces/reference/` — the committed reference traces.
+    **One shared set, not one per platform**: determinism is bit-identical
+    across platforms, so a per-platform reference would be a place for a
+    divergence to hide. Comparing every platform against the same bytes makes
+    the golden CI job a cross-platform determinism check too.
   - `scripts/golden.py` — runs a scenario via `scena-run`, compares traces.
 - **Two validation modes:**
   1. **Determinism (bit-exact):** re-running a scenario with the same step
@@ -35,8 +39,9 @@ unit and conformance tests.
   in committed files (results are recorded generically as "external
   reference player"). Divergences are triaged against the specification
   text, which is the only arbiter.
-- **CI vs maintainer:** CI runs every golden scenario on all three platforms
-  and enforces bit-identity + semantic assertions on each merge after p6-s4.
+- **CI vs maintainer:** the `golden` CI job runs every golden scenario on all
+  three platforms and enforces bit-identity + semantic assertions on each
+  merge (live as of p6-s4).
   The release gate additionally requires the maintainer to **hand-execute**
   the full suite on macOS, Linux, and Windows and record the results in
   `docs/roadmap/golden-scenarios-results.md` (template below).
@@ -52,10 +57,16 @@ Hand-execution procedure (identical on macOS/Linux/Windows, from the build
 tree):
 
 ```sh
-scena-run tests/golden/scenarios/<GS-file> \
-  --dt 0.01 --duration <T> --trace out/<gs>.csv
-python scripts/golden.py verify <gs> out/<gs>.csv   # bit-compare + checkpoints
+python scripts/golden.py check-all          # the whole suite, or:
+python scripts/golden.py run gs1            # one scenario -> build/golden-out/gs1.csv
+python scripts/golden.py verify gs1 build/golden-out/gs1.csv
 ```
+
+`scripts/golden.py list` prints the suite with what each scenario exercises.
+Durations, step sizes and checkpoints live in the script, so the command line
+above is the same for every scenario. See
+[`docs/user-guide/scena-run.md`](../user-guide/scena-run.md) for the CLI
+itself.
 
 ## The scenarios
 
@@ -75,11 +86,12 @@ linear transition dynamics.
   duration ±1 step; heading constant.
 - **Role:** smoke test and determinism anchor; first scenario ported to
   every new platform.
-- **Status:** the scenario body runs via the C++ API as of p5-s4 —
-  `action_longitudinal_test` (functional: target reached, heading constant,
-  forward motion) and `determinism_test` (bit-identity anchor across a
-  non-uniform step sequence). Full `scena-run` execution with a committed
-  reference trace is p6-s4.
+- **Status:** **live** as of p6-s4 —
+  `tests/golden/scenarios/gs1-cruise-baseline.xosc`, run by the `golden` CI job
+  on all three platforms against a committed reference trace, with four
+  checkpoints (cruise speed before the trigger, target reached after the ramp,
+  heading and lateral position constant). Also covered at unit level by
+  `action_longitudinal_test` and `determinism_test`.
 
 ### GS-2 — Cut-in
 
@@ -97,9 +109,11 @@ dynamics) into ego's lane, then an absolute `SpeedAction` slows it.
 - **Status:** runs via the C++ API as of **p2-s3**
   (`make_gs2_scenario` in `core/tests/determinism_test.cpp`, with a
   bit-identity test and a hex-pinned final trace; the Python flavour is
-  `python/examples/lane_change.py`). Lane spacing is the flat-world default
-  lane width, so the "lane id changes exactly once" criterion is pending a
-  road backend (#23); the full `scena-run` trace lands at p6-s4.
+  `python/examples/lane_change.py`). **Live in the golden suite** as of p6-s4 —
+  `gs2-cut-in.xosc`, with checkpoints on the lateral offset before and after the
+  lane change and on the post-cut-in speed. Lane spacing is the flat-world
+  default lane width, so the "lane id changes exactly once" criterion still
+  awaits a road backend in the fixture (#23).
 
 ### GS-3 — Overtake
 

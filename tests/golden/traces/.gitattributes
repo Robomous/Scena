@@ -1,0 +1,9 @@
+# Reference traces are byte-exact artifacts, not text.
+#
+# The golden suite compares them byte-for-byte against what scena-run writes,
+# and scena-run writes LF on every platform deliberately. Without this, git's
+# end-of-line translation would rewrite the committed references to CRLF on a
+# Windows checkout and every scenario would "differ in trailing bytes" while
+# every number matched — which is exactly what CI reported before this file.
+*.csv -text
+*.json -text

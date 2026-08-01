@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored from the ASAM OpenSCENARIO XML specification text (ADR-0002). -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-01T00:00:00"
+              description="GS-5 pedestrian crossing" author="Scena golden suite"/>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+    <ScenarioObject name="walker"><Pedestrian name="walker_p" mass="80" pedestrianCategory="pedestrian">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="0.6" length="0.4" height="1.8"/></BoundingBox>
+    </Pedestrian></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions>
+    <Private entityRef="ego">
+      <PrivateAction><TeleportAction>
+        <Position><WorldPosition x="0" y="0.0" z="0" h="0.0"/></Position>
+      </TeleportAction></PrivateAction>
+      <PrivateAction><LongitudinalAction><SpeedAction>
+        <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+        <SpeedActionTarget><AbsoluteTargetSpeed value="14"/></SpeedActionTarget>
+      </SpeedAction></LongitudinalAction></PrivateAction>
+    </Private>
+    <Private entityRef="walker">
+      <PrivateAction><TeleportAction>
+        <Position><WorldPosition x="90" y="-6" z="0" h="1.5707963267948966"/></Position>
+      </TeleportAction></PrivateAction>
+      <PrivateAction><LongitudinalAction><SpeedAction>
+        <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+        <SpeedActionTarget><AbsoluteTargetSpeed value="1.4"/></SpeedActionTarget>
+      </SpeedAction></LongitudinalAction></PrivateAction>
+    </Private>
+    </Actions></Init>
+  <Story name="story"><Act name="act">
+      <ManeuverGroup name="group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="maneuver">
+        <Event name="brake" priority="parallel">
+          <Action name="brake_action"><PrivateAction><LongitudinalAction><SpeedAction>
+            <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time" value="3"/>
+            <SpeedActionTarget><AbsoluteTargetSpeed value="0"/></SpeedActionTarget>
+          </SpeedAction></LongitudinalAction></PrivateAction></Action>
+          <StartTrigger><ConditionGroup>
+            <Condition name="at4" delay="0" conditionEdge="none"><ByValueCondition>
+              <SimulationTimeCondition value="4" rule="greaterThan"/>
+            </ByValueCondition></Condition>
+          </ConditionGroup></StartTrigger>
+        </Event>
+        </Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+  </Storyboard>
+</OpenSCENARIO>
