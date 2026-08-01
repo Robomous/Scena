@@ -210,10 +210,10 @@ def scena_run_binary() -> Path:
     override = os.environ.get("SCENA_RUN")
     if override:
         return Path(override)
-    names = ["scena-run", "scena-run.exe"]
-    for directory in (REPO / "build" / "bin", REPO / "build", REPO / "build" / "Release" / "bin"):
-        for name in names:
-            candidate = directory / name
+    # A multi-config generator (Visual Studio) puts the binary under a
+    # per-configuration directory, so search rather than guess the layout.
+    for name in ("scena-run", "scena-run.exe"):
+        for candidate in sorted((REPO / "build").rglob(name)):
             if candidate.is_file():
                 return candidate
     found = shutil.which("scena-run")

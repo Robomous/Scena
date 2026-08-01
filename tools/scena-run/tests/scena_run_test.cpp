@@ -22,6 +22,7 @@
 // through the text file bit-for-bit. The binary is driven as a subprocess
 // rather than linked, because that is how every consumer uses it.
 
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -41,8 +42,14 @@ namespace fs = std::filesystem;
 int run(const std::string& args, std::string& output) {
     const fs::path log = fs::temp_directory_path() / "scena_run_test.log";
     // Quoting the binary path: a build directory may contain spaces.
-    const std::string command =
+    std::string command =
         std::string("\"") + SCENA_RUN_BINARY + "\" " + args + " > \"" + log.string() + "\" 2>&1";
+#ifdef _WIN32
+    // cmd.exe strips the outer pair of quotes from the command it is given, so
+    // a command that *starts* with a quoted path loses it. Wrapping the whole
+    // thing in one more pair is the documented way to keep both.
+    command = "\"" + command + "\"";
+#endif
     const int status = std::system(command.c_str());
     std::ifstream file(log);
     std::stringstream buffer;
