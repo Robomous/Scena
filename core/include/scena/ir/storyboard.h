@@ -101,14 +101,26 @@ struct Maneuver {
 };
 
 /// Cardinality: maneuvers 0..* (§8.3.2); an empty group completes
-/// instantly (§8.4.4). `actors` lists entity ids; bulk application of
-/// private actions to all actors (§7.5.4, §8.3.3.3) arrives with p5-s4.
-/// The group's own maximumExecutionCount (§8.4.4) arrives with p4-s2 —
-/// see ADR-0005 for why neither is part of p1-s3.
+/// instantly (§8.4.4). `actors` lists entity ids; a private action is applied
+/// once per actor and the instances share an `Action::bulk_group` (§7.5.4,
+/// §8.3.3.3).
 struct ManeuverGroup {
     std::string name;
     std::vector<std::string> actors;
     std::vector<Maneuver> maneuvers;
+    /// How many times the group may run, per §8.3.3.2 and §8.4.4: "the number
+    /// of executions ... corresponds to the number of startTransitions
+    /// performed from the standbyState to the runningState". A group has no
+    /// priority and therefore no skipTransition, so unlike an Event's counter
+    /// this one counts starts only.
+    ///
+    /// After a run ends regularly with executions left, the group returns to
+    /// standbyState and starts again on the next evaluation while its Act is
+    /// still running; its whole subtree is reset first, so each execution is a
+    /// fresh one (ADR-0026). A stop trigger completes the group "regardless of
+    /// the number of execution counts left". 0 means the group never runs;
+    /// negative is rejected at Engine::init.
+    int maximum_execution_count = 1;
 };
 
 /// Cardinality: maneuver groups 1..* (§8.3.2). Acts and Events are the

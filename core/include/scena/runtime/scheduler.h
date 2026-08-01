@@ -273,8 +273,10 @@ private:
 
         /// Events only (§8.4.2.2).
         ir::EventPriority priority = ir::EventPriority::Parallel;
-        /// Events only: the budget of §8.3.3.2 and the running tally of
-        /// §8.4.2.1 (startTransitions + skipTransitions).
+        /// Events and ManeuverGroups: the budget of §8.3.3.2 and the running
+        /// tally of executions. An Event counts startTransitions *and*
+        /// skipTransitions (§8.4.2.1); a ManeuverGroup has no priority and
+        /// therefore no skipTransition, so it counts starts only (§8.4.4).
         int max_executions = 1;
         int executions = 0;
 
@@ -370,6 +372,19 @@ private:
     /// Completes a standby event whose executions already reached its
     /// maximum, with a skipTransition (§8.4.2.1).
     void apply_standby_exhaustion(Node& event);
+
+    /// Ends one execution of `node`. A ManeuverGroup with executions left
+    /// returns to standbyState with its subtree reset and starts again on the
+    /// next evaluation (§8.4.4, ADR-0026); everything else completes.
+    void end_group_execution_or_complete(Node& node);
+
+    /// Returns every descendant of `node` to standbyState with a cleared
+    /// execution tally and cleared trigger histories, so a re-armed group's
+    /// next execution is independent of the previous one.
+    void reset_subtree(Node& node);
+
+    /// Clears a trigger's per-condition edge and delay history.
+    static void reset_trigger(TriggerState& trigger);
 
     void stop_cascade(Node& node, const StopCallback& stop);
     static bool all_children_complete(const Node& node);

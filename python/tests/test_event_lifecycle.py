@@ -134,3 +134,51 @@ def test_priority_literals_are_accepted_by_the_engine() -> None:
         assert engine.step(1.0) == scn.Status.Ok
         assert engine.state("ego").speed == 10.0
         assert engine.storyboard_element_transition(EVENT_PATH) == scn.TransitionKind.End
+
+
+def test_maneuver_group_executes_its_budget_then_completes() -> None:
+    """§8.4.4: a ManeuverGroup with executions left re-arms instead of
+    completing, and runs its subtree afresh each time (#52, ADR-0026)."""
+    scenario = scn.Scenario("group-executions")
+    scenario.add_entity(scn.Entity("ego", "ego", scn.ControlMode.EngineControlled))
+
+    event = scn.Event("event")
+    event.add_action(scn.SpeedAction("ego", target_speed=5.0))
+    maneuver = scn.Maneuver("maneuver")
+    maneuver.add_event(event)
+    group = scn.ManeuverGroup("group", maximum_execution_count=3)
+    assert group.maximum_execution_count == 3
+    group.add_maneuver(maneuver)
+    act = scn.Act("act")
+    act.add_group(group)
+    story = scn.Story("story")
+    story.add_act(act)
+    scenario.add_story(story)
+
+    engine = scn.Engine()
+    assert engine.init(scenario) == scn.Status.Ok
+    # init evaluates the storyboard once: execution 1 ran and the group re-armed.
+    assert engine.storyboard_element_state("story/act/group") == scn.ElementState.Standby
+    assert engine.step(1.0) == scn.Status.Ok  # execution 2
+    assert engine.storyboard_element_state("story/act/group") == scn.ElementState.Standby
+    assert engine.step(1.0) == scn.Status.Ok  # execution 3 exhausts the budget
+    assert engine.storyboard_element_state("story/act/group") == scn.ElementState.Complete
+
+
+def test_negative_group_execution_count_is_rejected() -> None:
+    scenario = scn.Scenario("group-executions")
+    scenario.add_entity(scn.Entity("ego", "ego", scn.ControlMode.EngineControlled))
+    event = scn.Event("event")
+    event.add_action(scn.SpeedAction("ego", target_speed=5.0))
+    maneuver = scn.Maneuver("maneuver")
+    maneuver.add_event(event)
+    group = scn.ManeuverGroup("group", maximum_execution_count=-1)
+    group.add_maneuver(maneuver)
+    act = scn.Act("act")
+    act.add_group(group)
+    story = scn.Story("story")
+    story.add_act(act)
+    scenario.add_story(story)
+
+    engine = scn.Engine()
+    assert engine.init(scenario) == scn.Status.ValidationError

@@ -474,7 +474,7 @@ TEST(Storyboard, EmptyEventIsRejected) {
     EXPECT_TRUE(has_message_containing(sink, "Event declares no action"));
 }
 
-TEST(Storyboard, ManeuverGroupExecutionCountIsReportedNotSilentlyIgnored) {
+TEST(Storyboard, ManeuverGroupExecutionCountLowers) {
     const std::string kBody = std::string(kFixtureEntities) + R"(<Storyboard>
   <Story name="s"><Act name="a">
     <ManeuverGroup name="g" maximumExecutionCount="4">
@@ -488,7 +488,27 @@ TEST(Storyboard, ManeuverGroupExecutionCountIsReportedNotSilentlyIgnored) {
     Document document;
     DiagnosticSink sink;
     EXPECT_EQ(load(kBody, document, sink), Status::Ok);
-    EXPECT_TRUE(has_message_containing(sink, "maximumExecutionCount is not honoured yet"));
+    // §8.4.4: the count is honoured now (#52), so nothing is reported about it.
+    EXPECT_FALSE(has_message_containing(sink, "maximumExecutionCount"));
+    EXPECT_EQ(
+        document.scenario.storyboard.stories.at(0).acts.at(0).groups.at(0).maximum_execution_count,
+        4);
+    // Omitted, the count defaults to a single execution.
+    const std::string kOnce = std::string(kFixtureEntities) + R"(<Storyboard>
+  <Story name="s"><Act name="a">
+    <ManeuverGroup name="g">
+      <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+      <Maneuver name="m"><Event name="e">
+        <Action name="t"><PrivateAction><TeleportAction><Position><WorldPosition x="0" y="0"/></Position></TeleportAction></PrivateAction></Action>
+      </Event></Maneuver>
+    </ManeuverGroup>
+  </Act></Story>
+</Storyboard>)";
+    Document once;
+    DiagnosticSink once_sink;
+    ASSERT_EQ(load(kOnce, once, once_sink), Status::Ok);
+    EXPECT_EQ(
+        once.scenario.storyboard.stories.at(0).acts.at(0).groups.at(0).maximum_execution_count, 1);
 }
 
 // --- action and condition payloads ---------------------------------------
