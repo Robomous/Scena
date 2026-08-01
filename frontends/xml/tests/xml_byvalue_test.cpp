@@ -48,7 +48,23 @@ std::string document_with(std::string_view condition, int rev_minor = 2) {
     return std::string("<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"") +
            std::to_string(rev_minor) +
            "\" date=\"2026-08-01T00:00:00\" description=\"fixture\" author=\"Scena\"/>"
-           R"(<Storyboard><Story name="s"><Act name="a"><ManeuverGroup name="g">
+           R"(<Entities><ScenarioObject name="ego"><Vehicle name="v" vehicleCategory="car">
+               <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+               <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+               <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+             </Vehicle></ScenarioObject></Entities>
+             <ParameterDeclarations>
+               <ParameterDeclaration name="p" parameterType="double" value="1"/>
+             </ParameterDeclarations>
+             <VariableDeclarations>
+               <VariableDeclaration name="phase" variableType="string" value="one"/>
+             </VariableDeclarations>
+             <RoadNetwork><TrafficSignals>
+               <TrafficSignalController name="ctrl">
+                 <Phase name="green" duration="10"><TrafficSignalState trafficSignalId="s1" state="green"/></Phase>
+               </TrafficSignalController>
+             </TrafficSignals></RoadNetwork>
+             <Storyboard><Story name="s"><Act name="a"><ManeuverGroup name="g">
              <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
              <Maneuver name="m"><Event name="e">
                <Action name="x"><PrivateAction><TeleportAction>
@@ -242,7 +258,12 @@ TEST(Rule, TheOnePointZeroLiteralsAreNeverWarnedAbout) {
         const std::string condition =
             std::string(R"(<SimulationTimeCondition value="1" rule=")") + literal + R"("/>)";
         ASSERT_NE(load(condition, sink, status, /*rev_minor=*/0), nullptr) << literal;
-        EXPECT_TRUE(sink.diagnostics().empty()) << literal;
+        // The 1.0 operators never draw a version warning; the fixture's own
+        // unused declarations may still warn, so only that is asserted.
+        for (const Diagnostic& diagnostic : sink.diagnostics()) {
+            EXPECT_EQ(diagnostic.message.find("is not part of OpenSCENARIO XML"), std::string::npos)
+                << literal;
+        }
     }
 }
 

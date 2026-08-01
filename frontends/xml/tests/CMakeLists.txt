@@ -4,7 +4,7 @@
 include(GoogleTest)
 
 foreach(name xml_byvalue_test xml_catalog_test xml_expression_test xml_infra_test
-              xml_selection_test xml_storyboard_test)
+              xml_selection_test xml_storyboard_test xml_validate_test xml_version_test)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE scena::frontend-xml GTest::gtest_main)
     target_compile_features(${name} PRIVATE cxx_std_20)

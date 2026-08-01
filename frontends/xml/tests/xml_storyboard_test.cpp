@@ -45,6 +45,44 @@ using scena::Status;
 using scena::xml::Document;
 using scena::xml::DocumentKind;
 
+/// The entities the payload fixtures act on and reference. The whole-file
+/// validation pass checks that every reference names a declared entity, so a
+/// fixture declares what it names.
+constexpr std::string_view kFixtureDeclarations = R"(<ParameterDeclarations>
+    <ParameterDeclaration name="p" parameterType="double" value="1.0"/>
+  </ParameterDeclarations>
+  <VariableDeclarations>
+    <VariableDeclaration name="v" variableType="int" value="1"/>
+  </VariableDeclarations>
+  <RoadNetwork><TrafficSignals>
+    <TrafficSignalController name="c">
+      <Phase name="p" duration="10"><TrafficSignalState trafficSignalId="s" state="green"/></Phase>
+    </TrafficSignalController>
+  </TrafficSignals></RoadNetwork>)";
+
+constexpr std::string_view kFixtureEntities = R"(<Entities>
+  <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+    <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+    <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+    <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+  </Vehicle></ScenarioObject>
+  <ScenarioObject name="lead"><Vehicle name="lead_v" vehicleCategory="car">
+    <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+    <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+    <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+  </Vehicle></ScenarioObject>
+  <ScenarioObject name="target"><Vehicle name="target_v" vehicleCategory="car">
+    <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+    <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+    <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+  </Vehicle></ScenarioObject>
+  <ScenarioObject name="ghost"><Vehicle name="ghost_v" vehicleCategory="car">
+    <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+    <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+    <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+  </Vehicle></ScenarioObject>
+</Entities>)";
+
 /// Wraps `body` in the smallest valid 1.2 scenario document.
 std::string document_with(std::string_view body) {
     return std::string("<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"2\" "
@@ -265,7 +303,7 @@ TEST(Entities, AnUnresolvableCatalogReferenceIsReported) {
 
 // --- storyboard -----------------------------------------------------------
 
-constexpr std::string_view kStoryboard = R"(<Storyboard>
+constexpr std::string_view kStoryboardBody = R"(<Storyboard>
   <Init>
     <Actions>
       <GlobalAction>
@@ -338,12 +376,21 @@ constexpr std::string_view kStoryboard = R"(<Storyboard>
   </StopTrigger>
 </Storyboard>)";
 
+/// The hierarchy fixture with the entities it references.
+std::string storyboard_document() {
+    return std::string(kFixtureEntities) + std::string(kStoryboardBody);
+}
+
 TEST(Storyboard, HierarchyLowersToASnapshot) {
     Document document;
     DiagnosticSink sink;
-    ASSERT_EQ(load(kStoryboard, document, sink), Status::Ok);
+    ASSERT_EQ(load(storyboard_document(), document, sink), Status::Ok);
 
     constexpr std::string_view kExpected = "scenario\n"
+                                           "  entity ego type=0\n"
+                                           "  entity lead type=0\n"
+                                           "  entity target type=0\n"
+                                           "  entity ghost type=0\n"
                                            "  init TrafficSignalStateAction actor=\n"
                                            "  init TeleportAction actor=ego\n"
                                            "  story story_1\n"
@@ -370,16 +417,16 @@ TEST(Storyboard, HierarchyLowersToASnapshot) {
 TEST(Storyboard, LoadingTwiceProducesTheSameIr) {
     Document first;
     DiagnosticSink first_sink;
-    ASSERT_EQ(load(kStoryboard, first, first_sink), Status::Ok);
+    ASSERT_EQ(load(storyboard_document(), first, first_sink), Status::Ok);
     Document second;
     DiagnosticSink second_sink;
-    ASSERT_EQ(load(kStoryboard, second, second_sink), Status::Ok);
+    ASSERT_EQ(load(storyboard_document(), second, second_sink), Status::Ok);
     EXPECT_EQ(dump(first.scenario), dump(second.scenario));
     EXPECT_EQ(first_sink.diagnostics().size(), second_sink.diagnostics().size());
 }
 
 TEST(Storyboard, PrivateActionAppliesToEveryActor) {
-    constexpr std::string_view kBody = R"(<Storyboard>
+    const std::string kBody = std::string(kFixtureEntities) + R"(<Storyboard>
   <Story name="s"><Act name="a">
     <ManeuverGroup name="g">
       <Actors selectTriggeringEntities="false">
@@ -409,7 +456,7 @@ TEST(Storyboard, PrivateActionAppliesToEveryActor) {
 }
 
 TEST(Storyboard, EmptyEventIsRejected) {
-    constexpr std::string_view kBody = R"(<Storyboard>
+    const std::string kBody = std::string(kFixtureEntities) + R"(<Storyboard>
   <Story name="s"><Act name="a">
     <ManeuverGroup name="g">
       <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
@@ -424,7 +471,7 @@ TEST(Storyboard, EmptyEventIsRejected) {
 }
 
 TEST(Storyboard, ManeuverGroupExecutionCountIsReportedNotSilentlyIgnored) {
-    constexpr std::string_view kBody = R"(<Storyboard>
+    const std::string kBody = std::string(kFixtureEntities) + R"(<Storyboard>
   <Story name="s"><Act name="a">
     <ManeuverGroup name="g" maximumExecutionCount="4">
       <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
@@ -445,7 +492,8 @@ TEST(Storyboard, ManeuverGroupExecutionCountIsReportedNotSilentlyIgnored) {
 /// Loads one private action inside a minimal storyboard and returns it.
 std::shared_ptr<scena::ir::Action> load_private_action(std::string_view action_xml,
                                                        DiagnosticSink& sink, Status& status) {
-    const std::string body = std::string(R"(<Storyboard><Story name="s"><Act name="a">
+    const std::string body = std::string(kFixtureDeclarations) + std::string(kFixtureEntities) +
+                             std::string(R"(<Storyboard><Story name="s"><Act name="a">
       <ManeuverGroup name="g">
         <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
         <Maneuver name="m"><Event name="e"><Action name="x"><PrivateAction>)") +
@@ -564,7 +612,13 @@ TEST(Actions, DeprecatedActivateControllerPlacementIsAcceptedWithAWarning) {
 }
 
 TEST(Actions, GlobalActionsLowerInInit) {
-    constexpr std::string_view kBody = R"(<Storyboard><Init><Actions>
+    const std::string kBody = std::string(R"(<ParameterDeclarations>
+        <ParameterDeclaration name="p" parameterType="double" value="1.0"/>
+      </ParameterDeclarations>
+      <VariableDeclarations>
+        <VariableDeclaration name="v" variableType="int" value="0"/>
+      </VariableDeclarations>)") +
+                              std::string(kFixtureEntities) + R"(<Storyboard><Init><Actions>
       <GlobalAction><EnvironmentAction><Environment name="env">
         <TimeOfDay animation="false" dateTime="2026-08-01T12:00:00"/>
         <Weather><Sun azimuth="1.0" elevation="0.5" illuminance="10000"/><Fog visualRange="1000"/></Weather>
@@ -590,6 +644,7 @@ TEST(Actions, GlobalActionsLowerInInit) {
 std::shared_ptr<scena::ir::Condition> load_condition(std::string_view condition_xml,
                                                      DiagnosticSink& sink, Status& status) {
     const std::string body =
+        std::string(kFixtureDeclarations) + std::string(kFixtureEntities) +
         std::string(R"(<Storyboard><Story name="s"><Act name="a"><ManeuverGroup name="g">
         <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
         <Maneuver name="m"><Event name="e">
@@ -736,7 +791,11 @@ TEST(ScenarioDefinition, DeclarationsLowerWithTheirResolvedValues) {
     EXPECT_EQ(document.scenario.parameters.at("speed"), "30");
     EXPECT_EQ(document.scenario.parameters.at("derived"), "60");
     EXPECT_EQ(document.scenario.variables.at("counter"), "0");
-    EXPECT_TRUE(sink.diagnostics().empty());
+    // The declarations are not referenced anywhere in this fixture, which
+    // the validation pass warns about; nothing here is an error.
+    for (const Diagnostic& diagnostic : sink.diagnostics()) {
+        EXPECT_NE(diagnostic.severity, Severity::Error);
+    }
 }
 
 TEST(ScenarioDefinition, CatalogLocationsAreRead) {
