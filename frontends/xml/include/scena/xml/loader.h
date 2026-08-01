@@ -67,4 +67,17 @@ namespace scena::xml {
 [[nodiscard]] Status load_file(const std::filesystem::path& path, Document& out,
                                DiagnosticSink& sink);
 
+/// Loads and checks a document without executing anything.
+///
+/// Identical to `load_file` — the whole-file validation pass is part of
+/// loading, not an extra step a caller may forget — and offered under its
+/// own name because "is this file sound?" is a question worth asking on its
+/// own, e.g. from a linting tool or a CI check. The Status and the
+/// diagnostics are the answer; `out` is the document that was checked.
+[[nodiscard]] Status validate_file(const std::filesystem::path& path, Document& out,
+                                   DiagnosticSink& sink);
+
+/// In-memory counterpart of validate_file.
+[[nodiscard]] Status validate_string(std::string_view xml, Document& out, DiagnosticSink& sink);
+
 } // namespace scena::xml

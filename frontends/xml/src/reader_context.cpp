@@ -121,6 +121,19 @@ void ReadContext::add_entity_selection(std::string name, std::vector<std::string
     selections_.insert_or_assign(std::move(name), std::move(members));
 }
 
+std::vector<std::string> ReadContext::entity_selection_names() const {
+    std::vector<std::string> names;
+    names.reserve(selections_.size());
+    for (const auto& [name, members] : selections_) {
+        names.push_back(name);
+    }
+    return names;
+}
+
+void ReadContext::note_parameter_reference(std::string name) {
+    referenced_parameters_.insert(std::move(name));
+}
+
 // Out of line so the header can forward-declare ParameterScope and keep the
 // expression machinery out of every reader's include graph.
 ReadContext::~ReadContext() = default;

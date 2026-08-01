@@ -37,6 +37,7 @@
 #include "read_storyboard.h"
 #include "reader_context.h"
 #include "scena/xml/detail/attributes.h"
+#include "validate.h"
 
 namespace scena::xml {
 
@@ -481,6 +482,11 @@ Status load_buffer(std::string_view xml, std::string file, Document& out, Diagno
         return ctx.first_error();
     }
     read_definition(ctx, root, out);
+    if (out.kind == DocumentKind::Scenario) {
+        // The whole-file checks run once everything has been read: a
+        // reference can only be resolved against the finished document.
+        detail::validate_document(ctx, out);
+    }
     return ctx.first_error();
 }
 
@@ -525,6 +531,14 @@ Status load_file(const std::filesystem::path& path, Document& out, DiagnosticSin
     // Catalog directories are relative to the scenario file (§9.6), so the
     // file's own directory is what they resolve against.
     return load_buffer(text, file, out, sink, path.parent_path());
+}
+
+Status validate_file(const std::filesystem::path& path, Document& out, DiagnosticSink& sink) {
+    return load_file(path, out, sink);
+}
+
+Status validate_string(std::string_view xml, Document& out, DiagnosticSink& sink) {
+    return load_string(xml, out, sink);
 }
 
 } // namespace scena::xml
