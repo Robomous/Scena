@@ -417,3 +417,19 @@ and
 > taxonomy and by-object-type collisions arrive with p2-s1 (#15); XML lowering
 > arrives with the P4 frontend. See
 > [ADR-0009](../architecture/ADR-0009-interaction-metrics.md).
+
+## Road-network conditions (p3-s4)
+
+With a road network attached, `EndOfRoadCondition` and `OffroadCondition`
+are live: the engine observes the predicate against the network each step
+and accumulates a per-entity clock (the `standstill_seconds` pattern), which
+the condition compares against its `duration`. "End of road" is reached when
+the entity's bounding-box front touches the road boundary in its own driving
+direction; "offroad" when its reference point projects onto no road of the
+network. Without a road network both clocks stay zero and the conditions
+remain deterministic false (warned once at load). The distance-family
+conditions (`DistanceCondition`, `RelativeDistanceCondition`,
+`TimeHeadwayCondition`, `TimeToCollisionCondition`) measure in road
+coordinates when their effective coordinate system is road or lane: the
+longitudinal measure is the s-separation, the lateral the t-separation, on
+the shared road — cross-road measurements stay deferred (ADR-0019).

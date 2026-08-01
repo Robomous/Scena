@@ -104,3 +104,33 @@ evaluated, engine entities are integrated, and engine states are published.
   mode.
 - ADR-0017 (position resolution and control ownership), ADR-0003 (the simulator
   gateway).
+
+## Road-backed positions (p3-s4)
+
+With a road network attached through the gateway, the road-family variants
+resolve fully; without one they keep reporting `UnsupportedFeature`:
+
+- **RoadPosition** `(roadId, s, t)` and **LanePosition** `(roadId, laneId,
+  s, offset)` map through the backend's conversions; the lane variant
+  places the point on the lane centre line plus `offset`.
+- **RelativeRoadPosition** / **RelativeLanePosition** start from the
+  reference entity's own road coordinates; `dLane` steps lanes with the
+  centre lane skipped (§7.4.1.4). Subset limits, always reported: the delta
+  stays on the reference entity's road, and `dsLane` (distance along the
+  lane centre line) is not supported — use `ds`.
+- **RoutePosition** resolves the route's waypoints onto the network, builds
+  the deterministic route, and selects the point `pathS` metres along it —
+  from road coordinates (`t`), lane coordinates (`laneId`, `laneOffset`),
+  or an entity's projection onto the route (§InRoutePosition).
+- The orientation base of every road-family variant is the road s-axis
+  tangent at the target (turned by pi on route spans driven against the
+  s-axis); pitch and roll stay 0 — the road surface is the z = 0 plane in
+  the v0.0.1 subset (ADR-0019).
+
+```cpp
+scena::ir::LanePosition target;
+target.road_id = "1";
+target.lane_id = "-1";
+target.s = 80.0;                       // on the arc of the curve map
+engine.init(scenario_with_teleport(target));
+```
