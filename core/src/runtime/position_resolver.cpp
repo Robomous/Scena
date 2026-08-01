@@ -16,9 +16,14 @@
 
 #include "scena/runtime/position_resolver.h"
 
+#include <charconv>
+#include <cmath>
 #include <utility>
 #include <variant>
+#include <vector>
 
+#include "scena/gateway/road_query.h"
+#include "scena/ir/route.h"
 #include "scena/ir/trajectory.h"
 #include "scena/runtime/detmath.h"
 #include "scena/runtime/trajectory_eval.h"
@@ -64,9 +69,67 @@ PositionResolution unsupported(std::string message, std::string rule_id = {}) {
     return PositionResolution{Status::UnsupportedFeature, std::move(message), std::move(rule_id)};
 }
 
+PositionResolution semantic(std::string message) {
+    return PositionResolution{Status::SemanticError, std::move(message), {}};
+}
+
+PositionResolution no_road_network() {
+    return unsupported("road-, lane- and route-relative positions require a road network "
+                       "(IRoadQuery) attached to the resolver");
+}
+
+/// pi to double precision, for turning a route-against-s orientation base.
+constexpr double kPi = 3.14159265358979323846;
+
+/// Parses an OpenDRIVE-style signed integer lane id (locale-independent,
+/// whole-token, per the cross-platform rule).
+std::optional<int> parse_lane_id(const std::string& text) {
+    int value = 0;
+    const char* const first = text.data();
+    const char* const last = text.data() + text.size();
+    const std::from_chars_result result = std::from_chars(first, last, value);
+    if (result.ec != std::errc{} || result.ptr != last || text.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// Fills `out` from road coordinates: the world point of (road, s, t) with
+/// the road s-axis tangent as the orientation base (§6.3.2 corrected
+/// calculation; pitch/roll stay 0 — the road surface is the z = 0 plane in
+/// the v0.0.1 subset). `lane_for_validation` is the lane id handed to
+/// to_world_position, whose backend validates it exists at `s`.
+PositionResolution resolve_on_road(const gateway::IRoadQuery& road, const std::string& road_id,
+                                   int lane_for_validation, double s, double t,
+                                   double extra_heading,
+                                   const std::optional<ir::Orientation>& orientation, Pose& out) {
+    double base_heading = 0.0;
+    if (!road.road_heading(road_id, s, base_heading)) {
+        return semantic("position names road '" + road_id +
+                        "', which the road network cannot answer at the requested s");
+    }
+    gateway::LanePosition lane;
+    lane.road_id = road_id;
+    lane.lane_id = lane_for_validation;
+    lane.s = s;
+    lane.t = t;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    if (!road.to_world_position(lane, x, y, z)) {
+        return semantic("position does not identify a location on road '" + road_id + "'");
+    }
+    out.x = x;
+    out.y = y;
+    out.z = z;
+    compose_orientation(base_heading + extra_heading, 0.0, 0.0, orientation, out);
+    return ok();
+}
+
 } // namespace
 
-PositionResolver::PositionResolver(PoseLookup lookup) noexcept : lookup_(std::move(lookup)) {}
+PositionResolver::PositionResolver(PoseLookup lookup, const gateway::IRoadQuery* road) noexcept
+    : lookup_(std::move(lookup)), road_(road) {}
 
 PositionResolution PositionResolver::resolve(const ir::Position& position, Pose& out) const {
     // WorldPosition (§WorldPosition, §6.3.1): the pose is taken directly. Its
@@ -116,18 +179,208 @@ PositionResolution PositionResolver::resolve(const ir::Position& position, Pose&
         return ok();
     }
 
-    // Road-family variants (§RoadPosition, §RelativeRoadPosition, §LanePosition,
-    // §RelativeLanePosition, §RoutePosition): resolving the position needs a
-    // road network, and the relative-orientation reference context needs the
-    // s-axis tangent at the target — neither exists until the road backend
-    // (p3-s4). Reported, never silently wrong.
-    if (std::holds_alternative<ir::RoadPosition>(position) ||
-        std::holds_alternative<ir::RelativeRoadPosition>(position) ||
-        std::holds_alternative<ir::LanePosition>(position) ||
-        std::holds_alternative<ir::RelativeLanePosition>(position) ||
-        std::holds_alternative<ir::RoutePosition>(position)) {
-        return unsupported("road-, lane- and route-relative positions require a road network; "
-                           "resolution lands with the road backend (p3-s4)");
+    // RoadPosition (§RoadPosition, §6.3.2): (road, s, t) maps to the world
+    // through the backend; the orientation base is the s-axis tangent.
+    if (const auto* road_pos = std::get_if<ir::RoadPosition>(&position)) {
+        if (road_ == nullptr) {
+            return no_road_network();
+        }
+        // Lane 0 (the centre lane, always present in a laned road) carries
+        // the validation; t is authoritative for the lateral offset.
+        return resolve_on_road(*road_, road_pos->road_id, 0, road_pos->s, road_pos->t, 0.0,
+                               road_pos->orientation, out);
+    }
+
+    // RelativeRoadPosition (§RelativeRoadPosition): ds/dt on the reference
+    // entity's own road coordinates. The v0.0.1 subset keeps the target on
+    // the same road: a delta that leaves the road is reported, not followed
+    // onto linked roads.
+    if (const auto* rel_road = std::get_if<ir::RelativeRoadPosition>(&position)) {
+        if (road_ == nullptr) {
+            return no_road_network();
+        }
+        const EntityState* ref = lookup_(rel_road->entity_ref);
+        if (ref == nullptr) {
+            return unresolved_reference(rel_road->entity_ref);
+        }
+        gateway::LanePosition ref_lane;
+        if (!road_->to_lane_position(ref->x, ref->y, ref->z, ref_lane)) {
+            return semantic("position references entity '" + rel_road->entity_ref +
+                            "', which is not on the road network");
+        }
+        const double target_s = ref_lane.s + rel_road->ds;
+        double length = 0.0;
+        if (!road_->road_length(ref_lane.road_id, length) || target_s < 0.0 || target_s > length) {
+            return unsupported("relative road position leaves road '" + ref_lane.road_id +
+                               "'; continuing onto linked roads is beyond the v0.0.1 subset");
+        }
+        return resolve_on_road(*road_, ref_lane.road_id, 0, target_s, ref_lane.t + rel_road->dt,
+                               0.0, rel_road->orientation, out);
+    }
+
+    // LanePosition (§LanePosition, §6.3.2): the lateral position is the
+    // target lane's centre line plus `offset`.
+    if (const auto* lane_pos = std::get_if<ir::LanePosition>(&position)) {
+        if (road_ == nullptr) {
+            return no_road_network();
+        }
+        const std::optional<int> lane_id = parse_lane_id(lane_pos->lane_id);
+        if (!lane_id.has_value()) {
+            return PositionResolution{Status::ValidationError,
+                                      "lane position lane id '" + lane_pos->lane_id +
+                                          "' is not a signed integer lane id",
+                                      {}};
+        }
+        double center_t = 0.0;
+        if (!road_->lane_center_offset(lane_pos->road_id, *lane_id, lane_pos->s, center_t)) {
+            return semantic("lane position names lane '" + lane_pos->lane_id + "' of road '" +
+                            lane_pos->road_id + "', which the road network cannot answer");
+        }
+        return resolve_on_road(*road_, lane_pos->road_id, *lane_id, lane_pos->s,
+                               center_t + lane_pos->offset, 0.0, lane_pos->orientation, out);
+    }
+
+    // RelativeLanePosition (§RelativeLanePosition): d_lane lanes over from
+    // the reference entity's lane (centre lane skipped, §7.4.1.4 semantics in
+    // the backend), then ds along the ROAD reference line. `ds_lane` (along
+    // the lane centre line) is beyond the v0.0.1 subset and reported.
+    if (const auto* rel_lane = std::get_if<ir::RelativeLanePosition>(&position)) {
+        if (road_ == nullptr) {
+            return no_road_network();
+        }
+        if (rel_lane->ds_lane.has_value()) {
+            return unsupported("relative lane position dsLane (distance along the lane centre "
+                               "line) is beyond the v0.0.1 subset; use ds");
+        }
+        const EntityState* ref = lookup_(rel_lane->entity_ref);
+        if (ref == nullptr) {
+            return unresolved_reference(rel_lane->entity_ref);
+        }
+        gateway::LanePosition ref_lane;
+        if (!road_->to_lane_position(ref->x, ref->y, ref->z, ref_lane)) {
+            return semantic("position references entity '" + rel_lane->entity_ref +
+                            "', which is not on the road network");
+        }
+        int target_lane = 0;
+        if (!road_->relative_lane(ref_lane.road_id, ref_lane.lane_id, rel_lane->d_lane,
+                                  target_lane)) {
+            return semantic("position references entity '" + rel_lane->entity_ref +
+                            "' with a relative lane the road network does not have");
+        }
+        const double target_s = ref_lane.s + rel_lane->ds.value_or(0.0);
+        double length = 0.0;
+        if (!road_->road_length(ref_lane.road_id, length) || target_s < 0.0 || target_s > length) {
+            return unsupported("relative lane position leaves road '" + ref_lane.road_id +
+                               "'; continuing onto linked roads is beyond the v0.0.1 subset");
+        }
+        double center_t = 0.0;
+        if (!road_->lane_center_offset(ref_lane.road_id, target_lane, target_s, center_t)) {
+            return semantic("relative lane position target lane does not exist at the "
+                            "requested s on road '" +
+                            ref_lane.road_id + "'");
+        }
+        return resolve_on_road(*road_, ref_lane.road_id, target_lane, target_s,
+                               center_t + rel_lane->offset, 0.0, rel_lane->orientation, out);
+    }
+
+    // RoutePosition (§RoutePosition): the route's waypoints are resolved onto
+    // the road network and connected with the backend's deterministic
+    // routing; the in-route coordinate (§InRoutePosition) then selects a
+    // point along the resulting spans.
+    if (const auto* route_pos = std::get_if<ir::RoutePosition>(&position)) {
+        if (road_ == nullptr) {
+            return no_road_network();
+        }
+        if (route_pos->route == nullptr || route_pos->route->waypoints.size() < 2) {
+            return PositionResolution{
+                Status::ValidationError,
+                "route position references no route with at least two waypoints",
+                {}};
+        }
+        const bool lane_form = route_pos->lane_id.has_value();
+        const int in_route_forms =
+            (route_pos->from_entity.has_value() ? 1 : 0) + (route_pos->path_s.has_value() ? 1 : 0);
+        if (in_route_forms != 1) {
+            return PositionResolution{Status::ValidationError,
+                                      "route position needs exactly one in-route coordinate: "
+                                      "an entity, or a pathS",
+                                      {}};
+        }
+        std::vector<gateway::LanePosition> waypoints;
+        waypoints.reserve(route_pos->route->waypoints.size());
+        for (const ir::Waypoint& waypoint : route_pos->route->waypoints) {
+            gateway::LanePosition lane;
+            if (!road_->to_lane_position(waypoint.position.x, waypoint.position.y,
+                                         waypoint.position.z, lane)) {
+                return semantic("route position waypoint is not on the road network");
+            }
+            waypoints.push_back(lane);
+        }
+        std::vector<gateway::RouteSpan> spans;
+        if (!road_->build_route(waypoints, spans)) {
+            return semantic("route position route has no connected path through the road "
+                            "network");
+        }
+        double path_s = 0.0;
+        if (route_pos->from_entity.has_value()) {
+            const EntityState* ref = lookup_(*route_pos->from_entity);
+            if (ref == nullptr) {
+                return unresolved_reference(*route_pos->from_entity);
+            }
+            gateway::LanePosition entity_lane;
+            if (!road_->to_lane_position(ref->x, ref->y, ref->z, entity_lane) ||
+                !road_->position_along_route(spans, entity_lane, path_s)) {
+                return semantic("route position entity '" + *route_pos->from_entity +
+                                "' is not on the route");
+            }
+        } else {
+            path_s = *route_pos->path_s;
+        }
+        double total = 0.0;
+        for (const gateway::RouteSpan& span : spans) {
+            total += std::fabs(span.s_end - span.s_begin);
+        }
+        if (!(path_s >= 0.0) || path_s > total) {
+            return semantic("route position pathS lies beyond the route");
+        }
+        double remaining = path_s;
+        const gateway::RouteSpan* on_span = &spans.back();
+        for (const gateway::RouteSpan& span : spans) {
+            const double span_length = std::fabs(span.s_end - span.s_begin);
+            if (remaining <= span_length) {
+                on_span = &span;
+                break;
+            }
+            remaining -= span_length;
+        }
+        const bool reversed = on_span->s_end < on_span->s_begin;
+        const double road_s =
+            reversed ? on_span->s_begin - remaining : on_span->s_begin + remaining;
+        int validation_lane = on_span->lane_id;
+        double target_t = 0.0;
+        if (lane_form) {
+            const std::optional<int> lane_id = parse_lane_id(*route_pos->lane_id);
+            if (!lane_id.has_value()) {
+                return PositionResolution{Status::ValidationError,
+                                          "route position lane id '" + *route_pos->lane_id +
+                                              "' is not a signed integer lane id",
+                                          {}};
+            }
+            double center_t = 0.0;
+            if (!road_->lane_center_offset(on_span->road_id, *lane_id, road_s, center_t)) {
+                return semantic("route position names lane '" + *route_pos->lane_id +
+                                "', which road '" + on_span->road_id +
+                                "' does not have at the requested pathS");
+            }
+            validation_lane = *lane_id;
+            target_t = center_t + route_pos->lane_offset;
+        } else {
+            target_t = route_pos->t.value_or(0.0);
+        }
+        // A span traversed against the road s-axis turns the orientation
+        // base by pi: the route's forward direction is the reference.
+        return resolve_on_road(*road_, on_span->road_id, validation_lane, road_s, target_t,
+                               reversed ? kPi : 0.0, route_pos->orientation, out);
     }
 
     // GeoPosition (§GeoPosition): the geographic→world projection is defined by

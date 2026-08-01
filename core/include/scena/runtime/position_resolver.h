@@ -25,6 +25,10 @@
 #include "scena/ir/position.h"
 #include "scena/status.h"
 
+namespace scena::gateway {
+class IRoadQuery;
+} // namespace scena::gateway
+
 namespace scena::runtime {
 
 /// A resolved world pose: inertial-frame position (meters) and orientation
@@ -58,30 +62,42 @@ struct PositionResolution {
 /// reference-entity poses, not on the engine — so every variant and every
 /// orientation-composition case can be unit-tested without booting a scenario.
 ///
-/// Coverage this sprint (p2-s4): the self-contained variants resolve fully —
-/// WorldPosition, RelativeWorldPosition (world-axis deltas), and
-/// RelativeObjectPosition (deltas rotated into the reference entity's frame,
-/// via deterministic `det_sincos`). The road-family variants (Road,
-/// RelativeRoad, Lane, RelativeLane, Route) require a road network and its
-/// s-axis tangents for orientation; they report Status::UnsupportedFeature
-/// until the road backend lands (p3-s4). TrajectoryPosition resolves through
-/// the trajectory evaluator (arc length s + lateral offset t on the tangent
-/// left-normal). GeoPosition reports unsupported with
-/// the rule `asam.net:xosc:1.1.0:positioning.geodetic_datum_defined`. Every
-/// variant either resolves or reports — none is silently wrong.
+/// Coverage: the self-contained variants resolve fully — WorldPosition,
+/// RelativeWorldPosition (world-axis deltas), RelativeObjectPosition (deltas
+/// rotated into the reference entity's frame via deterministic
+/// `det_sincos`), and TrajectoryPosition (through the trajectory
+/// evaluator). The road-family variants (Road, RelativeRoad, Lane,
+/// RelativeLane, Route) resolve against the road network handed to the
+/// constructor (p3-s4): positions map to the world through the frozen
+/// `IRoadQuery` v1 conversions, and the orientation base of every
+/// road-family variant is the road s-axis tangent at the target
+/// (`road_heading`; for a route traversed against the s-axis the base is
+/// turned by pi), with pitch/roll 0 — the standard leaves them to the road
+/// surface, which is the z = 0 plane in the v0.0.1 subset. Without a road
+/// network they keep reporting Status::UnsupportedFeature. Subset limits
+/// (each reported, never silent): RelativeRoad/RelativeLane deltas stay on
+/// the reference entity's road (no continuation onto linked roads), and
+/// `ds_lane` (along the lane centre line) is not supported — `ds` along the
+/// road reference line is. GeoPosition reports unsupported with the rule
+/// `asam.net:xosc:1.1.0:positioning.geodetic_datum_defined`. Every variant
+/// either resolves or reports — none is silently wrong.
 class PositionResolver {
 public:
     /// Returns the current pose of the reference entity `id`, or nullptr when
     /// there is no such active entity.
     using PoseLookup = std::function<const EntityState*(std::string_view id)>;
 
-    explicit PositionResolver(PoseLookup lookup) noexcept;
+    /// `road` may be null: road-family variants then report unsupported. The
+    /// pointer is borrowed and must outlive the resolver.
+    explicit PositionResolver(PoseLookup lookup,
+                              const gateway::IRoadQuery* road = nullptr) noexcept;
 
     /// Resolves `position` into `out`. See PositionResolution for the contract.
     [[nodiscard]] PositionResolution resolve(const ir::Position& position, Pose& out) const;
 
 private:
     PoseLookup lookup_;
+    const gateway::IRoadQuery* road_ = nullptr;
 };
 
 } // namespace scena::runtime
