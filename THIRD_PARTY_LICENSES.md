@@ -8,7 +8,7 @@ tree. Update this file whenever `cmake/Dependencies.cmake` changes.
 | Dependency | Version | License      | Scope                                    | Source |
 |------------|---------|--------------|------------------------------------------|--------|
 | googletest | v1.15.2 | BSD-3-Clause | Tests only; never linked into shipped libraries | <https://github.com/google/googletest> |
-| pugixml    | v1.14   | MIT          | XML frontend only (wired, unused until the XML frontend phase) | <https://github.com/zeux/pugixml> |
+| pugixml    | v1.14   | MIT          | XML reading: OpenDRIVE road backend (roads/opendrive) and the upcoming XML frontend | <https://github.com/zeux/pugixml> |
 | nanobind   | v2.13.0 | BSD-3-Clause | Python bindings only                     | <https://github.com/wjakob/nanobind> |
 
 The `scena-core` runtime library has **zero** third-party runtime

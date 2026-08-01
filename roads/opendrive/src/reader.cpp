@@ -1,0 +1,378 @@
+/*
+ * Copyright 2026 Robomous
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "scena/opendrive/reader.h"
+
+#include <cmath>
+#include <cstddef>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <utility>
+
+#include <pugixml.hpp>
+
+#include "scena/ir/rule.h" // ir::parse_scalar: locale-independent from_chars
+
+namespace scena::opendrive {
+
+namespace {
+
+/// Tolerance for the ascending-s / s-sum bookkeeping checks (meters). The
+/// spec states exact equalities; real exports carry rounding noise, so exact
+/// comparison would reject virtually every file.
+constexpr double kSTolerance = 1e-3;
+
+struct ReadContext {
+    DiagnosticSink& sink;
+    std::string file; ///< Diagnostic source file; empty for in-memory input.
+    Status first_error = Status::Ok;
+
+    void report(Severity severity, Status code, std::string path, std::string message,
+                std::string rule_id = {}) {
+        if (severity == Severity::Error && first_error == Status::Ok) {
+            first_error = code;
+        }
+        Diagnostic diagnostic;
+        diagnostic.severity = severity;
+        diagnostic.code = code;
+        diagnostic.message = std::move(message);
+        diagnostic.path = std::move(path);
+        diagnostic.location.file = file;
+        diagnostic.rule_id = std::move(rule_id);
+        sink.report(std::move(diagnostic));
+    }
+};
+
+/// Required double attribute: reports a ParseError when missing or not a
+/// scalar. Uses ir::parse_scalar (std::from_chars), never a locale-dependent
+/// conversion.
+bool require_double(ReadContext& ctx, const pugi::xml_node& node, const char* name,
+                    const std::string& path, double& out) {
+    const pugi::xml_attribute attr = node.attribute(name);
+    if (!attr) {
+        ctx.report(Severity::Error, Status::ParseError, path,
+                   std::string("missing required attribute '") + name + "'");
+        return false;
+    }
+    const std::optional<double> value = ir::parse_scalar(attr.value());
+    if (!value.has_value() || !std::isfinite(*value)) {
+        ctx.report(Severity::Error, Status::ParseError, path,
+                   std::string("attribute '") + name + "' is not a finite number");
+        return false;
+    }
+    out = *value;
+    return true;
+}
+
+int parse_int_or(const pugi::xml_attribute& attr, int fallback) {
+    if (!attr) {
+        return fallback;
+    }
+    const std::optional<double> value = ir::parse_scalar(attr.value());
+    if (!value.has_value()) {
+        return fallback;
+    }
+    return static_cast<int>(*value);
+}
+
+/// Reports every child element outside the consumed subset — the
+/// never-silent rule for map features. `consumed` is a null-terminated array
+/// of element names this reader understands at this level.
+void warn_unconsumed_children(ReadContext& ctx, const pugi::xml_node& node, const std::string& path,
+                              const char* const consumed[]) {
+    for (pugi::xml_node child : node.children()) {
+        if (child.type() != pugi::node_element) {
+            continue;
+        }
+        bool known = false;
+        for (const char* const* name = consumed; *name != nullptr; ++name) {
+            if (child.name() == std::string_view(*name)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            ctx.report(Severity::Warning, Status::UnsupportedFeature, path,
+                       std::string("element '") + child.name() +
+                           "' is outside the consumed OpenDRIVE subset and is ignored");
+        }
+    }
+}
+
+bool read_geometry(ReadContext& ctx, const pugi::xml_node& node, const std::string& path,
+                   Geometry& out) {
+    bool ok = true;
+    ok = require_double(ctx, node, "s", path, out.s) && ok;
+    ok = require_double(ctx, node, "x", path, out.x) && ok;
+    ok = require_double(ctx, node, "y", path, out.y) && ok;
+    ok = require_double(ctx, node, "hdg", path, out.hdg) && ok;
+    ok = require_double(ctx, node, "length", path, out.length) && ok;
+    if (ok && out.length <= 0.0) {
+        // @length is t_grZero (> 0) per §9.2 Table 18.
+        ctx.report(Severity::Error, Status::ValidationError, path,
+                   "geometry length must be greater than zero");
+        ok = false;
+    }
+
+    // Exactly one primitive child per element
+    // (asam.net:xodr:1.4.0:road.geometry.one_geom_elem_per_spec).
+    int primitives = 0;
+    pugi::xml_node primitive;
+    for (pugi::xml_node child : node.children()) {
+        if (child.type() != pugi::node_element) {
+            continue;
+        }
+        ++primitives;
+        primitive = child;
+    }
+    if (primitives != 1) {
+        ctx.report(Severity::Error, Status::ValidationError, path,
+                   "geometry must contain exactly one primitive element",
+                   "asam.net:xodr:1.4.0:road.geometry.one_geom_elem_per_spec");
+        return false;
+    }
+
+    const std::string_view name = primitive.name();
+    if (name == "line") {
+        out.kind = GeometryKind::Line;
+        return ok;
+    }
+    if (name == "arc") {
+        out.kind = GeometryKind::Arc;
+        return require_double(ctx, primitive, "curvature", path, out.curvature) && ok;
+    }
+    if (name == "spiral") {
+        out.kind = GeometryKind::Spiral;
+        bool spiral_ok = require_double(ctx, primitive, "curvStart", path, out.curv_start);
+        spiral_ok = require_double(ctx, primitive, "curvEnd", path, out.curv_end) && spiral_ok;
+        return spiral_ok && ok;
+    }
+    if (name == "poly3") {
+        // Deprecated since OpenDRIVE 1.6.0 (§9.7); still evaluated.
+        out.kind = GeometryKind::Poly3;
+        ctx.report(Severity::Warning, Status::DeprecatedFeature, path,
+                   "element 'poly3' is deprecated since OpenDRIVE 1.6.0");
+        bool poly_ok = require_double(ctx, primitive, "a", path, out.a);
+        poly_ok = require_double(ctx, primitive, "b", path, out.b) && poly_ok;
+        poly_ok = require_double(ctx, primitive, "c", path, out.c) && poly_ok;
+        poly_ok = require_double(ctx, primitive, "d", path, out.d) && poly_ok;
+        return poly_ok && ok;
+    }
+    if (name == "paramPoly3") {
+        out.kind = GeometryKind::ParamPoly3;
+        bool pp_ok = require_double(ctx, primitive, "aU", path, out.a_u);
+        pp_ok = require_double(ctx, primitive, "bU", path, out.b_u) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "cU", path, out.c_u) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "dU", path, out.d_u) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "aV", path, out.a_v) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "bV", path, out.b_v) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "cV", path, out.c_v) && pp_ok;
+        pp_ok = require_double(ctx, primitive, "dV", path, out.d_v) && pp_ok;
+        const std::string_view p_range = primitive.attribute("pRange").value();
+        if (p_range == "arcLength") {
+            out.p_range = PRange::ArcLength;
+        } else if (p_range == "normalized") {
+            out.p_range = PRange::Normalized;
+        } else {
+            ctx.report(Severity::Error, Status::ParseError, path,
+                       "attribute 'pRange' must be 'arcLength' or 'normalized'");
+            pp_ok = false;
+        }
+        return pp_ok && ok;
+    }
+    ctx.report(Severity::Error, Status::ValidationError, path,
+               std::string("unknown geometry primitive '") + primitive.name() + "'");
+    return false;
+}
+
+void read_road(ReadContext& ctx, const pugi::xml_node& node, std::size_t index, Map& out) {
+    Road road;
+    road.id = node.attribute("id").value();
+    road.name = node.attribute("name").value();
+    const std::string road_path =
+        road.id.empty() ? "roads[" + std::to_string(index) + "]" : "roads/" + road.id;
+    if (road.id.empty()) {
+        ctx.report(Severity::Error, Status::ParseError, road_path,
+                   "road is missing the required 'id' attribute");
+        return;
+    }
+    if (!require_double(ctx, node, "length", road_path, road.length)) {
+        return;
+    }
+
+    static const char* const kConsumedRoadChildren[] = {"planView", nullptr};
+    warn_unconsumed_children(ctx, node, road_path, kConsumedRoadChildren);
+
+    const pugi::xml_node plan_view = node.child("planView");
+    if (!plan_view) {
+        ctx.report(Severity::Error, Status::ValidationError, road_path,
+                   "road has no planView reference line",
+                   "asam.net:xodr:1.4.0:road.geometry.refline_exists");
+        return;
+    }
+
+    double expected_s = 0.0;
+    std::size_t geometry_index = 0;
+    bool geometry_ok = true;
+    for (pugi::xml_node child : plan_view.children("geometry")) {
+        const std::string path =
+            road_path + "/planView/geometry[" + std::to_string(geometry_index) + "]";
+        Geometry geometry;
+        if (!read_geometry(ctx, child, path, geometry)) {
+            geometry_ok = false;
+            ++geometry_index;
+            continue;
+        }
+        if (!road.plan_view.empty() && geometry.s + kSTolerance < road.plan_view.back().s) {
+            ctx.report(Severity::Error, Status::ValidationError, path,
+                       "geometry elements must be in ascending s order",
+                       "asam.net:xodr:1.4.0:road.geometry.elem_asc_order");
+            geometry_ok = false;
+        }
+        if (std::fabs(geometry.s - expected_s) > kSTolerance) {
+            ctx.report(Severity::Error, Status::ValidationError, path,
+                       "geometry s must equal the sum of the preceding geometry lengths",
+                       "asam.net:xodr:1.9.0:road.geometry.s-value_sum");
+            geometry_ok = false;
+        }
+        expected_s += geometry.length;
+        road.plan_view.push_back(geometry);
+        ++geometry_index;
+    }
+    if (road.plan_view.empty()) {
+        ctx.report(Severity::Error, Status::ValidationError, road_path + "/planView",
+                   "planView contains no geometry elements",
+                   "asam.net:xodr:1.4.0:road.geometry.refline_exists");
+        return;
+    }
+    if (!geometry_ok) {
+        return;
+    }
+
+    // The plan-view sum is the authoritative evaluated length; flag a road
+    // @length that disagrees, but keep the road (the operation succeeds).
+    if (std::fabs(expected_s - road.length) > kSTolerance) {
+        ctx.report(Severity::Warning, Status::ValidationError, road_path,
+                   "road length attribute disagrees with the plan view total; "
+                   "the plan view total is used");
+    }
+
+    if (out.roads.count(road.id) != 0) {
+        ctx.report(Severity::Error, Status::ValidationError, road_path, "duplicate road id");
+        return;
+    }
+    out.roads.emplace(road.id, std::move(road));
+}
+
+} // namespace
+
+Status load_string(std::string_view xml, Map& out, DiagnosticSink& sink) {
+    ReadContext ctx{sink, {}};
+    out = Map{};
+
+    pugi::xml_document document;
+    const pugi::xml_parse_result parsed = document.load_buffer(xml.data(), xml.size());
+    if (!parsed) {
+        // pugixml gives a byte offset; report the 1-based line for anchoring.
+        int line = 1;
+        const std::size_t offset = std::min(static_cast<std::size_t>(parsed.offset), xml.size());
+        for (std::size_t i = 0; i < offset; ++i) {
+            if (xml[i] == '\n') {
+                ++line;
+            }
+        }
+        Diagnostic diagnostic;
+        diagnostic.severity = Severity::Error;
+        diagnostic.code = Status::ParseError;
+        diagnostic.message = std::string("not well-formed xml: ") + parsed.description();
+        diagnostic.location.line = line;
+        sink.report(std::move(diagnostic));
+        return Status::ParseError;
+    }
+
+    const pugi::xml_node root = document.child("OpenDRIVE");
+    if (!root) {
+        ctx.report(Severity::Error, Status::ParseError, {},
+                   "document has no OpenDRIVE root element");
+        return Status::ParseError;
+    }
+
+    const pugi::xml_node header = root.child("header");
+    if (header) {
+        out.rev_major = parse_int_or(header.attribute("revMajor"), 0);
+        out.rev_minor = parse_int_or(header.attribute("revMinor"), 0);
+        if (out.rev_major != 1) {
+            ctx.report(Severity::Warning, Status::UnsupportedFeature, "header",
+                       "unrecognized OpenDRIVE major revision; reading as 1.x");
+        }
+        if (header.child("geoReference")) {
+            // Geo-referencing is scoped out for v0.0.1 (roadmap P3 scope).
+            ctx.report(Severity::Warning, Status::UnsupportedFeature, "header",
+                       "geoReference is not consumed; coordinates stay in the "
+                       "local inertial frame");
+        }
+    } else {
+        ctx.report(Severity::Warning, Status::UnsupportedFeature, {},
+                   "document has no header element; revision is unknown");
+    }
+
+    static const char* const kConsumedRootChildren[] = {"header", "road", nullptr};
+    warn_unconsumed_children(ctx, root, {}, kConsumedRootChildren);
+
+    std::size_t index = 0;
+    for (pugi::xml_node road : root.children("road")) {
+        read_road(ctx, road, index, out);
+        ++index;
+    }
+    if (index == 0) {
+        ctx.report(Severity::Error, Status::ValidationError, {},
+                   "document contains no road elements");
+    }
+
+    return ctx.first_error;
+}
+
+Status load_file(const std::filesystem::path& path, Map& out, DiagnosticSink& sink) {
+    // Binary mode: newline translation must not alter byte offsets or
+    // checksums across platforms (cross-platform rule).
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        Diagnostic diagnostic;
+        diagnostic.severity = Severity::Error;
+        diagnostic.code = Status::InvalidArgument;
+        diagnostic.message = "cannot open file";
+        diagnostic.location.file = path.string();
+        sink.report(std::move(diagnostic));
+        return Status::InvalidArgument;
+    }
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    const std::string content = buffer.str();
+
+    // Parse into a local sink, stamp the file path onto each finding, then
+    // forward in order — the caller's sink stays append-only.
+    DiagnosticSink local;
+    const Status status = load_string(content, out, local);
+    for (const Diagnostic& entry : local.diagnostics()) {
+        Diagnostic stamped = entry;
+        stamped.location.file = path.string();
+        sink.report(std::move(stamped));
+    }
+    return status;
+}
+
+} // namespace scena::opendrive
