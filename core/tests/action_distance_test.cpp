@@ -373,7 +373,12 @@ TEST(DistanceKeepingTest, SupersedesARunningSpeedRampAndIsSupersededInTurn) {
                                  std::make_shared<LongitudinalDistanceAction>(
                                      "ego", "lead", 25.0, std::nullopt, /*freespace=*/false,
                                      /*continuous=*/true)));
-    events.push_back(timed_event("cruise", 6.0, std::make_shared<SpeedAction>("ego", 7.0)));
+    // A shaped action, not a step one: only an action that assigns a control
+    // strategy conflicts with the distance controller (§7.4.1.2, §7.5.1).
+    events.push_back(timed_event(
+        "cruise", 6.0,
+        std::make_shared<SpeedAction>(
+            "ego", 7.0, TransitionDynamics{DynamicsShape::Linear, DynamicsDimension::Time, 0.5})));
     Engine engine;
     ASSERT_EQ(engine.init(make_following_scenario(plain_entity("ego"), plain_entity("lead"), 60.0,
                                                   10.0, 10.0, std::move(events))),

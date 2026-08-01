@@ -107,8 +107,15 @@ void read_event_action(ReadContext& ctx, const pugi::xml_node& node,
                       "a private action needs at least one actor in its ManeuverGroup");
         return;
     }
+    // The instances of one authored PrivateAction share a bulk group id, so the
+    // runtime can apply §7.5.4's rule that a conflict on one actor overrides
+    // every instance. A single actor still gets one — a group of one behaves
+    // identically, and the id costs nothing. Numbered from the reader's running
+    // counter, so the ids are a function of document order alone.
+    const std::size_t group = ctx.next_bulk_group();
     for (const std::string& actor : actors) {
         if (std::shared_ptr<ir::Action> action = read_private_action(ctx, variant, actor)) {
+            action->set_bulk_group(group);
             out.actions.push_back(std::move(action));
         }
     }

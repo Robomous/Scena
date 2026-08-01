@@ -151,22 +151,72 @@ skipTransitions (§8.4.2.1).
   trigger, which has already fired and is not re-evaluated while the act
   runs.
 
-## Action lifetime, and what is not modelled yet
+## Action lifetime and conflicts
 
 The scheduler asks the applier what happened to each action: it either
-completed in the evaluation it was applied in, or it is ongoing and can be
-ended only by a stopTransition (§7.5.3). An event stays in runningState
-while any of its actions is ongoing.
+completed in the evaluation it was applied in, is running under transition
+dynamics and will end on its own, or is ongoing and can be ended only by a
+stopTransition (§7.5.3). An event stays in runningState while any of its
+actions is running or ongoing, and ends regularly when the last one completes
+(§8.3.3.1).
 
-Every action Scena ships today is the §7.4.1.2 step-dynamic case, which
-"does not assign a control strategy", so through the engine no event is
-currently ever in runningState when a sibling starts. Actions whose end is
-governed by transition dynamics, and with them §7.5 action conflict
-resolution, continuous actions and bulk actions over `ManeuverGroup`
-actors, arrive in a later sprint. `ManeuverGroup`'s own
-`maximumExecutionCount` (§8.4.4) is likewise deferred. See
-[ADR-0005](../architecture/ADR-0005-action-lifetime-and-event-priority.md)
-for the reasoning and the full list of resolved spec ambiguities.
+### Which actions conflict
+
+An action conflicts with another only when both "compete for control of the
+same domain in the same resource" (§7.5.1) — the same entity, and an
+overlapping set of control domains. `control_domains()` writes the §7.4.1.1
+domains and Annex A Table 10 down in one place:
+
+| Action | Domains |
+|---|---|
+| `SpeedAction`, `SpeedProfileAction`, `LongitudinalDistanceAction` | longitudinal |
+| `LaneChangeAction`, `LaneOffsetAction`, `LateralDistanceAction` | lateral |
+| `FollowTrajectoryAction` with `timeReference = timing` | lateral + longitudinal |
+| `FollowTrajectoryAction` without a timing | lateral |
+| everything else (`TeleportAction`, routing, controller, visibility, global) | none |
+
+The classification depends on the action's **settings**, not only its type.
+§7.4.1.2: a `SpeedAction`, `LaneChangeAction` or `LaneOffsetAction` "used with
+the step dynamic option ... does not assign a control strategy as the changes
+are enacted instantaneously". A Step-shaped action therefore holds no domain: it
+writes its value and completes, and it does **not** override a control strategy
+already running on that entity — which resumes from its own schedule on the next
+step. Scena reports that situation when it arises mid-run, because writing a
+value something else immediately overwrites is rarely the authored intent. In
+`Init`, where nothing else is running, a Step action is the ordinary case and
+nothing is reported.
+
+When two actions do conflict, the newly triggered one wins and the running one
+"is overridden ... equivalent to issuing a stop trigger to that action"
+(§7.5.1): it moves to completeState with a stopTransition on its next re-poll,
+so its event can end.
+
+### Stopping an event stops its actions
+
+A stopped event "is forced to stop all actions in its scope" (§7.5.2.1). The
+engine releases whatever control strategy each of them had assigned and leaves
+the entity as the release found it — holding its speed, holding its heading. A
+never-ending action is ended this way too: it has no regular ending, but every
+other ending in §7.5.2.1 applies to it (§7.5.3).
+
+### Bulk actions
+
+When a `ManeuverGroup`'s actors resolve to several entities, its private actions
+are applied "in parallel to all given ScenarioObject instances" (§8.3.3.3).
+Scena represents that as one action instance per actor, sharing a bulk group id.
+Two consequences follow:
+
+- the event ends only when **every** instance has ended — that is just the
+  Event's own all-actions join, and it is what §7.5.4 asks for;
+- a conflict on **any** one actor overrides the whole action: every instance is
+  retired and all of its entities fall back to default behavior together
+  (§7.5.4).
+
+`ManeuverGroup`'s own `maximumExecutionCount` (§8.4.4) remains deferred. See
+[ADR-0005](../architecture/ADR-0005-action-lifetime-and-event-priority.md) for
+the event lifetime and priority reasoning, and
+[ADR-0025](../architecture/ADR-0025-action-conflicts-and-bulk-actions.md) for
+the conflict, override-by-event and bulk rules.
 
 ## Example
 

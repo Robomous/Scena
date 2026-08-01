@@ -453,6 +453,10 @@ TEST(Storyboard, PrivateActionAppliesToEveryActor) {
     ASSERT_EQ(actions.size(), 2U);
     EXPECT_EQ(actions[0]->entity_id(), "ego");
     EXPECT_EQ(actions[1]->entity_id(), "target");
+    // The instances share a bulk group so a conflict on one actor overrides the
+    // whole action (§7.5.4). 0 would mean "not a bulk action".
+    EXPECT_NE(actions[0]->bulk_group(), 0U);
+    EXPECT_EQ(actions[0]->bulk_group(), actions[1]->bulk_group());
 }
 
 TEST(Storyboard, EmptyEventIsRejected) {

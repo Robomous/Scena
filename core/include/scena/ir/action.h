@@ -50,6 +50,35 @@ public:
     /// whose output is mangled and platform-dependent — the determinism
     /// contract requires a stable string.
     [[nodiscard]] virtual std::string_view kind() const noexcept = 0;
+
+    /// Identifies the *bulk action* this instance belongs to, or 0 when it
+    /// stands alone.
+    ///
+    /// A private action in a ManeuverGroup whose actors resolve to several
+    /// entities is applied "in parallel to all given ScenarioObject instances"
+    /// (§8.3.3.3). Scena represents that as one `ir::Action` per actor — each
+    /// carries its own `entity_id()`, so the runtime never needs an actor
+    /// parameter — and the shared group id is what makes them recognizable as
+    /// instances of a single authored action.
+    ///
+    /// The runtime needs that only for §7.5.4's override rule: "if any of the
+    /// corresponding instances of Entity sparks a conflict with a newly started
+    /// action, then the running action is overridden. All its instances of
+    /// Entity are supposed to fall back to default behavior simultaneously."
+    /// Completion needs nothing: the instances share an Event, and an Event
+    /// already ends only when all of its actions have (§8.3.3.1), which is
+    /// exactly §8.3.3.3's join.
+    ///
+    /// Ids are assigned by whoever builds the instances (the XML frontend) and
+    /// only have to be unique within a scenario.
+    [[nodiscard]] std::size_t bulk_group() const noexcept { return bulk_group_; }
+
+    /// Sets the bulk group. Called while the scenario is being built, never
+    /// during execution — the IR is immutable once the engine holds it.
+    void set_bulk_group(std::size_t group) noexcept { bulk_group_ = group; }
+
+private:
+    std::size_t bulk_group_ = 0;
 };
 
 /// Base of the actor-less actions: the §7.4.2 global actions ("used to set or

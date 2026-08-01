@@ -100,6 +100,12 @@ public:
                (version_.rev_major == major && version_.rev_minor >= minor);
     }
 
+    /// The next `ir::Action::bulk_group` id, counting from 1 (0 means "no bulk
+    /// group"). One id per authored PrivateAction; every actor instance of that
+    /// action shares it (§8.3.3.3). Ids depend only on document order, so a
+    /// scenario loads to the same IR on every platform.
+    [[nodiscard]] std::size_t next_bulk_group() noexcept { return ++bulk_group_; }
+
     /// Reports a finding anchored at `path` with no source position.
     void report(Severity severity, Status code, std::string path, std::string message,
                 std::string rule_id = {});
@@ -186,6 +192,7 @@ private:
     std::string_view source_;
     std::string file_;
     DocumentVersion version_;
+    std::size_t bulk_group_ = 0;
     bool declarations_applied_ = false;
     Status first_error_ = Status::Ok;
 };
