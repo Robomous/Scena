@@ -18,7 +18,9 @@
 
 #include <cstddef>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,6 +28,10 @@
 
 #include <pugixml.hpp>
 
+#include "read_actions.h"
+#include "read_common.h"
+#include "read_entities.h"
+#include "read_storyboard.h"
 #include "reader_context.h"
 #include "scena/xml/detail/attributes.h"
 
@@ -240,9 +246,106 @@ bool read_file_header(ReadContext& ctx, const pugi::xml_node& root, Document& ou
     return ok;
 }
 
-/// Classifies the document by its definition children and warns about every
-/// element the loader does not consume yet — the never-silent rule. The
-/// entity and storyboard lowering that consumes them arrives with p4-s2.
+/// Reads a `ParameterDeclarations` or `VariableDeclarations` element into the
+/// scenario's named-value maps.
+///
+/// The declarations lower verbatim: name to value text, with no type checking
+/// and no `$`-reference or `${...}` expression evaluation — that machinery is
+/// p4-s3's, and a value that carries a reference is reported rather than
+/// stored as the literal text it happens to be.
+void read_declarations(ReadContext& ctx, const pugi::xml_node& node, const char* item_name,
+                       const char* reference_attribute,
+                       std::map<std::string, std::string, std::less<>>& out) {
+    const char* const consumed[] = {item_name, nullptr};
+    detail::warn_unconsumed_children(ctx, node, consumed);
+
+    for (pugi::xml_node declaration : node.children(item_name)) {
+        static const char* const kItemConsumed[] = {"ConstraintGroup", nullptr};
+        detail::warn_unconsumed_children(ctx, declaration, kItemConsumed);
+        if (const pugi::xml_node constraints = declaration.child("ConstraintGroup")) {
+            detail::warn_deferred(ctx, constraints, "p4-s3");
+        }
+        std::string name;
+        std::string value;
+        if (!detail::require_string(ctx, declaration, "name", name) ||
+            !detail::require_string(ctx, declaration, "value", value)) {
+            continue;
+        }
+        // The declared type is p4-s3's business; the by-value conditions
+        // compare stringly today (see ir::Scenario::parameters).
+        if (value.find('$') != std::string::npos) {
+            detail::warn_deferred(ctx, declaration, "p4-s3");
+            continue;
+        }
+        out.insert_or_assign(std::move(name), std::move(value));
+    }
+    (void)reference_attribute;
+}
+
+/// Reads the `RoadNetwork` element (§RoadNetwork): the file references, which
+/// go to the host, and the traffic signal controllers, which are scenario
+/// content and lower into the IR.
+void read_road_network(ReadContext& ctx, const pugi::xml_node& node, Document& out) {
+    static const char* const kConsumed[] = {"LogicFile", "SceneGraphFile", "TrafficSignals",
+                                            "UsedArea", nullptr};
+    detail::warn_unconsumed_children(ctx, node, kConsumed);
+
+    if (const pugi::xml_node logic = node.child("LogicFile")) {
+        detail::optional_string(logic, "filepath", out.road_network.logic_file);
+    }
+    if (const pugi::xml_node scene = node.child("SceneGraphFile")) {
+        detail::optional_string(scene, "filepath", out.road_network.scene_graph_file);
+    }
+    if (const pugi::xml_node used_area = node.child("UsedArea")) {
+        detail::warn_out_of_scope(ctx, used_area, "used-area geo positions are Post-v0.0.1");
+    }
+    if (const pugi::xml_node signals = node.child("TrafficSignals")) {
+        static const char* const kSignalsConsumed[] = {"TrafficSignalController", nullptr};
+        detail::warn_unconsumed_children(ctx, signals, kSignalsConsumed);
+        for (pugi::xml_node controller_node : signals.children("TrafficSignalController")) {
+            ir::TrafficSignalController controller;
+            if (detail::read_traffic_signal_controller(ctx, controller_node, controller)) {
+                out.scenario.traffic_signal_controllers.push_back(std::move(controller));
+            }
+        }
+    }
+}
+
+/// Lowers one member of the ScenarioDefinition group into the IR.
+void read_scenario_element(ReadContext& ctx, const pugi::xml_node& node, Document& out) {
+    const std::string_view name = node.name();
+    if (name == "ParameterDeclarations") {
+        read_declarations(ctx, node, "ParameterDeclaration", "parameterRef",
+                          out.scenario.parameters);
+        return;
+    }
+    if (name == "VariableDeclarations") {
+        read_declarations(ctx, node, "VariableDeclaration", "variableRef", out.scenario.variables);
+        return;
+    }
+    if (name == "RoadNetwork") {
+        read_road_network(ctx, node, out);
+        return;
+    }
+    if (name == "Entities") {
+        detail::read_entities(ctx, node, out.scenario.entities);
+        return;
+    }
+    if (name == "Storyboard") {
+        detail::read_storyboard(ctx, node, out.scenario);
+        return;
+    }
+    if (name == "CatalogLocations") {
+        detail::warn_deferred(ctx, node, "p4-s4");
+        return;
+    }
+    // MonitorDeclarations: Post-v0.0.1 (coverage matrix).
+    detail::warn_out_of_scope(ctx, node, "monitors are Post-v0.0.1");
+}
+
+/// Classifies the document by its definition children and lowers the ones
+/// that belong to a scenario. Anything outside the loaded subset is reported,
+/// never dropped silently.
 void read_definition(ReadContext& ctx, const pugi::xml_node& root, Document& out) {
     for (pugi::xml_node child : root.children()) {
         if (child.type() != pugi::node_element) {
@@ -283,9 +386,13 @@ void read_definition(ReadContext& ctx, const pugi::xml_node& root, Document& out
                           "parameter value distribution documents are outside the supported scope");
             continue;
         }
-        ctx.report_at(child, Severity::Warning, Status::UnsupportedFeature, element_path(child),
-                      std::string("element '") + child.name() +
-                          "' is not loaded into the scenario yet");
+        if (kind == DocumentKind::Catalog) {
+            // Catalog documents parse and are classified; loading their
+            // entries and resolving references is p4-s4.
+            detail::warn_deferred(ctx, child, "p4-s4");
+            continue;
+        }
+        read_scenario_element(ctx, child, out);
     }
 
     if (out.kind == DocumentKind::Unknown) {
