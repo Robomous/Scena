@@ -15,13 +15,18 @@
  */
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/filesystem.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
+#include <nanobind/trampoline.h>
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,6 +37,7 @@
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/entity_visibility.h"
+#include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
 #include "scena/ir/bounding_box.h"
 #include "scena/ir/condition.h"
@@ -53,11 +59,109 @@
 #include "scena/ir/trigger.h"
 #include "scena/status.h"
 #include "scena/version.h"
+#include "scena/xml/loader.h"
 
 namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace ir = scena::ir;
+
+namespace {
+
+/// nanobind trampoline for ISimulatorGateway: a Python class deriving from
+/// scena.SimulatorGateway overrides whichever methods it cares about, and the
+/// engine calls them through here.
+///
+/// GIL and reentrancy. The engine invokes these synchronously inside init() and
+/// step(), on the calling thread. nanobind reacquires the GIL for each override,
+/// so a Python gateway works whether or not the host released it around step().
+/// The no-reentrancy rule of ADR-0003 applies unchanged and is stricter in
+/// Python than in C++: an override must not call back into the engine that is
+/// calling it — not step(), not init(), not a setter. React between steps.
+///
+/// An override that raises propagates the exception out of step(), which is the
+/// Python-side reading of "the host is part of the determinism equation": a
+/// broken host stops the run rather than silently producing a different one.
+class PyGateway : public scena::gateway::ISimulatorGateway {
+public:
+    NB_TRAMPOLINE(scena::gateway::ISimulatorGateway, 9);
+
+    // publish_state and poll_state are pure virtual in C++ — a C++ gateway must
+    // implement them. In Python they are optional, like every member of the C
+    // ABI's scn_callbacks: a host that only wants storyboard events should not
+    // have to write two stub methods. Both are hand-written rather than
+    // NB_OVERRIDE_PURE_NAME so that "not overridden" is a no-op instead of an
+    // exception.
+    void publish_state(const std::string& entity_id, const scena::EntityState& state) override {
+        const nb::object method = override_for("publish_state");
+        if (!method.is_none()) {
+            method(entity_id, state);
+        }
+    }
+
+    bool poll_state(const std::string& entity_id, scena::EntityState& out) override {
+        // Python cannot fill an out parameter, so the override returns either
+        // None (leave the entity alone) or an EntityState.
+        const nb::object method = override_for("poll_state");
+        if (method.is_none()) {
+            return false;
+        }
+        const nb::object result = method(entity_id);
+        if (result.is_none()) {
+            return false;
+        }
+        out = nb::cast<scena::EntityState>(result);
+        return true;
+    }
+
+    scena::gateway::IRoadQuery* road_query() override {
+        // Road-network injection stays a C++ interface (ADR-0003): IRoadQuery is
+        // a geometry service queried per entity per step, and routing it through
+        // Python would put the interpreter on the runtime's hot path.
+        return nullptr;
+    }
+
+    void on_controller_assigned(const std::string& entity_id,
+                                const ir::Controller& controller) override {
+        NB_OVERRIDE_NAME("on_controller_assigned", on_controller_assigned, entity_id, controller);
+    }
+
+    void on_visibility_changed(const std::string& entity_id,
+                               const scena::EntityVisibility& visibility) override {
+        NB_OVERRIDE_NAME("on_visibility_changed", on_visibility_changed, entity_id, visibility);
+    }
+
+    void on_custom_command(const std::string& type, const std::string& content) override {
+        NB_OVERRIDE_NAME("on_custom_command", on_custom_command, type, content);
+    }
+
+    void on_step_begin(double dt) override { NB_OVERRIDE_NAME("on_step_begin", on_step_begin, dt); }
+
+    void on_step_end(double dt) override { NB_OVERRIDE_NAME("on_step_end", on_step_end, dt); }
+
+    void on_element_transition(const std::string& path, scena::runtime::ElementState state,
+                               scena::runtime::TransitionKind transition) override {
+        NB_OVERRIDE_NAME("on_element_transition", on_element_transition, path, state, transition);
+    }
+
+private:
+    /// The Python override of `name`, or None when the subclass does not define
+    /// one (or the object is gone). Acquires the GIL, which is what makes a
+    /// Python gateway safe whether or not the host released it around step().
+    nb::object override_for(const char* name) const {
+        const nb::gil_scoped_acquire guard;
+        // Look the instance up by the *bound* type: nanobind registers the
+        // Python object against ISimulatorGateway, not against this trampoline.
+        const nb::handle self =
+            nb::find(static_cast<const scena::gateway::ISimulatorGateway*>(this));
+        if (!self.is_valid()) {
+            return nb::none();
+        }
+        return nb::getattr(self, name, nb::none());
+    }
+};
+
+} // namespace
 
 NB_MODULE(_scena, m) {
     m.doc() = "Scena: scenario execution engine for autonomous-driving simulation";
@@ -1657,6 +1761,10 @@ NB_MODULE(_scena, m) {
             },
             "name"_a = std::string())
         .def_rw("name", &ir::Scenario::name)
+        .def_prop_ro(
+            "entities", [](const ir::Scenario& scenario) { return scenario.entities; },
+            "The declared entities, in declaration order (a copy). Read-only: a scenario is "
+            "built with add_entity, and a loaded one is inspected through this.")
         .def(
             "set_parameter",
             [](ir::Scenario& scenario, std::string name, std::string value) {
@@ -1832,5 +1940,90 @@ NB_MODULE(_scena, m) {
         .def("clear_diagnostics", &scena::Engine::clear_diagnostics,
              "Drops every collected diagnostic.")
         .def_prop_ro("time", &scena::Engine::time, "Simulation time in seconds since init().")
-        .def_prop_ro("initialized", &scena::Engine::initialized);
+        .def_prop_ro("initialized", &scena::Engine::initialized)
+        .def("set_gateway", &scena::Engine::set_gateway, "gateway"_a.none(), nb::keep_alive<1, 2>(),
+             "Attaches (or, with None, detaches) a simulator gateway. The engine keeps the "
+             "object alive for as long as it holds it. Changing it between steps is legal.")
+        .def_prop_ro("gateway", &scena::Engine::gateway, nb::rv_policy::reference_internal,
+                     "The attached gateway, or None.");
+
+    // --- The gateway ------------------------------------------------------
+
+    nb::class_<scena::gateway::ISimulatorGateway, PyGateway>(m, "SimulatorGateway")
+        .def(nb::init<>())
+        .def(
+            "publish_state",
+            [](scena::gateway::ISimulatorGateway&, const std::string&, const scena::EntityState&) {
+            },
+            "entity_id"_a, "state"_a,
+            "Called once per step for every engine-controlled entity, after its motion has "
+            "been integrated. Optional — the default does nothing.")
+        .def(
+            "poll_state",
+            [](scena::gateway::ISimulatorGateway&, const std::string&) { return nb::none(); },
+            "entity_id"_a,
+            "Called once per step for every host-controlled entity, before the storyboard is "
+            "evaluated. Return an EntityState to update the entity, or None to leave it "
+            "unchanged. (Unlike the C++ signature, which fills an out parameter.)")
+        .def("on_step_begin", &scena::gateway::ISimulatorGateway::on_step_begin, "dt"_a,
+             "Start of every step, before anything else the gateway sees — the batching hook.")
+        .def("on_step_end", &scena::gateway::ISimulatorGateway::on_step_end, "dt"_a,
+             "End of every step, after the last publish_state. A rejected step calls neither.")
+        .def("on_element_transition", &scena::gateway::ISimulatorGateway::on_element_transition,
+             "path"_a, "state"_a, "transition"_a,
+             "A storyboard element transitioned; `state` is the state after it. Document "
+             "order, depth first, parents before children.")
+        .def("on_custom_command", &scena::gateway::ISimulatorGateway::on_custom_command, "type"_a,
+             "content"_a,
+             "A CustomCommandAction fired (§7.4.3); the engine interprets neither "
+             "argument.")
+        .def("on_controller_assigned", &scena::gateway::ISimulatorGateway::on_controller_assigned,
+             "entity_id"_a, "controller"_a,
+             "An AssignControllerAction handed a controller model over.")
+        .def("on_visibility_changed", &scena::gateway::ISimulatorGateway::on_visibility_changed,
+             "entity_id"_a, "visibility"_a,
+             "A VisibilityAction changed an entity's detectability.");
+
+    // --- Loading OpenSCENARIO XML ----------------------------------------
+
+    m.def(
+        "load_file",
+        [](const std::filesystem::path& path) {
+            scena::DiagnosticSink sink;
+            scena::xml::Document document;
+            const scena::Status status = scena::xml::load_file(path, document, sink);
+            return std::pair<scena::Status, ir::Scenario>{status, std::move(document.scenario)};
+        },
+        "path"_a,
+        "Loads an OpenSCENARIO XML scenario from disk. Returns (status, scenario); use "
+        "load_file_with_diagnostics to see the findings.");
+    m.def(
+        "load_file_with_diagnostics",
+        [](const std::filesystem::path& path) {
+            scena::DiagnosticSink sink;
+            scena::xml::Document document;
+            const scena::Status status = scena::xml::load_file(path, document, sink);
+            return std::make_tuple(status, std::move(document.scenario), sink.take());
+        },
+        "path"_a, "As load_file, additionally returning the list of findings.");
+    m.def(
+        "load_string",
+        [](std::string_view xml) {
+            scena::DiagnosticSink sink;
+            scena::xml::Document document;
+            const scena::Status status = scena::xml::load_string(xml, document, sink);
+            return std::pair<scena::Status, ir::Scenario>{status, std::move(document.scenario)};
+        },
+        "xml"_a,
+        "Loads an OpenSCENARIO XML scenario from a string. Relative catalog and road-network "
+        "paths cannot be resolved without a scenario file, and are reported.");
+    m.def(
+        "load_string_with_diagnostics",
+        [](std::string_view xml) {
+            scena::DiagnosticSink sink;
+            scena::xml::Document document;
+            const scena::Status status = scena::xml::load_string(xml, document, sink);
+            return std::make_tuple(status, std::move(document.scenario), sink.take());
+        },
+        "xml"_a, "As load_string, additionally returning the list of findings.");
 }

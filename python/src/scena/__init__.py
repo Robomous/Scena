@@ -20,6 +20,10 @@ query / close.
 """
 
 from ._scena import (
+    load_file,
+    load_file_with_diagnostics,
+    load_string,
+    load_string_with_diagnostics,
     AbsoluteTargetLane,
     AbsoluteTargetLaneOffset,
     AccelerationCondition,
@@ -118,6 +122,7 @@ from ._scena import (
     SourceLocation,
     SpeedAction,
     SpeedCondition,
+    SimulatorGateway,
     SpeedProfileAction,
     SpeedProfileEntry,
     SpeedTargetValueType,
@@ -264,8 +269,13 @@ __all__ = [
     "SourceLocation",
     "SpeedAction",
     "SpeedCondition",
+    "SimulatorGateway",
     "SpeedProfileAction",
     "SpeedProfileEntry",
+    "load_file",
+    "load_file_with_diagnostics",
+    "load_string",
+    "load_string_with_diagnostics",
     "SpeedTargetValueType",
     "StandStillCondition",
     "Status",
