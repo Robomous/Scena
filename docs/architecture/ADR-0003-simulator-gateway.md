@@ -74,3 +74,24 @@ in this phase, and none will live inside the core.
   indirection per entity per step — acceptable at scenario entity counts.
 - Host-controlled entities make the host part of the determinism equation: a
   host replaying identical reported states reproduces identical runs.
+
+## Amendments
+
+- **p5-s5 (ADR-0014):** `on_controller_assigned` / `on_visibility_changed`
+  defaulted callbacks; **p5-s6 (ADR-0015):** `on_custom_command`. Documented
+  in those ADRs; listed here for completeness.
+- **p3-s1 — IRoadQuery v1 frozen.** `gateway::IRoadQuery` is extended to its
+  v1 surface and frozen: lane-relative ↔ world conversions plus road heading,
+  lane queries (existence, width, centre offset, type, relative-lane
+  arithmetic), s-range queries (road length, lane s-range), and the route
+  interface (`RouteSpan`, `build_route`, `position_along_route`). Every query
+  reports through a `bool` return where `false` uniformly means "no answer"
+  — off-network input, unknown id, non-finite input, or an unsupported query;
+  backends never throw across the boundary and must answer deterministically.
+  New-in-v1 queries are defaulted to `false` so pre-freeze host
+  implementations keep compiling; the two conversions stay pure.
+  `gateway::FlatWorldRoadQuery` is the null-object backend for road-free
+  scenarios. The runtime consumes road data only through this header;
+  changing the surface from here on is an ADR-level decision. The executable
+  contract every backend must pass lives in
+  `core/tests/support/road_query_contract.h`.

@@ -14,6 +14,10 @@ The user guide grows sprint by sprint along the
   variants and the one resolver that maps them to a world pose, orientation
   composition, and engine- vs host-controlled entities (the report_state
   round-trip and mode violations).
+- [Roads: the road-network interface](roads.md) — the frozen `IRoadQuery`
+  v1 surface, road/lane coordinate and lane-id conventions, the uniform
+  no-answer semantics, the `FlatWorldRoadQuery` null object, and the
+  executable backend contract suite.
 - [Routing, trajectories and controllers](routing.md) — routes and waypoints,
   polyline trajectories with and without a time reference, controller
   assignment and per-domain activation, and entity visibility, plus which of
