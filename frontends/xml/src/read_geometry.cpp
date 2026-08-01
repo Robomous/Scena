@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "catalog.h"
 #include "parameters.h"
 #include "read_common.h"
 
@@ -180,12 +181,17 @@ std::optional<ir::Position> read_trajectory_position(ReadContext& ctx, const pug
     if (!reference) {
         return std::nullopt;
     }
+    pugi::xml_node trajectory = reference.child("Trajectory");
+    std::optional<CatalogEntryScope> scope;
     if (const pugi::xml_node catalog = reference.child("CatalogReference")) {
-        warn_deferred(ctx, catalog, "p4-s4");
-        return std::nullopt;
+        trajectory = ctx.catalogs().resolve(ctx, catalog, CatalogKind::Trajectory, "Trajectory");
+        if (!trajectory) {
+            return std::nullopt;
+        }
+        scope.emplace(ctx, catalog, trajectory);
     }
-    const pugi::xml_node trajectory = require_child(ctx, reference, "Trajectory");
     if (!trajectory) {
+        (void)require_child(ctx, reference, "Trajectory");
         return std::nullopt;
     }
     position.trajectory = read_trajectory(ctx, trajectory);
@@ -202,12 +208,17 @@ std::optional<ir::Position> read_route_position(ReadContext& ctx, const pugi::xm
     if (!reference) {
         return std::nullopt;
     }
+    pugi::xml_node route = reference.child("Route");
+    std::optional<CatalogEntryScope> scope;
     if (const pugi::xml_node catalog = reference.child("CatalogReference")) {
-        warn_deferred(ctx, catalog, "p4-s4");
-        return std::nullopt;
+        route = ctx.catalogs().resolve(ctx, catalog, CatalogKind::Route, "Route");
+        if (!route) {
+            return std::nullopt;
+        }
+        scope.emplace(ctx, catalog, route);
     }
-    const pugi::xml_node route = require_child(ctx, reference, "Route");
     if (!route) {
+        (void)require_child(ctx, reference, "Route");
         return std::nullopt;
     }
     position.route = read_route(ctx, route);

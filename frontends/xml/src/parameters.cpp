@@ -113,25 +113,33 @@ bool group_is_satisfied(ReadContext& ctx, const pugi::xml_node& group, const Val
 } // namespace
 
 void ParameterScope::declare(std::string name, Value value) {
-    frames_.back().insert_or_assign(std::move(name), std::move(value));
+    frames_.back().values.insert_or_assign(std::move(name), std::move(value));
 }
 
 std::optional<Value> ParameterScope::find(std::string_view name) const {
     for (auto frame = frames_.rbegin(); frame != frames_.rend(); ++frame) {
-        const auto found = frame->find(name);
-        if (found != frame->end()) {
+        const auto found = frame->values.find(name);
+        if (found != frame->values.end()) {
             return found->second;
+        }
+        if (frame->isolated) {
+            // A catalog entry sees its own parameters and nothing else
+            // (§9.5), so lookup stops at the isolation boundary rather than
+            // silently picking up a same-named scenario parameter.
+            break;
         }
     }
     return std::nullopt;
 }
 
 const std::map<std::string, Value, std::less<>>& ParameterScope::declared() const {
-    return frames_.front();
+    return frames_.front().values;
 }
 
-void ParameterScope::push() {
-    frames_.emplace_back();
+void ParameterScope::push(bool isolated) {
+    Frame frame;
+    frame.isolated = isolated;
+    frames_.push_back(std::move(frame));
 }
 
 void ParameterScope::pop() {
@@ -190,6 +198,12 @@ std::optional<std::string> resolve_attribute_text(ReadContext& ctx, const pugi::
 }
 
 void read_parameter_declarations(ReadContext& ctx, const pugi::xml_node& node) {
+    if (ctx.take_declarations_applied()) {
+        // A catalog entry's declarations were already applied together with
+        // the reference's assignments; reading them again here would shadow
+        // the assignments with the defaults.
+        return;
+    }
     static const char* const kConsumed[] = {"ParameterDeclaration", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
 

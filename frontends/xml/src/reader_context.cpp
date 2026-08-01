@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "catalog.h"
 #include "parameters.h"
 
 namespace scena::xml::detail {
@@ -103,8 +104,22 @@ LineColumn line_column_at(std::string_view source, std::ptrdiff_t offset) {
 }
 
 ReadContext::ReadContext(DiagnosticSink& sink, std::string_view source, std::string file)
-    : sink_(sink), parameters_(std::make_unique<ParameterScope>()), source_(source),
+    : sink_(sink), parameters_(std::make_unique<ParameterScope>()),
+      catalogs_(std::make_unique<CatalogCache>(std::filesystem::path{})), source_(source),
       file_(std::move(file)) {}
+
+void ReadContext::set_base_directory(const std::filesystem::path& base) {
+    catalogs_ = std::make_unique<CatalogCache>(base);
+}
+
+const std::vector<std::string>* ReadContext::entity_selection(std::string_view name) const {
+    const auto found = selections_.find(name);
+    return found == selections_.end() ? nullptr : &found->second;
+}
+
+void ReadContext::add_entity_selection(std::string name, std::vector<std::string> members) {
+    selections_.insert_or_assign(std::move(name), std::move(members));
+}
 
 // Out of line so the header can forward-declare ParameterScope and keep the
 // expression machinery out of every reader's include graph.

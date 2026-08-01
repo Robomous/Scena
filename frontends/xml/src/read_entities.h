@@ -16,12 +16,14 @@
 
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <vector>
 
 #include <pugixml.hpp>
 
 #include "reader_context.h"
+#include "scena/ir/action.h"
 #include "scena/ir/bounding_box.h"
 #include "scena/ir/entity.h"
 
@@ -34,7 +36,12 @@ namespace scena::xml::detail {
 /// standard identifies entities by that single name everywhere (actions,
 /// conditions, actors), so splitting it would invent an identity the document
 /// does not have.
-void read_entities(ReadContext& ctx, const pugi::xml_node& entities, std::vector<ir::Entity>& out);
+/// Reads `Entities` (§7.2.2) into the IR entity list and, for every
+/// `ObjectController` a ScenarioObject declares, appends the
+/// AssignControllerAction that hands that controller to the host at init
+/// (§6.6, ADR-0003).
+void read_entities(ReadContext& ctx, const pugi::xml_node& entities, std::vector<ir::Entity>& out,
+                   std::vector<std::shared_ptr<ir::Action>>& controller_actions);
 
 /// Reads a `BoundingBox` element (§BoundingBox: Center + Dimensions).
 [[nodiscard]] bool read_bounding_box(ReadContext& ctx, const pugi::xml_node& node,

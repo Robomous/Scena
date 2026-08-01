@@ -280,11 +280,19 @@ bool read_triggering_entities(ReadContext& ctx, const pugi::xml_node& node,
     bool ok = read_enum(ctx, triggering, "triggeringEntitiesRule", kTriggeringRules, out.rule);
     for (pugi::xml_node reference : triggering.children("EntityRef")) {
         std::string entity_ref;
-        if (require_string(ctx, reference, "entityRef", entity_ref)) {
-            out.entity_refs.push_back(std::move(entity_ref));
-        } else {
+        if (!require_string(ctx, reference, "entityRef", entity_ref)) {
             ok = false;
+            continue;
         }
+        // A selection may stand where a single entity may (§7.2.2.2), and
+        // the any/all reduction then runs over its members.
+        if (const std::vector<std::string>* selected = ctx.entity_selection(entity_ref)) {
+            for (const std::string& member : *selected) {
+                out.entity_refs.push_back(member);
+            }
+            continue;
+        }
+        out.entity_refs.push_back(std::move(entity_ref));
     }
     if (out.entity_refs.empty()) {
         ctx.report_at(triggering, Severity::Error, Status::ValidationError,

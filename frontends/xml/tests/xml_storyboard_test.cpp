@@ -246,17 +246,21 @@ TEST(Entities, MissingRequiredChildIsReported) {
     EXPECT_FALSE(document.scenario.entities.front().object.has_value());
 }
 
-TEST(Entities, CatalogReferencesAndSelectionsAreDeferred) {
+TEST(Entities, AnUnresolvableCatalogReferenceIsReported) {
+    // Catalog resolution itself is xml_catalog_test's subject; what belongs
+    // here is that a reference with no catalog behind it does not silently
+    // yield an entity with no object.
     constexpr std::string_view kBody = R"(<Entities>
   <ScenarioObject name="ego">
     <CatalogReference catalogName="Vehicles" entryName="car"/>
   </ScenarioObject>
-  <EntitySelection name="cars"><Members/></EntitySelection>
 </Entities>)";
     Document document;
     DiagnosticSink sink;
-    EXPECT_EQ(load(kBody, document, sink), Status::Ok);
-    EXPECT_TRUE(has_message_containing(sink, "p4-s4"));
+    EXPECT_EQ(load(kBody, document, sink), Status::SemanticError);
+    EXPECT_TRUE(has_message_containing(sink, "no catalog directory holds this entry"));
+    ASSERT_EQ(document.scenario.entities.size(), 1U);
+    EXPECT_FALSE(document.scenario.entities.front().object.has_value());
 }
 
 // --- storyboard -----------------------------------------------------------
@@ -735,15 +739,17 @@ TEST(ScenarioDefinition, DeclarationsLowerWithTheirResolvedValues) {
     EXPECT_TRUE(sink.diagnostics().empty());
 }
 
-TEST(ScenarioDefinition, CatalogLocationsAreDeferred) {
+TEST(ScenarioDefinition, CatalogLocationsAreRead) {
     Document document;
     DiagnosticSink sink;
+    // A declared directory is not scanned until a reference needs it, so
+    // declaring one alone is silent.
     ASSERT_EQ(
         load(
             R"(<CatalogLocations><VehicleCatalog><Directory path="./catalogs"/></VehicleCatalog></CatalogLocations>)",
             document, sink),
         Status::Ok);
-    EXPECT_TRUE(has_message_containing(sink, "p4-s4"));
+    EXPECT_TRUE(sink.diagnostics().empty());
 }
 
 // --- GS-1 -----------------------------------------------------------------

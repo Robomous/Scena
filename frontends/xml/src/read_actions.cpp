@@ -19,6 +19,7 @@
 #include <optional>
 #include <utility>
 
+#include "catalog.h"
 #include "parameters.h"
 #include "read_common.h"
 #include "read_entities.h"
@@ -315,12 +316,17 @@ std::shared_ptr<ir::Action> read_routing_action(ReadContext& ctx, const pugi::xm
     const std::string_view name = variant.name();
 
     if (name == "AssignRouteAction") {
+        pugi::xml_node route_node = variant.child("Route");
+        std::optional<CatalogEntryScope> scope;
         if (const pugi::xml_node catalog = variant.child("CatalogReference")) {
-            warn_deferred(ctx, catalog, "p4-s4");
-            return nullptr;
+            route_node = ctx.catalogs().resolve(ctx, catalog, CatalogKind::Route, "Route");
+            if (!route_node) {
+                return nullptr;
+            }
+            scope.emplace(ctx, catalog, route_node);
         }
-        const pugi::xml_node route_node = require_child(ctx, variant, "Route");
         if (!route_node) {
+            (void)require_child(ctx, variant, "Route");
             return nullptr;
         }
         const std::shared_ptr<ir::Route> route = read_route(ctx, route_node);
@@ -356,15 +362,19 @@ std::shared_ptr<ir::Action> read_routing_action(ReadContext& ctx, const pugi::xm
     // 1.1 moved the trajectory behind a TrajectoryRef wrapper; both spellings
     // occur in the targeted range.
     pugi::xml_node trajectory_node = variant.child("Trajectory");
+    std::optional<CatalogEntryScope> trajectory_scope;
+    pugi::xml_node trajectory_catalog = variant.child("CatalogReference");
     if (const pugi::xml_node reference = variant.child("TrajectoryRef")) {
-        if (const pugi::xml_node catalog = reference.child("CatalogReference")) {
-            warn_deferred(ctx, catalog, "p4-s4");
+        trajectory_node = reference.child("Trajectory");
+        trajectory_catalog = reference.child("CatalogReference");
+    }
+    if (!trajectory_node && trajectory_catalog) {
+        trajectory_node =
+            ctx.catalogs().resolve(ctx, trajectory_catalog, CatalogKind::Trajectory, "Trajectory");
+        if (!trajectory_node) {
             return nullptr;
         }
-        trajectory_node = reference.child("Trajectory");
-    } else if (const pugi::xml_node catalog = variant.child("CatalogReference")) {
-        warn_deferred(ctx, catalog, "p4-s4");
-        return nullptr;
+        trajectory_scope.emplace(ctx, trajectory_catalog, trajectory_node);
     }
     if (!trajectory_node) {
         ctx.report_at(variant, Severity::Error, Status::ValidationError, element_path(variant),
@@ -415,12 +425,18 @@ std::shared_ptr<ir::Action> read_controller_action(ReadContext& ctx, const pugi:
     const std::string_view name = variant.name();
 
     if (name == "AssignControllerAction") {
+        pugi::xml_node controller_node = variant.child("Controller");
+        std::optional<CatalogEntryScope> scope;
         if (const pugi::xml_node catalog = variant.child("CatalogReference")) {
-            warn_deferred(ctx, catalog, "p4-s4");
-            return nullptr;
+            controller_node =
+                ctx.catalogs().resolve(ctx, catalog, CatalogKind::Controller, "Controller");
+            if (!controller_node) {
+                return nullptr;
+            }
+            scope.emplace(ctx, catalog, controller_node);
         }
-        const pugi::xml_node controller_node = require_child(ctx, variant, "Controller");
         if (!controller_node) {
+            (void)require_child(ctx, variant, "Controller");
             return nullptr;
         }
         ir::Controller controller;
@@ -728,12 +744,18 @@ std::shared_ptr<ir::Action> read_global_action(ReadContext& ctx, const pugi::xml
     const std::string_view name = variant.name();
 
     if (name == "EnvironmentAction") {
+        pugi::xml_node environment_node = variant.child("Environment");
+        std::optional<CatalogEntryScope> scope;
         if (const pugi::xml_node catalog = variant.child("CatalogReference")) {
-            warn_deferred(ctx, catalog, "p4-s4");
-            return nullptr;
+            environment_node =
+                ctx.catalogs().resolve(ctx, catalog, CatalogKind::Environment, "Environment");
+            if (!environment_node) {
+                return nullptr;
+            }
+            scope.emplace(ctx, catalog, environment_node);
         }
-        const pugi::xml_node environment_node = require_child(ctx, variant, "Environment");
         if (!environment_node) {
+            (void)require_child(ctx, variant, "Environment");
             return nullptr;
         }
         ir::Environment environment;

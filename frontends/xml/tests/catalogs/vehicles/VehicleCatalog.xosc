@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Catalog fixture: a parameterized vehicle entry (§9.4-9.6). -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="2" date="2026-08-01T00:00:00"
+              description="vehicle catalog" author="Scena"/>
+  <Catalog name="ScenaVehicles">
+    <Vehicle name="compact" vehicleCategory="car">
+      <ParameterDeclarations>
+        <ParameterDeclaration name="maxSpeed" parameterType="double" value="50.0"/>
+        <ParameterDeclaration name="length" parameterType="double" value="4.0"/>
+      </ParameterDeclarations>
+      <BoundingBox>
+        <Center x="1.3" y="0.0" z="0.9"/>
+        <Dimensions width="1.8" length="$length" height="1.5"/>
+      </BoundingBox>
+      <Performance maxSpeed="$maxSpeed" maxAcceleration="4.0" maxDeceleration="8.0"/>
+      <Axles>
+        <RearAxle maxSteering="0.0" wheelDiameter="0.6" trackWidth="1.6"
+                  positionX="0.0" positionZ="0.3"/>
+      </Axles>
+    </Vehicle>
+  </Catalog>
+</OpenSCENARIO>

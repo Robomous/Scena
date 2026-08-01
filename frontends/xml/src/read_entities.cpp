@@ -16,11 +16,15 @@
 
 #include "read_entities.h"
 
+#include <algorithm>
+#include <optional>
 #include <string>
 #include <utility>
 
+#include "catalog.h"
 #include "parameters.h"
 #include "read_common.h"
+#include "scena/ir/controller.h"
 #include "scena/ir/entity_types.h"
 
 namespace scena::xml::detail {
@@ -79,6 +83,19 @@ constexpr std::initializer_list<EnumEntry<ir::MiscObjectCategory>> kMiscObjectCa
     {"tree", ir::MiscObjectCategory::Tree},
     {"vegetation", ir::MiscObjectCategory::Vegetation},
     {"wind", ir::MiscObjectCategory::Wind},
+};
+
+constexpr std::initializer_list<EnumEntry<ir::ControllerType>> kControllerTypes = {
+    {"lateral", ir::ControllerType::Lateral},   {"longitudinal", ir::ControllerType::Longitudinal},
+    {"lighting", ir::ControllerType::Lighting}, {"animation", ir::ControllerType::Animation},
+    {"movement", ir::ControllerType::Movement}, {"appearance", ir::ControllerType::Appearance},
+    {"all", ir::ControllerType::All},
+};
+
+constexpr std::initializer_list<EnumEntry<ir::ObjectType>> kObjectTypes = {
+    {"vehicle", ir::ObjectType::Vehicle},
+    {"pedestrian", ir::ObjectType::Pedestrian},
+    {"miscObject", ir::ObjectType::MiscObject},
 };
 
 constexpr std::initializer_list<EnumEntry<ir::Role>> kRoles = {
@@ -209,10 +226,102 @@ bool read_misc_object(ReadContext& ctx, const pugi::xml_node& node, ir::MiscObje
     return ok;
 }
 
+/// Reads the `ObjectController`s a ScenarioObject declares (§6.6) into
+/// AssignControllerActions applied at init.
+///
+/// The mapping (ADR-0003, ADR-0023): a controller is *metadata for the
+/// host*. Scena hands it to the gateway through the same action an
+/// AssignControllerAction in the storyboard would, and the entity stays
+/// engine-controlled — control ownership is the embedder's decision, not the
+/// scenario's, because only the host knows whether it will actually drive
+/// the entity.
+void read_object_controllers(ReadContext& ctx, const pugi::xml_node& node,
+                             const std::string& entity_id,
+                             std::vector<std::shared_ptr<ir::Action>>& out) {
+    for (pugi::xml_node object_controller : node.children("ObjectController")) {
+        static const char* const kConsumed[] = {"CatalogReference", "Controller", nullptr};
+        warn_unconsumed_children(ctx, object_controller, kConsumed);
+
+        pugi::xml_node controller_node = object_controller.child("Controller");
+        std::optional<CatalogEntryScope> scope;
+        if (const pugi::xml_node catalog = object_controller.child("CatalogReference")) {
+            controller_node =
+                ctx.catalogs().resolve(ctx, catalog, CatalogKind::Controller, "Controller");
+            if (!controller_node) {
+                continue;
+            }
+            scope.emplace(ctx, catalog, controller_node);
+        }
+        if (!controller_node) {
+            // An ObjectController with neither form assigns nothing; the
+            // standard allows the empty element as "no controller".
+            continue;
+        }
+        ir::Controller controller;
+        if (!require_string(ctx, controller_node, "name", controller.name)) {
+            continue;
+        }
+        (void)read_enum(ctx, controller_node, "controllerType", kControllerTypes, controller.type);
+        read_properties(ctx, controller_node.child("Properties"), controller.properties);
+        out.push_back(
+            std::make_shared<ir::AssignControllerAction>(entity_id, std::move(controller)));
+    }
+}
+
+/// Reads an entity object from a catalog entry (§9.4-9.6). The entry may be
+/// a Vehicle, a Pedestrian or a MiscObject; which one it is decides the
+/// catalog kind the reference resolves against, so all three are tried in
+/// the order the ScenarioObject choice declares them.
+void read_catalog_object(ReadContext& ctx, const pugi::xml_node& reference, ir::Entity& entity) {
+    struct Candidate {
+        CatalogKind kind;
+        const char* element;
+    };
+    static constexpr Candidate kCandidates[] = {
+        {CatalogKind::Vehicle, "Vehicle"},
+        {CatalogKind::Pedestrian, "Pedestrian"},
+        {CatalogKind::MiscObject, "MiscObject"},
+    };
+    for (const Candidate& candidate : kCandidates) {
+        if (!ctx.catalogs().has_directory(candidate.kind)) {
+            continue;
+        }
+        // Trying a kind that does not hold the entry is how the right one is
+        // found, so a miss is silent; only "no kind has it" is reported.
+        const pugi::xml_node entry =
+            ctx.catalogs().try_resolve(ctx, reference, candidate.kind, candidate.element);
+        if (!entry) {
+            continue;
+        }
+        const CatalogEntryScope scope(ctx, reference, entry);
+        if (candidate.kind == CatalogKind::Vehicle) {
+            ir::Vehicle object;
+            if (read_vehicle(ctx, entry, object)) {
+                entity.object = std::move(object);
+            }
+        } else if (candidate.kind == CatalogKind::Pedestrian) {
+            ir::Pedestrian object;
+            if (read_pedestrian(ctx, entry, object)) {
+                entity.object = std::move(object);
+            }
+        } else {
+            ir::MiscObject object;
+            if (read_misc_object(ctx, entry, object)) {
+                entity.object = std::move(object);
+            }
+        }
+        return;
+    }
+    ctx.report_at(reference, Severity::Error, Status::SemanticError, element_path(reference),
+                  "no catalog directory holds this entry",
+                  "asam.net:xosc:1.0.0:reference_control.catalog_reference_resolvability");
+}
+
 /// Reads one ScenarioObject (§7.2.2) — the entity identity, its concrete
 /// object, and the controller assignment that decides control ownership.
 void read_scenario_object(ReadContext& ctx, const pugi::xml_node& node,
-                          std::vector<ir::Entity>& out) {
+                          std::vector<ir::Entity>& out,
+                          std::vector<std::shared_ptr<ir::Action>>& controller_actions) {
     static const char* const kConsumed[] = {
         "CatalogReference",        "Vehicle",          "Pedestrian", "MiscObject",
         "ExternalObjectReference", "ObjectController", nullptr};
@@ -230,16 +339,6 @@ void read_scenario_object(ReadContext& ctx, const pugi::xml_node& node,
         warn_out_of_scope(ctx, external,
                           "external object references need road-network object binding");
     }
-    if (const pugi::xml_node reference = node.child("CatalogReference")) {
-        warn_deferred(ctx, reference, "p4-s4");
-    }
-    if (const pugi::xml_node controller = node.child("ObjectController")) {
-        // Control ownership and controller metadata are p4-s4's ObjectController
-        // lowering; until then every loaded entity is engine-controlled, which
-        // is the IR default and what the storyboard's private actions expect.
-        warn_deferred(ctx, controller, "p4-s4");
-    }
-
     if (const pugi::xml_node vehicle = node.child("Vehicle")) {
         ir::Vehicle object;
         if (read_vehicle(ctx, vehicle, object)) {
@@ -255,9 +354,15 @@ void read_scenario_object(ReadContext& ctx, const pugi::xml_node& node,
         if (read_misc_object(ctx, misc, object)) {
             entity.object = std::move(object);
         }
+    } else if (const pugi::xml_node reference = node.child("CatalogReference")) {
+        // A catalog entry is read exactly like an inline object, inside the
+        // §9.5 parameter frame the reference sets up.
+        read_catalog_object(ctx, reference, entity);
     }
-    // No concrete object (catalog reference, external reference, or a failed
-    // read) leaves the entity unclassified — a valid IR entity that simply
+    read_object_controllers(ctx, node, entity.id, controller_actions);
+
+    // No concrete object (external reference or a failed read) leaves the
+    // entity unclassified — a valid IR entity that simply
     // carries no geometry, which the runtime reports when something needs it.
     out.push_back(std::move(entity));
 }
@@ -312,14 +417,95 @@ void read_properties(ReadContext& ctx, const pugi::xml_node& node, std::vector<i
     }
 }
 
-void read_entities(ReadContext& ctx, const pugi::xml_node& entities, std::vector<ir::Entity>& out) {
+/// Expands an `EntitySelection` (§7.2.2.2) into the entity ids it selects,
+/// in document order: explicitly named members first, then whatever a
+/// `ByType` clause matches, each in the order the entities were declared.
+///
+/// The expansion happens at load time because the Scenario IR names entities
+/// individually — a selection is a way of writing a set, not a runtime
+/// object. Selections are read after every ScenarioObject, so a member is
+/// always known; a selection naming another selection expands the ones read
+/// before it, which also breaks the circular definitions §7.2.2.2 warns
+/// about.
+void read_entity_selection(ReadContext& ctx, const pugi::xml_node& node,
+                           const std::vector<ir::Entity>& entities) {
+    static const char* const kConsumed[] = {"Members", nullptr};
+    warn_unconsumed_children(ctx, node, kConsumed);
+
+    std::string name;
+    if (!require_string(ctx, node, "name", name)) {
+        return;
+    }
+    const pugi::xml_node members = node.child("Members");
+    if (!members) {
+        ctx.add_entity_selection(std::move(name), {});
+        return;
+    }
+    static const char* const kMemberConsumed[] = {"EntityRef", "ByType", nullptr};
+    warn_unconsumed_children(ctx, members, kMemberConsumed);
+
+    std::vector<std::string> selected;
+    const auto add = [&selected](const std::string& id) {
+        // A member named twice — directly and through a type — is one member.
+        if (std::find(selected.begin(), selected.end(), id) == selected.end()) {
+            selected.push_back(id);
+        }
+    };
+
+    for (pugi::xml_node member : members.children()) {
+        if (member.type() != pugi::node_element) {
+            continue;
+        }
+        const std::string_view element = member.name();
+        if (element == "EntityRef") {
+            std::string entity_ref;
+            if (!require_string(ctx, member, "entityRef", entity_ref)) {
+                continue;
+            }
+            if (const std::vector<std::string>* nested = ctx.entity_selection(entity_ref)) {
+                for (const std::string& id : *nested) {
+                    add(id);
+                }
+                continue;
+            }
+            const bool declared =
+                std::any_of(entities.begin(), entities.end(),
+                            [&entity_ref](const ir::Entity& e) { return e.id == entity_ref; });
+            if (!declared) {
+                ctx.report_at(
+                    member, Severity::Error, Status::SemanticError, element_path(member),
+                    "entity selection member '" + entity_ref + "' is not declared",
+                    "asam.net:xosc:1.2.0:reference_control.references_to_scenario_object");
+                continue;
+            }
+            add(entity_ref);
+        } else if (element == "ByType") {
+            ir::ObjectType type = ir::ObjectType::Vehicle;
+            if (!read_enum(ctx, member, "objectType", kObjectTypes, type)) {
+                continue;
+            }
+            for (const ir::Entity& entity : entities) {
+                const std::optional<ir::ObjectType> entity_type = ir::object_type_of(entity);
+                if (entity_type.has_value() && *entity_type == type) {
+                    add(entity.id);
+                }
+            }
+        }
+    }
+    ctx.add_entity_selection(std::move(name), std::move(selected));
+}
+
+void read_entities(ReadContext& ctx, const pugi::xml_node& entities, std::vector<ir::Entity>& out,
+                   std::vector<std::shared_ptr<ir::Action>>& controller_actions) {
     static const char* const kConsumed[] = {"ScenarioObject", "EntitySelection", nullptr};
     warn_unconsumed_children(ctx, entities, kConsumed);
-    for (pugi::xml_node selection : entities.children("EntitySelection")) {
-        warn_deferred(ctx, selection, "p4-s4");
-    }
     for (pugi::xml_node object : entities.children("ScenarioObject")) {
-        read_scenario_object(ctx, object, out);
+        read_scenario_object(ctx, object, out, controller_actions);
+    }
+    // Selections come second whatever order the document lists them in: they
+    // name the objects, not the other way round.
+    for (pugi::xml_node selection : entities.children("EntitySelection")) {
+        read_entity_selection(ctx, selection, out);
     }
 }
 

@@ -17,10 +17,13 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <pugixml.hpp>
 
@@ -29,6 +32,7 @@
 #include "scena/xml/document.h"
 
 namespace scena::xml::detail {
+class CatalogCache;
 class ParameterScope;
 } // namespace scena::xml::detail
 
@@ -124,15 +128,52 @@ public:
     [[nodiscard]] ParameterScope& parameters() noexcept { return *parameters_; }
     [[nodiscard]] const ParameterScope& parameters() const noexcept { return *parameters_; }
 
+    /// The catalog directories the scenario declared and the entries loaded
+    /// from them (§9.6). Lives on the context for the same reason the
+    /// parameter scope does: a catalog reference can appear under almost any
+    /// element, so every reader needs the same resolver.
+    [[nodiscard]] CatalogCache& catalogs() noexcept { return *catalogs_; }
+
+    /// Sets the directory relative catalog paths resolve against — the
+    /// directory of the scenario file. Empty for a document loaded from
+    /// memory, which then cannot resolve a relative catalog path.
+    void set_base_directory(const std::filesystem::path& base);
+
+    /// Marks the next `ParameterDeclarations` element as already applied.
+    ///
+    /// A catalog entry's declarations are read by `CatalogEntryScope`, which
+    /// then overrides them with the reference's assignments. The element
+    /// reader that runs next would otherwise read the same declarations into
+    /// its own frame and shadow those assignments with the defaults, so the
+    /// scope sets this flag and the declaration reader consumes it once.
+    void set_declarations_applied() noexcept { declarations_applied_ = true; }
+    [[nodiscard]] bool take_declarations_applied() noexcept {
+        const bool applied = declarations_applied_;
+        declarations_applied_ = false;
+        return applied;
+    }
+
+    /// The entity ids of a named EntitySelection (§7.2.2.2), or nullptr when
+    /// no selection has that name.
+    [[nodiscard]] const std::vector<std::string>* entity_selection(std::string_view name) const;
+
+    /// Records a selection's expanded members, in document order.
+    void add_entity_selection(std::string name, std::vector<std::string> members);
+
 private:
     void emit(Severity severity, Status code, std::string path, std::string message,
               std::string rule_id, LineColumn position);
 
     DiagnosticSink& sink_;
     std::unique_ptr<ParameterScope> parameters_;
+    std::unique_ptr<CatalogCache> catalogs_;
+    // Ordered map: selections are walked when expanding actors, and the
+    // resulting IR order must not depend on a hash seed.
+    std::map<std::string, std::vector<std::string>, std::less<>> selections_;
     std::string_view source_;
     std::string file_;
     DocumentVersion version_;
+    bool declarations_applied_ = false;
     Status first_error_ = Status::Ok;
 };
 

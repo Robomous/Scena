@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="2" date="2026-08-01T00:00:00"
+              description="pedestrian catalog" author="Scena"/>
+  <Catalog name="ScenaPedestrians">
+    <Pedestrian name="walker" pedestrianCategory="pedestrian" mass="80">
+      <BoundingBox>
+        <Center x="0.0" y="0.0" z="0.9"/>
+        <Dimensions width="0.6" length="0.4" height="1.8"/>
+      </BoundingBox>
+    </Pedestrian>
+  </Catalog>
+</OpenSCENARIO>

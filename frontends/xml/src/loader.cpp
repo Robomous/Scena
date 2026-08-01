@@ -28,6 +28,7 @@
 
 #include <pugixml.hpp>
 
+#include "catalog.h"
 #include "expression.h"
 #include "parameters.h"
 #include "read_actions.h"
@@ -355,7 +356,9 @@ void read_scenario_element(ReadContext& ctx, const pugi::xml_node& node, Documen
         return;
     }
     if (name == "Entities") {
-        detail::read_entities(ctx, node, out.scenario.entities);
+        // The controller assignments an ObjectController implies are init
+        // actions, applied before simulation time like every other one.
+        detail::read_entities(ctx, node, out.scenario.entities, out.scenario.init_actions);
         return;
     }
     if (name == "Storyboard") {
@@ -363,8 +366,7 @@ void read_scenario_element(ReadContext& ctx, const pugi::xml_node& node, Documen
         return;
     }
     if (name == "CatalogLocations") {
-        detail::warn_deferred(ctx, node, "p4-s4");
-        return;
+        return; // read ahead of everything else, see read_definition
     }
     // MonitorDeclarations: Post-v0.0.1 (coverage matrix).
     detail::warn_out_of_scope(ctx, node, "monitors are Post-v0.0.1");
@@ -374,6 +376,11 @@ void read_scenario_element(ReadContext& ctx, const pugi::xml_node& node, Documen
 /// that belong to a scenario. Anything outside the loaded subset is reported,
 /// never dropped silently.
 void read_definition(ReadContext& ctx, const pugi::xml_node& root, Document& out) {
+    // Catalog directories are read first, whatever order the document lists
+    // its children in: everything else may reference a catalog entry.
+    if (const pugi::xml_node locations = root.child("CatalogLocations")) {
+        detail::read_catalog_locations(ctx, locations, ctx.catalogs());
+    }
     for (pugi::xml_node child : root.children()) {
         if (child.type() != pugi::node_element) {
             continue;
@@ -430,7 +437,8 @@ void read_definition(ReadContext& ctx, const pugi::xml_node& root, Document& out
     }
 }
 
-Status load_buffer(std::string_view xml, std::string file, Document& out, DiagnosticSink& sink) {
+Status load_buffer(std::string_view xml, std::string file, Document& out, DiagnosticSink& sink,
+                   const std::filesystem::path& base_directory = {}) {
     out = Document{};
 
     pugi::xml_document doc;
@@ -444,6 +452,9 @@ Status load_buffer(std::string_view xml, std::string file, Document& out, Diagno
         doc.load_buffer(xml.data(), xml.size(), pugi::parse_default, pugi::encoding_auto);
     const bool offsets_index_input = result.encoding == pugi::encoding_utf8;
     ReadContext ctx(sink, offsets_index_input ? xml : std::string_view{}, std::move(file));
+    if (!base_directory.empty()) {
+        ctx.set_base_directory(base_directory);
+    }
 
     if (!result) {
         ctx.report_at_offset(result.offset, Severity::Error, Status::ParseError, "/",
@@ -511,7 +522,9 @@ Status load_file(const std::filesystem::path& path, Document& out, DiagnosticSin
         sink.report(std::move(diagnostic));
     }
 
-    return load_buffer(text, file, out, sink);
+    // Catalog directories are relative to the scenario file (§9.6), so the
+    // file's own directory is what they resolve against.
+    return load_buffer(text, file, out, sink, path.parent_path());
 }
 
 } // namespace scena::xml
