@@ -82,8 +82,28 @@ const std::vector<SpeedProfileEntry>& SpeedProfileAction::entries() const {
     return entries_;
 }
 
+SpeedProfileAction::SpeedProfileAction(std::string entity_id,
+                                       std::vector<SpeedProfileEntry> entries,
+                                       FollowingMode following_mode, std::string entity_ref,
+                                       std::optional<DynamicConstraints> constraints)
+    : entity_id_(std::move(entity_id)), entries_(std::move(entries)),
+      following_mode_(following_mode), entity_ref_(std::move(entity_ref)),
+      constraints_(std::move(constraints)) {}
+
 FollowingMode SpeedProfileAction::following_mode() const {
     return following_mode_;
+}
+
+const std::string& SpeedProfileAction::entity_ref() const {
+    return entity_ref_;
+}
+
+bool SpeedProfileAction::is_relative() const noexcept {
+    return !entity_ref_.empty();
+}
+
+const std::optional<DynamicConstraints>& SpeedProfileAction::constraints() const {
+    return constraints_;
 }
 
 TeleportAction::TeleportAction(std::string entity_id, Position position)

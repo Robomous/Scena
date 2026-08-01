@@ -477,6 +477,25 @@ SCN_API scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const
                                                        double at_time, scn_event_priority priority,
                                                        int maximum_execution_count);
 
+/* Adds a SpeedProfileAction with the full §SpeedProfileAction surface.
+ *
+ * `reference_entity_id` may be NULL or empty for an absolute profile; when it
+ * names an entity, each entry's speed is a delta on that entity's speed,
+ * resolved once when the action starts. `constraints` may be NULL; when
+ * present it limits acceleration, deceleration, jerk and speed and takes
+ * precedence over the actor's Performance envelope.
+ *
+ * With SCN_FOLLOWING_MODE_FOLLOW the profile is realised with a smooth shape
+ * whose acceleration is zero at the start and end of each segment, and each
+ * segment is stretched until its peak acceleration and peak jerk fit inside the
+ * effective limits; the entry times act as lower bounds. Rejects the same
+ * arguments as scn_engine_add_speed_profile_action. */
+SCN_API scn_status scn_engine_add_speed_profile_action_ex(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id,
+    const scn_speed_profile_entry* entries, size_t entry_count, scn_following_mode following_mode,
+    const scn_dynamic_constraints* constraints, double at_time, scn_event_priority priority,
+    int maximum_execution_count);
+
 /* Adds a SpeedAction whose target is relative to `reference_entity_id`
  * (§RelativeTargetSpeed): the target is that entity's speed combined with
  * `value` per `value_type` (delta ⇒ reference + value, factor ⇒ reference *

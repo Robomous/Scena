@@ -147,14 +147,13 @@ std::shared_ptr<ir::Action> read_speed_profile_action(ReadContext& ctx, const pu
                                                       const std::string& entity_id) {
     static const char* const kConsumed[] = {"SpeedProfileEntry", "DynamicConstraints", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
-    if (node.attribute("entityRef")) {
-        // The entity-relative profile is deferred with the rest of the
-        // follow-mode work (ADR-0011, #62).
-        warn_out_of_scope(ctx, node, "entity-relative speed profiles are deferred (#62)");
-    }
-    if (const pugi::xml_node constraints = node.child("DynamicConstraints")) {
-        warn_out_of_scope(ctx, constraints, "speed-profile dynamic constraints are deferred (#62)");
-    }
+
+    // §SpeedProfileAction `entityRef`: optional; when present every entry's
+    // speed is a delta on that entity's speed.
+    std::string entity_ref;
+    (void)optional_string(ctx, node, "entityRef", entity_ref);
+    std::optional<ir::DynamicConstraints> constraints =
+        read_dynamic_constraints(ctx, node.child("DynamicConstraints"));
 
     ir::FollowingMode following_mode = ir::FollowingMode::Position;
     bool ok = read_enum(ctx, node, "followingMode", kFollowingModes, following_mode);
@@ -171,7 +170,8 @@ std::shared_ptr<ir::Action> read_speed_profile_action(ReadContext& ctx, const pu
         return nullptr;
     }
     return ok ? std::make_shared<ir::SpeedProfileAction>(entity_id, std::move(entries),
-                                                         following_mode)
+                                                         following_mode, std::move(entity_ref),
+                                                         std::move(constraints))
               : nullptr;
 }
 

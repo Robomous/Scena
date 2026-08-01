@@ -315,6 +315,73 @@ TEST(CApiTest, AddSpeedProfileActionFollowsTargets) {
     scn_engine_destroy(engine);
 }
 
+TEST(CApiTest, AddSpeedProfileActionExAppliesEntityRefAndConstraints) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "lead", "lead vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    // The reference holds 12 m/s from t = 0; an entry of -2 targets 10 m/s.
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "lead", 12.0, 0.0), SCN_OK);
+    const scn_speed_profile_entry entries[] = {{-2.0, 2.0}};
+    // Negative means "unspecified" across the ABI; only maxAcceleration is set.
+    scn_dynamic_constraints constraints{5.0, -1.0, -1.0, -1.0, -1.0};
+    ASSERT_EQ(scn_engine_add_speed_profile_action_ex(engine, "ego", "lead", entries, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, &constraints, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 10.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedProfileActionExAcceptsNullOptionalArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego vehicle", SCN_CONTROL_ENGINE), SCN_OK);
+    const scn_speed_profile_entry entries[] = {{10.0, 2.0}};
+    // NULL reference entity and NULL constraints mean "absolute, unconstrained".
+    ASSERT_EQ(scn_engine_add_speed_profile_action_ex(engine, "ego", nullptr, entries, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 2.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 10.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, AddSpeedProfileActionExRejectsInvalidArguments) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    const scn_speed_profile_entry entries[] = {{5.0, 1.0}};
+    EXPECT_EQ(scn_engine_add_speed_profile_action_ex(nullptr, "ego", nullptr, entries, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action_ex(engine, nullptr, nullptr, entries, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action_ex(engine, "ego", nullptr, nullptr, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action_ex(engine, "ego", nullptr, entries, 0,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, 1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_add_speed_profile_action_ex(engine, "ego", nullptr, entries, 1,
+                                                     SCN_FOLLOWING_MODE_POSITION, nullptr, 0.0,
+                                                     SCN_PRIORITY_PARALLEL, -1),
+              SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
 TEST(CApiTest, LongitudinalBuildersRejectInvalidArguments) {
     scn_engine* engine = scn_engine_create();
     ASSERT_NE(engine, nullptr);

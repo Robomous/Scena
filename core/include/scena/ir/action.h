@@ -144,6 +144,20 @@ private:
     TransitionDynamics dynamics_;
 };
 
+/// Limits on the acceleration, deceleration, jerk and speed an action may use,
+/// per §DynamicConstraints. Every field is optional and "missing value is
+/// interpreted as 'inf'" — an absent limit does not constrain. The rate limits
+/// are jerk bounds [m/s^3] and were added in 1.2. Where an action carries these
+/// constraints they take "precedence over any Performance settings"
+/// (§SpeedProfileAction, §DynamicConstraints).
+struct DynamicConstraints {
+    std::optional<double> max_acceleration;      ///< m/s^2, Range [0..inf[.
+    std::optional<double> max_acceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
+    std::optional<double> max_deceleration;      ///< m/s^2, Range [0..inf[.
+    std::optional<double> max_deceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
+    std::optional<double> max_speed;             ///< m/s, Range [0..inf[.
+};
+
 /// One speed target of a SpeedProfileAction. Per ASAM OpenSCENARIO XML 1.4.0
 /// §SpeedProfileEntry.
 struct SpeedProfileEntry {
@@ -159,15 +173,28 @@ struct SpeedProfileEntry {
 /// Changes an entity's speed through a series of speed targets over time. Per
 /// ASAM OpenSCENARIO XML 1.4.0 §SpeedProfileAction.
 ///
-/// Scena models `FollowingMode::Position`: strictly linear interpolation
-/// between successive targets, starting from the entity's current speed. An
-/// entry with no time is reached as fast as the Performance envelope allows.
-/// The entityRef-relative profile and the jerk/DynamicConstraints of
-/// followingMode=follow are deferred (ADR-0011).
+/// `FollowingMode::Position` interpolates strictly linearly between successive
+/// targets, starting from the entity's current speed. `FollowingMode::Follow`
+/// applies jerk and the other dynamic constraints instead, producing a smoother
+/// curve whose acceleration is zero at the start and end of the profile
+/// (§SpeedProfileAction); Scena realises that with the Cubic shape (ADR-0024).
+///
+/// With `entity_ref` set, each entry's `speed` is a delta on the referenced
+/// entity's speed rather than an absolute value (§SpeedProfileAction
+/// `entityRef`); it is resolved once, when the action starts.
+///
+/// `constraints` limits acceleration, deceleration, jerk and speed, and takes
+/// precedence over the actor's `Performance` envelope (§DynamicConstraints).
 class SpeedProfileAction final : public Action {
 public:
     SpeedProfileAction(std::string entity_id, std::vector<SpeedProfileEntry> entries,
                        FollowingMode following_mode = FollowingMode::Position);
+
+    /// Full form: an optionally entity-relative profile with optional dynamic
+    /// constraints. An empty `entity_ref` means an absolute profile.
+    SpeedProfileAction(std::string entity_id, std::vector<SpeedProfileEntry> entries,
+                       FollowingMode following_mode, std::string entity_ref,
+                       std::optional<DynamicConstraints> constraints);
 
     [[nodiscard]] const std::string& entity_id() const override;
 
@@ -179,10 +206,22 @@ public:
     /// Interpolation behavior between targets (§FollowingMode).
     [[nodiscard]] FollowingMode following_mode() const;
 
+    /// Name of the entity the entries are relative to, empty for an absolute
+    /// profile (§SpeedProfileAction `entityRef`).
+    [[nodiscard]] const std::string& entity_ref() const;
+
+    /// True when the entries are deltas on `entity_ref`'s speed.
+    [[nodiscard]] bool is_relative() const noexcept;
+
+    /// Dynamic constraints for the profile, if any (§DynamicConstraints).
+    [[nodiscard]] const std::optional<DynamicConstraints>& constraints() const;
+
 private:
     std::string entity_id_;
     std::vector<SpeedProfileEntry> entries_;
     FollowingMode following_mode_;
+    std::string entity_ref_;
+    std::optional<DynamicConstraints> constraints_;
 };
 
 /// Teleports an entity to a target position. Per ASAM OpenSCENARIO XML 1.4.0
@@ -223,19 +262,6 @@ enum class LongitudinalDisplacement {
     TrailingReferencedEntity,
     /// The actor stays ahead of the reference entity.
     LeadingReferencedEntity,
-};
-
-/// Limits on the acceleration, deceleration and speed a distance controller may
-/// use, per §DynamicConstraints. Every field is optional and "missing value is
-/// interpreted as 'inf'" — an absent limit does not constrain. The rate limits
-/// (jerk) were added in 1.2; Scena stores them but does not yet clamp jerk
-/// (deferred with the followingMode=follow jerk model, #62).
-struct DynamicConstraints {
-    std::optional<double> max_acceleration;      ///< m/s^2, Range [0..inf[.
-    std::optional<double> max_acceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
-    std::optional<double> max_deceleration;      ///< m/s^2, Range [0..inf[.
-    std::optional<double> max_deceleration_rate; ///< m/s^3, Range [0..inf[ [1.2].
-    std::optional<double> max_speed;             ///< m/s, Range [0..inf[.
 };
 
 /// Keeps a longitudinal distance or time gap to a reference entity, per

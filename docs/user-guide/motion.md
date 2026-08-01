@@ -67,17 +67,60 @@ finishes. A non-vehicle, or a vehicle without `Performance`, is not clamped.
 
 > The clamp is applied even in `followingMode=position`. This is an intentional
 > simplification (see ADR-0011): Scena favours achievable motion over strict
-> adherence to a physically impossible shape. Strict position-mode adherence and
-> `followingMode=follow` jerk-shaping are deferred.
+> adherence to a physically impossible shape.
+
+### `followingMode`: `position` versus `follow`
+
+`position` holds the authored shape exactly, clamped for acceleration as above.
+
+`follow` asks the actor to reach the target "as good as possible by observing
+the dynamic constraints of the entity" (§FollowingMode), and
+§SpeedProfileAction adds that under `follow` **the acceleration is zero at the
+start and end**. Scena realises that as a shape substitution plus a longer
+duration (ADR-0024):
+
+- a `Linear`, `Step` or `Cubic` shape is realised as **`Cubic`** — the
+  lowest-order shape with zero acceleration at both ends. `Sinusoidal` already
+  has that property and is kept exactly as authored;
+- the duration grows until both the peak acceleration and the peak **jerk** fit
+  inside the effective limits, where the jerk limits are
+  `Performance.maxAccelerationRate` / `maxDecelerationRate` (and, on a speed
+  profile, `DynamicConstraints`).
+
+Constraints only ever slow a transition down: the authored duration is a floor,
+so a limit looser than the author asked for changes nothing. A
+distance-dimensioned transition measures progress in metres, so it gets the
+shape substitution but keeps its authored span.
+
+A `follow` target above `maxSpeed` is a "should" in the standard, not a "shall":
+Scena warns citing `targetspeed_maxspeed_general` (or
+`targetspeed_maxspeed_speedprofileaction`) and clamps the target.
 
 ### Speed profiles
 
 A `SpeedProfileAction` is a series of `SpeedProfileEntry{speed, time?}` targets.
 In `followingMode=position` the controller interpolates **linearly** between
-successive targets, starting from the entity's current speed. The first entry's
-`time` is a delta from the start of the action, each later entry a delta from the
-previous. An entry with **no** time is reached as fast as the `Performance`
-envelope allows (or instantaneously without one).
+successive targets, starting from the entity's current speed; in
+`followingMode=follow` each segment gets the smooth shape and the jerk-aware
+duration described above. The first entry's `time` is a delta from the start of
+the action, each later entry a delta from the previous. An entry with **no**
+time is reached as fast as the effective acceleration limit allows (or
+instantaneously without one).
+
+Two optional pieces complete the action:
+
+- **`entityRef`** makes every entry a **delta** on that entity's speed rather
+  than an absolute value. The reference is read **once**, when the action
+  starts — a profile is a series of authored targets over time, not a tracking
+  controller. For continuous tracking use a `RelativeTargetSpeed` with
+  `continuous = true`. An unknown reference is a semantic error at init; one
+  that disappears mid-run stops the action.
+- **`DynamicConstraints`** limits acceleration, deceleration, jerk and speed,
+  and **takes precedence over** the actor's `Performance` envelope
+  (§SpeedProfileAction) — a constraint that is *looser* than the envelope wins.
+  The distance-keeping actions differ here: their `DynamicConstraints` narrows
+  the envelope rather than replacing it, because their clause states no
+  precedence.
 
 ### Relative speed targets
 
@@ -315,10 +358,10 @@ later sprint, so a teleport currently leaves heading, pitch and roll unchanged.
 |---|---|---|
 | Position | Point-mass: explicit `x += speed·cos(heading)·dt`; z/pitch/roll untouched | Vehicle body dynamics; slope/3D integration |
 | Speed target | Absolute + relative (`RelativeTargetSpeed`: delta/factor, one-shot + continuous) | — |
-| Following mode | `position` shapes + hard Performance clamp | `follow` jerk-shaping, `DynamicConstraints` (accel/decel-rate) |
-| Speed profile | Position-mode linear interpolation | `entityRef`-relative profile |
+| Following mode | `position` shapes + hard Performance clamp; `follow` = zero-endpoint-acceleration shape stretched for peak acceleration and peak jerk (ADR-0024) | A real driver-model control loop (excluded by the determinism contract) |
+| Speed profile | Position-mode linear interpolation, follow-mode smooth segments, `entityRef`-relative entries, `DynamicConstraints` with precedence | — |
 | Overlap | One active longitudinal action per entity; a later one supersedes and retires the earlier | Full cross-domain / bulk-actor §7.5 conflict resolution |
-| Distance keeping | Distance and time-gap targets, freespace or reference-point gaps, `DynamicConstraints` + Performance clamping, one-shot and continuous | Jerk (rate) clamping; road-based coordinate systems |
+| Distance keeping | Distance and time-gap targets, freespace or reference-point gaps, `DynamicConstraints` + Performance clamping, one-shot and continuous | Jerk (rate) clamping (#51); road-based coordinate systems |
 | Lateral model | Kinematic: an offset ramp across a straight axis, heading blended from the two legs | Tyre dynamics, slip, yaw rate, steering actuation |
 | Lanes | Flat world: a configurable default lane width, or a host `IRoadQuery` answering the lane queries | Real lane identity and geometry, absolute lane ids without a backend |
 | Lateral start offset | The actor is assumed to sit on its lane centre when a lateral action starts | Real in-lane offset (needs a road backend) |
@@ -481,3 +524,29 @@ event.add_action(scn.LateralDistanceAction(
 engine.set_default_lane_width(3.5)
 assert engine.default_lane_width == 3.5
 ```
+
+A follow-mode ramp and an entity-relative constrained profile:
+
+```python
+follow = scn.TransitionDynamics(shape=scn.DynamicsShape.Linear,
+                                dimension=scn.DynamicsDimension.Time, value=1.0,
+                                following_mode=scn.FollowingMode.Follow)
+event.add_action(scn.SpeedAction("ego", 12.0, follow))
+
+event.add_action(scn.SpeedProfileAction(
+    "ego", [scn.SpeedProfileEntry(-4.0, 4.0)], scn.FollowingMode.Position,
+    "lead", scn.DynamicConstraints(max_acceleration=6.0, max_deceleration=6.0)))
+```
+
+`python/examples/follow_mode.py` runs both end to end.
+
+## Further reading
+
+- [ADR-0011](../architecture/ADR-0011-longitudinal-dynamics.md) — the
+  multi-step action lifetime and the default controller.
+- [ADR-0016](../architecture/ADR-0016-lateral-kinematics.md) — the lateral
+  offset axis and the lane-change duration model.
+- [ADR-0024](../architecture/ADR-0024-follow-mode-and-dynamic-constraints.md) —
+  `followingMode=follow`, the jerk-aware duration, and why a
+  `SpeedProfileAction`'s `DynamicConstraints` override the `Performance`
+  envelope while a distance action's do not.

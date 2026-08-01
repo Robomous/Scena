@@ -54,6 +54,55 @@ namespace scena::runtime {
 /// `factor * |delta| / L`.
 [[nodiscard]] double shape_peak_gradient_factor(ir::DynamicsShape shape) noexcept;
 
+/// Peak absolute second derivative of a unit-span (span 1, delta 1) transition
+/// of this shape — the factor that turns a jerk limit into a duration. The
+/// duration whose peak jerk equals a limit J over a value change |delta| is
+/// `sqrt(factor * |delta| / J)`.
+///
+/// Cubic: 6 (|g''| = |6 - 12p|, peak at both endpoints). Sinusoidal: pi^2/2
+/// (|g''| is pi^2/2 times the absolute cosine of pi*p, peak at both endpoints,
+/// and the shape itself routes through det_cos). Linear and Step are
+/// infinity: both hold the gradient constant and then drop it to zero in no
+/// time at all, so no finite duration bounds their second derivative, and no
+/// jerk limit can be honoured by stretching them. `follow_shape` is what keeps
+/// that infinity out of the arithmetic.
+///
+/// `lateral.h`'s `shape_peak_curvature_factor` is the same quantity for Cubic
+/// and Sinusoidal, and deliberately differs for Linear and Step: there it
+/// stands in as a minimum-time rest-to-rest bound for a lane offset that has no
+/// authored duration at all, where "infinite" would be useless. Here the
+/// infinity is the point — it says a jerk limit is unsatisfiable for that
+/// shape.
+[[nodiscard]] double shape_peak_jerk_factor(ir::DynamicsShape shape) noexcept;
+
+/// The shape a transition is realised with under
+/// `FollowingMode::Follow`. Sinusoidal is returned unchanged; every other shape
+/// becomes Cubic.
+///
+/// §SpeedProfileAction is explicit that with `followingMode=follow` "the
+/// acceleration is zero at the start and end of the profile", which excludes
+/// the Linear and Step shapes by construction — their acceleration steps at the
+/// endpoints. §FollowingMode describes `follow` as tracking the target "as good
+/// as possible by observing the dynamic constraints of the entity", so the
+/// authored shape is a request rather than a contract, and Scena honours it
+/// with the closest shape that satisfies the endpoint requirement. Cubic is
+/// that shape: it is the lowest-order polynomial with a zero gradient at both
+/// ends, and it is what a Linear ramp becomes once its corners are rounded.
+/// `FollowingMode::Position` keeps the authored shape exactly. See ADR-0024.
+[[nodiscard]] ir::DynamicsShape follow_shape(ir::DynamicsShape shape) noexcept;
+
+/// The shortest duration [s] in which a `delta`-sized value change of this
+/// shape stays inside every supplied limit, never shorter than `authored`.
+///
+/// `acceleration_limit` bounds the peak first derivative [unit/s] and
+/// `jerk_limit` the peak second derivative [unit/s^2]; either may be infinity
+/// for "unconstrained" (§DynamicConstraints reads a missing value as 'inf').
+/// A non-positive or non-finite `delta` needs no time, and an unconstrained
+/// transition simply keeps its authored duration.
+[[nodiscard]] double constrained_duration(ir::DynamicsShape shape, double delta,
+                                          double acceleration_limit, double jerk_limit,
+                                          double authored) noexcept;
+
 /// Resolved duration, in seconds, of a Time- or Rate-dimensioned transition
 /// from `from` to `to`. Returns 0 for a transition that consumes no time —
 /// Step shape, zero value span (`to == from`), or a non-positive/non-finite
