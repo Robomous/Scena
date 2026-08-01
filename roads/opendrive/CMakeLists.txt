@@ -6,6 +6,7 @@
 add_library(scena-roads-opendrive STATIC
     src/reader.cpp
     src/reference_line.cpp
+    src/road_query.cpp
 )
 add_library(scena::roads-opendrive ALIAS scena-roads-opendrive)
 
