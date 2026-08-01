@@ -12,6 +12,10 @@ The user guide grows sprint by sprint along the
   constraints, `$references` and `${expressions}` with the operator whitelist
   and typing rules, why expression evaluation is deterministic, and how
   variables differ from parameters.
+- [Catalogs, entity selections and controllers](catalogs.md) — cross-file
+  reuse: catalog directories and their reproducible scan order, parameters
+  in catalog entries and the isolation rule, entity selections and how they
+  expand, and what an ObjectController does (and does not) change.
 - [The entity model](entities.md) — ScenarioObject and the Vehicle /
   Pedestrian / MiscObject taxonomy, bounding boxes, performance limits, the
   full h/p/r pose, and how to build and query entities from C++/C/Python.
