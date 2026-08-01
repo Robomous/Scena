@@ -162,7 +162,7 @@ std::optional<ir::Position> read_geo(ReadContext& ctx, const pugi::xml_node& nod
         ok = require_double(ctx, node, "longitudeDeg", position.longitude_deg) && ok;
         ok = optional_double(ctx, node, "altitude", position.altitude) && ok;
     } else {
-        warn_deprecated(ctx, node, "use latitudeDeg/longitudeDeg/altitude (1.1)");
+        warn_deprecated_since(ctx, node, 1, 1, "use latitudeDeg/longitudeDeg/altitude (1.1)");
         ok = require_double(ctx, node, "latitude", position.latitude_deg) && ok;
         ok = require_double(ctx, node, "longitude", position.longitude_deg) && ok;
         ok = optional_double(ctx, node, "height", position.altitude) && ok;

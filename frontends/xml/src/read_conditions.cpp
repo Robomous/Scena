@@ -169,7 +169,7 @@ bool optional_along_route(ReadContext& ctx, const pugi::xml_node& node, std::opt
     if (!node.attribute("alongRoute")) {
         return true;
     }
-    warn_deprecated(ctx, node, "use coordinateSystem and relativeDistanceType (1.1)");
+    warn_deprecated_since(ctx, node, 1, 1, "use coordinateSystem and relativeDistanceType (1.1)");
     bool value = false;
     if (!optional_bool(ctx, node, "alongRoute", value)) {
         return false;
@@ -416,7 +416,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
     }
     if (name == "ReachPositionCondition") {
         // Deprecated in 1.2 in favor of DistanceCondition; still executed.
-        warn_deprecated(ctx, variant, "use DistanceCondition (1.2)");
+        warn_deprecated_since(ctx, variant, 1, 2, "use DistanceCondition (1.2)");
         double tolerance = 0.0;
         ir::WorldPosition position;
         bool ok = require_double(ctx, variant, "tolerance", tolerance);

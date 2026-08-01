@@ -199,6 +199,14 @@ void warn_deprecated(ReadContext& ctx, const pugi::xml_node& node, std::string_v
                   std::move(message));
 }
 
+void warn_deprecated_since(ReadContext& ctx, const pugi::xml_node& node, int major, int minor,
+                           std::string_view successor) {
+    if (!ctx.version_at_least(major, minor)) {
+        return;
+    }
+    warn_deprecated(ctx, node, successor);
+}
+
 pugi::xml_node read_choice(ReadContext& ctx, const pugi::xml_node& node,
                            const char* const candidates[]) {
     pugi::xml_node chosen;

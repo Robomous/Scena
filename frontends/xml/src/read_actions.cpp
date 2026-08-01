@@ -680,7 +680,8 @@ std::shared_ptr<ir::Action> read_private_action(ReadContext& ctx, const pugi::xm
     if (name == "ActivateControllerAction") {
         // Deprecated placement: 1.1 moved it under ControllerAction. Still
         // executed, exactly as the coverage matrix promises.
-        warn_deprecated(ctx, variant, "use ControllerAction/ActivateControllerAction (1.1)");
+        warn_deprecated_since(ctx, variant, 1, 1,
+                              "use ControllerAction/ActivateControllerAction (1.1)");
         std::optional<bool> lateral;
         std::optional<bool> longitudinal;
         bool ok = true;
@@ -819,7 +820,7 @@ std::shared_ptr<ir::Action> read_global_action(ReadContext& ctx, const pugi::xml
         const bool is_parameter = name == "ParameterAction";
         if (is_parameter) {
             // Deprecated in 1.2 in favor of VariableAction; still executed.
-            warn_deprecated(ctx, variant, "use VariableAction (1.2)");
+            warn_deprecated_since(ctx, variant, 1, 2, "use VariableAction (1.2)");
         }
         std::string reference;
         if (!require_string(ctx, variant, is_parameter ? "parameterRef" : "variableRef",
