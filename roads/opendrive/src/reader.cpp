@@ -199,6 +199,222 @@ bool read_geometry(ReadContext& ctx, const pugi::xml_node& node, const std::stri
     return false;
 }
 
+std::optional<int> parse_lane_ref(ReadContext& ctx, const pugi::xml_node& link, const char* element,
+                                  const std::string& path) {
+    // Multiple predecessors/successors serve the temporary lane layer
+    // (§11.6), which is outside the subset: keep the first, warn on the rest.
+    std::optional<int> id;
+    for (pugi::xml_node ref : link.children(element)) {
+        const std::optional<double> value = ir::parse_scalar(ref.attribute("id").value());
+        if (!value.has_value()) {
+            ctx.report(Severity::Error, Status::ParseError, path,
+                       std::string("lane ") + element + " has no numeric 'id'");
+            continue;
+        }
+        if (id.has_value()) {
+            ctx.report(Severity::Warning, Status::UnsupportedFeature, path,
+                       std::string("multiple lane ") + element +
+                           " links (temporary lane layer) are outside the subset; "
+                           "keeping the first");
+            continue;
+        }
+        id = static_cast<int>(*value);
+    }
+    return id;
+}
+
+/// Reads one `<left>`/`<center>`/`<right>` group's lanes into `section`.
+void read_lane_group(ReadContext& ctx, const pugi::xml_node& group, const std::string& path,
+                     LaneSection& section) {
+    for (pugi::xml_node lane_node : group.children("lane")) {
+        Lane lane;
+        const std::optional<double> id = ir::parse_scalar(lane_node.attribute("id").value());
+        if (!id.has_value()) {
+            ctx.report(Severity::Error, Status::ParseError, path,
+                       "lane has no numeric 'id' attribute");
+            continue;
+        }
+        lane.id = static_cast<int>(*id);
+        lane.type = lane_node.attribute("type").value();
+        const std::string lane_path = path + "/lane[" + std::to_string(lane.id) + "]";
+
+        static const char* const kConsumedLaneChildren[] = {"link", "width", nullptr};
+        warn_unconsumed_children(ctx, lane_node, lane_path, kConsumedLaneChildren);
+
+        const pugi::xml_node link = lane_node.child("link");
+        if (link) {
+            lane.predecessor = parse_lane_ref(ctx, link, "predecessor", lane_path);
+            lane.successor = parse_lane_ref(ctx, link, "successor", lane_path);
+        }
+
+        double last_offset = -1.0;
+        for (pugi::xml_node width : lane_node.children("width")) {
+            WidthRecord record;
+            bool ok = require_double(ctx, width, "sOffset", lane_path, record.s_offset);
+            ok = require_double(ctx, width, "a", lane_path, record.a) && ok;
+            ok = require_double(ctx, width, "b", lane_path, record.b) && ok;
+            ok = require_double(ctx, width, "c", lane_path, record.c) && ok;
+            ok = require_double(ctx, width, "d", lane_path, record.d) && ok;
+            if (!ok) {
+                continue;
+            }
+            if (record.s_offset <= last_offset) {
+                ctx.report(Severity::Error, Status::ValidationError, lane_path,
+                           "width records must be in ascending sOffset order",
+                           "asam.net:xodr:1.4.0:road.lane.width.elem_asc_order");
+                continue;
+            }
+            last_offset = record.s_offset;
+            lane.widths.push_back(record);
+        }
+        if (lane.id == 0 && !lane.widths.empty()) {
+            ctx.report(Severity::Error, Status::ValidationError, lane_path,
+                       "the centre lane must not carry width records",
+                       "asam.net:xodr:1.4.0:road.lane.center_lane_no_width");
+            continue;
+        }
+        if (lane.id != 0 && (lane.widths.empty() || lane.widths.front().s_offset > kSTolerance)) {
+            ctx.report(Severity::Error, Status::ValidationError, lane_path,
+                       "lane width must be defined from the start of the lane section",
+                       "asam.net:xodr:1.7.0:road.lane.width.width_defined_whole_section");
+            continue;
+        }
+        section.lanes[lane.id] = std::move(lane);
+    }
+}
+
+void read_lanes(ReadContext& ctx, const pugi::xml_node& lanes, const std::string& road_path,
+                Road& road) {
+    static const char* const kConsumedLanesChildren[] = {"laneSection", nullptr};
+    warn_unconsumed_children(ctx, lanes, road_path + "/lanes", kConsumedLanesChildren);
+
+    std::size_t index = 0;
+    for (pugi::xml_node section_node : lanes.children("laneSection")) {
+        const std::string path = road_path + "/lanes/laneSection[" + std::to_string(index) + "]";
+        ++index;
+        LaneSection section;
+        if (!require_double(ctx, section_node, "s", path, section.s)) {
+            continue;
+        }
+        if (!road.sections.empty() && section.s <= road.sections.back().s) {
+            ctx.report(Severity::Error, Status::ValidationError, path,
+                       "lane sections must be in ascending s order",
+                       "asam.net:xodr:1.4.0:road.lane_section.elem_asc_order");
+            continue;
+        }
+        static const char* const kConsumedSectionChildren[] = {"left", "center", "right", nullptr};
+        warn_unconsumed_children(ctx, section_node, path, kConsumedSectionChildren);
+        for (const char* const group : {"left", "center", "right"}) {
+            const pugi::xml_node group_node = section_node.child(group);
+            if (group_node) {
+                read_lane_group(ctx, group_node, path, section);
+            }
+        }
+        road.sections.push_back(std::move(section));
+    }
+    if (road.sections.empty()) {
+        ctx.report(Severity::Error, Status::ValidationError, road_path + "/lanes",
+                   "lanes element contains no lane sections",
+                   "asam.net:xodr:1.4.0:road.lane.lane_sect_min_amount");
+        return;
+    }
+    if (road.sections.front().s > kSTolerance) {
+        ctx.report(Severity::Error, Status::ValidationError, road_path + "/lanes",
+                   "the first lane section must start at s = 0");
+        road.sections.clear();
+    }
+}
+
+std::optional<RoadLink> read_road_link_side(ReadContext& ctx, const pugi::xml_node& side,
+                                            const std::string& path) {
+    if (!side) {
+        return std::nullopt;
+    }
+    RoadLink link;
+    const std::string_view type = side.attribute("elementType").value();
+    if (type == "road") {
+        link.kind = RoadLink::Kind::Road;
+    } else if (type == "junction") {
+        link.kind = RoadLink::Kind::Junction;
+    } else {
+        ctx.report(Severity::Error, Status::ValidationError, path,
+                   "road link elementType must be 'road' or 'junction'",
+                   "asam.net:xodr:1.4.0:road.linkage.road_link_attribute_usage");
+        return std::nullopt;
+    }
+    link.element_id = side.attribute("elementId").value();
+    if (link.element_id.empty()) {
+        ctx.report(Severity::Error, Status::ValidationError, path, "road link has no elementId",
+                   "asam.net:xodr:1.4.0:road.linkage.road_link_attribute_usage");
+        return std::nullopt;
+    }
+    const std::string_view contact = side.attribute("contactPoint").value();
+    if (contact == "start") {
+        link.contact = RoadLink::Contact::Start;
+    } else if (contact == "end") {
+        link.contact = RoadLink::Contact::End;
+    } else if (link.kind == RoadLink::Kind::Road) {
+        ctx.report(Severity::Error, Status::ValidationError, path,
+                   "a road-to-road link needs contactPoint 'start' or 'end'",
+                   "asam.net:xodr:1.4.0:road.linkage.road_link_attribute_usage");
+        return std::nullopt;
+    }
+    return link;
+}
+
+void read_junction(ReadContext& ctx, const pugi::xml_node& node, Map& out) {
+    Junction junction;
+    junction.id = node.attribute("id").value();
+    const std::string path = "junctions/" + junction.id;
+    if (junction.id.empty()) {
+        ctx.report(Severity::Error, Status::ParseError, "junctions",
+                   "junction is missing the required 'id' attribute");
+        return;
+    }
+    // Only common junctions (@type default) are in the subset (§12.2);
+    // direct/virtual/crossing junctions are diagnosed, never silent.
+    const std::string_view type = node.attribute("type").value();
+    if (!type.empty() && type != "default") {
+        ctx.report(Severity::Warning, Status::UnsupportedFeature, path,
+                   "only junctions of type 'default' are in the consumed subset; "
+                   "this junction is ignored");
+        return;
+    }
+    static const char* const kConsumedJunctionChildren[] = {"connection", nullptr};
+    warn_unconsumed_children(ctx, node, path, kConsumedJunctionChildren);
+
+    for (pugi::xml_node connection_node : node.children("connection")) {
+        JunctionConnection connection;
+        connection.id = connection_node.attribute("id").value();
+        connection.incoming_road = connection_node.attribute("incomingRoad").value();
+        connection.connecting_road = connection_node.attribute("connectingRoad").value();
+        if (connection.incoming_road.empty() || connection.connecting_road.empty()) {
+            ctx.report(Severity::Error, Status::ValidationError, path,
+                       "junction connection needs incomingRoad and connectingRoad");
+            continue;
+        }
+        const std::string_view contact = connection_node.attribute("contactPoint").value();
+        connection.contact = contact == "end" ? RoadLink::Contact::End : RoadLink::Contact::Start;
+        for (pugi::xml_node lane_link : connection_node.children("laneLink")) {
+            const std::optional<double> from =
+                ir::parse_scalar(lane_link.attribute("from").value());
+            const std::optional<double> to = ir::parse_scalar(lane_link.attribute("to").value());
+            if (!from.has_value() || !to.has_value()) {
+                ctx.report(Severity::Error, Status::ParseError, path,
+                           "laneLink needs numeric 'from' and 'to'");
+                continue;
+            }
+            connection.lane_links.push_back({static_cast<int>(*from), static_cast<int>(*to)});
+        }
+        junction.connections.push_back(std::move(connection));
+    }
+    if (out.junctions.count(junction.id) != 0) {
+        ctx.report(Severity::Error, Status::ValidationError, path, "duplicate junction id");
+        return;
+    }
+    out.junctions.emplace(junction.id, std::move(junction));
+}
+
 void read_road(ReadContext& ctx, const pugi::xml_node& node, std::size_t index, Map& out) {
     Road road;
     road.id = node.attribute("id").value();
@@ -214,8 +430,24 @@ void read_road(ReadContext& ctx, const pugi::xml_node& node, std::size_t index, 
         return;
     }
 
-    static const char* const kConsumedRoadChildren[] = {"planView", nullptr};
+    road.junction = node.attribute("junction").value();
+    if (road.junction == "-1") {
+        road.junction.clear(); // "-1" means none (§12.2 Table 55).
+    }
+
+    static const char* const kConsumedRoadChildren[] = {"planView", "lanes", "link", nullptr};
     warn_unconsumed_children(ctx, node, road_path, kConsumedRoadChildren);
+
+    const pugi::xml_node link = node.child("link");
+    if (link) {
+        road.predecessor = read_road_link_side(ctx, link.child("predecessor"), road_path + "/link");
+        road.successor = read_road_link_side(ctx, link.child("successor"), road_path + "/link");
+    }
+
+    const pugi::xml_node lanes = node.child("lanes");
+    if (lanes) {
+        read_lanes(ctx, lanes, road_path, road);
+    }
 
     const pugi::xml_node plan_view = node.child("planView");
     if (!plan_view) {
@@ -330,7 +562,7 @@ Status load_string(std::string_view xml, Map& out, DiagnosticSink& sink) {
                    "document has no header element; revision is unknown");
     }
 
-    static const char* const kConsumedRootChildren[] = {"header", "road", nullptr};
+    static const char* const kConsumedRootChildren[] = {"header", "road", "junction", nullptr};
     warn_unconsumed_children(ctx, root, {}, kConsumedRootChildren);
 
     std::size_t index = 0;
@@ -341,6 +573,10 @@ Status load_string(std::string_view xml, Map& out, DiagnosticSink& sink) {
     if (index == 0) {
         ctx.report(Severity::Error, Status::ValidationError, {},
                    "document contains no road elements");
+    }
+
+    for (pugi::xml_node junction : root.children("junction")) {
+        read_junction(ctx, junction, out);
     }
 
     return ctx.first_error;
