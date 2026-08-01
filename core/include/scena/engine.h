@@ -242,6 +242,28 @@ public:
     /// The lane width the flat-world lane model currently uses, in metres.
     [[nodiscard]] double default_lane_width() const noexcept;
 
+    /// Every entity the scenario declares, in ascending id order — the same
+    /// order the engine iterates them in, which is what makes it safe to walk
+    /// this list and query each entity without the result depending on the
+    /// platform. Includes entities a DeleteEntityAction has made inactive; ask
+    /// entity_active() to tell them apart. Empty before init().
+    ///
+    /// Returned by value: the ids are stable for the life of the scenario, but
+    /// handing out a reference into the entity table would tie a caller's
+    /// lifetime to a private container.
+    [[nodiscard]] std::vector<std::string> entity_ids() const;
+
+    /// Forces the observable state of a traffic signal from the host side
+    /// (§6.11.4), the counterpart of the getter below.
+    ///
+    /// This is the same write a TrafficSignalStateAction performs, exposed so a
+    /// host that owns the real signals can publish their state into the
+    /// scenario. Signal ids are free-form road-network references, so any name
+    /// is accepted; a controller phase that names the same signal will
+    /// overwrite it on its next transition, exactly as it overwrites an
+    /// action's write. Fails with NotInitialized before init().
+    Status set_traffic_signal_state(const std::string& name, std::string state);
+
     /// The current observable state of a traffic signal (§6.11.4), or
     /// std::nullopt when nothing has written that signal id yet — no
     /// controller phase names it and no TrafficSignalStateAction has forced
@@ -294,6 +316,16 @@ public:
 
     /// Drops every collected diagnostic.
     void clear_diagnostics() noexcept;
+
+    /// Adds findings produced *before* this engine saw the scenario — a
+    /// frontend's load diagnostics — to the front of the list.
+    ///
+    /// init() clears the list, so a host that loads and then initializes calls
+    /// this afterwards; prepending rather than appending keeps the combined
+    /// list in the order the findings actually happened. Used by the C ABI's
+    /// one-call load-and-init entry points, where there is a single place to
+    /// look for findings and it should read chronologically.
+    void prepend_diagnostics(std::vector<Diagnostic> findings);
 
     /// Simulation time in seconds since init().
     [[nodiscard]] double time() const noexcept;

@@ -2700,6 +2700,30 @@ void Engine::advance_signal_controllers(double t) {
     }
 }
 
+void Engine::prepend_diagnostics(std::vector<Diagnostic> findings) {
+    diagnostics_.prepend(std::move(findings));
+}
+
+std::vector<std::string> Engine::entity_ids() const {
+    // entities_ is a std::map, so this is already ascending id order — the
+    // determinism contract's reason for the container choice, reused here.
+    std::vector<std::string> ids;
+    ids.reserve(entities_.size());
+    for (const auto& [id, record] : entities_) {
+        (void)record;
+        ids.push_back(id);
+    }
+    return ids;
+}
+
+Status Engine::set_traffic_signal_state(const std::string& name, std::string state) {
+    if (!initialized_) {
+        return Status::NotInitialized;
+    }
+    signal_states_[name] = std::move(state);
+    return Status::Ok;
+}
+
 std::optional<std::string> Engine::traffic_signal_state(const std::string& name) const {
     const auto it = signal_states_.find(name);
     if (it == signal_states_.end()) {

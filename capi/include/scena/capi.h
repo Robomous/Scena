@@ -396,12 +396,48 @@ typedef struct scn_diagnostic {
     const char* rule_id; /* ASAM checker rule UID; "" when the standard names none */
 } scn_diagnostic;
 
+/* Lifecycle state of a storyboard element (§8.1). Values are ABI. */
+typedef enum scn_element_state {
+    SCN_ELEMENT_STANDBY = 0,
+    SCN_ELEMENT_RUNNING = 1,
+    SCN_ELEMENT_COMPLETE = 2
+} scn_element_state;
+
+/* Last monitorable transition of a storyboard element (§8.2). A transition is a
+ * one-evaluation pulse: it reports what happened in the most recent evaluation,
+ * not a lasting state. Values are ABI. */
+typedef enum scn_element_transition {
+    SCN_TRANSITION_NONE = 0,
+    SCN_TRANSITION_START = 1,
+    SCN_TRANSITION_END = 2,
+    SCN_TRANSITION_STOP = 3,
+    SCN_TRANSITION_SKIP = 4
+} scn_element_transition;
+
 /* Opaque engine handle. */
 typedef struct scn_engine scn_engine;
 
 /* Library version as "major.minor.patch". The string is owned by the library
  * and valid for the lifetime of the process. */
 SCN_API const char* scn_version(void);
+
+/* Version of this ABI, independent of the product version.
+ *
+ * Encoded as major * 10000 + minor: 10000 is 1.0. The minor part increases when
+ * symbols, enumerators or trailing struct fields are ADDED, which never breaks a
+ * consumer built against an older minor. The major part increases only if an
+ * existing symbol's meaning, signature or layout changes — the thing this ABI
+ * exists to avoid.
+ *
+ * A host that dlopen()s the library should read this before calling anything
+ * else and refuse a major it was not built for. */
+SCN_API unsigned int scn_abi_version(void);
+
+/* The ABI version this header declares, for the compile-time half of the check:
+ *
+ *     if (scn_abi_version() / 10000u != SCN_ABI_VERSION / 10000u) { ... }
+ */
+#define SCN_ABI_VERSION 10000u
 
 /* Creates an engine with an empty scenario. Returns NULL on allocation
  * failure. Destroy with scn_engine_destroy. */
@@ -1068,6 +1104,72 @@ SCN_API scn_status scn_engine_traffic_signal_controller_phase(scn_engine* engine
  * does not declare at all returns SCN_ERROR_UNKNOWN_ENTITY with *out
  * untouched. */
 SCN_API scn_status scn_engine_entity_active(scn_engine* engine, const char* id, int* out);
+
+/* --- Scenario loading (OpenSCENARIO XML) --------------------------------- */
+
+/* Loads an OpenSCENARIO XML scenario from `path` and initializes the engine
+ * with it — the C equivalent of scena::xml::load_file followed by
+ * Engine::init.
+ *
+ * Findings from both the load and the init land in this engine's diagnostic
+ * list, readable with scn_engine_diagnostic_count / _at whatever the return
+ * value. A load that fails leaves the engine uninitialized; a load that
+ * succeeds leaves it ready to step. Returns SCN_ERROR_INVALID_ARGUMENT for a
+ * NULL engine or path, and otherwise the first error's status. */
+SCN_API scn_status scn_engine_load_xml_file(scn_engine* engine, const char* path);
+
+/* As scn_engine_load_xml_file, from a NUL-terminated document in memory.
+ * Catalog and road-network paths inside the document are relative to the
+ * scenario file, which an in-memory document does not have, so a document that
+ * needs them reports rather than guessing. */
+SCN_API scn_status scn_engine_load_xml_string(scn_engine* engine, const char* xml);
+
+/* --- Entity enumeration --------------------------------------------------- */
+
+/* Writes the number of entities the loaded scenario declares into *out_count.
+ * Zero before init(). */
+SCN_API scn_status scn_engine_entity_count(scn_engine* engine, size_t* out_count);
+
+/* Writes the id of the entity at `index` into *out, borrowed with the same
+ * lifetime as scn_engine_get_variable's. Ids are in ascending order and stable
+ * for the life of the scenario, so an index identifies the same entity across
+ * steps. An index >= the count returns SCN_ERROR_INVALID_ARGUMENT.
+ *
+ * The list includes entities a DeleteEntityAction has removed; ask
+ * scn_engine_entity_active to tell them apart. */
+SCN_API scn_status scn_engine_entity_id_at(scn_engine* engine, size_t index, const char** out);
+
+/* --- Storyboard element state --------------------------------------------- */
+
+/* Writes the lifecycle state of the storyboard element at `path` into *out.
+ *
+ * The path is the element's name path from the story down, joined with '/'
+ * (e.g. "story/act/group/maneuver/event"); the empty string addresses the
+ * storyboard itself. A path that names no element, or an uninitialized engine,
+ * returns SCN_ERROR_UNKNOWN_NAME with *out untouched. */
+SCN_API scn_status scn_engine_element_state(scn_engine* engine, const char* path,
+                                            scn_element_state* out);
+
+/* Writes the element's last monitorable transition into *out (same addressing).
+ * SCN_TRANSITION_NONE means no transition has been recorded for it. */
+SCN_API scn_status scn_engine_element_transition(scn_engine* engine, const char* path,
+                                                 scn_element_transition* out);
+
+/* --- Signals, time and lifecycle ------------------------------------------ */
+
+/* Forces the observable state of a traffic signal from the host side
+ * (§6.11.4) — the same write a TrafficSignalStateAction performs. Any signal id
+ * is accepted; a controller phase naming the same signal overwrites it on its
+ * next transition. Fails with SCN_ERROR_NOT_INITIALIZED before init. */
+SCN_API scn_status scn_engine_set_traffic_signal_state(scn_engine* engine, const char* name,
+                                                       const char* state);
+
+/* Writes the simulation time in seconds since init() into *out. Zero before
+ * init(). */
+SCN_API scn_status scn_engine_get_time(scn_engine* engine, double* out);
+
+/* Writes 1 into *out between a successful init and close, else 0. */
+SCN_API scn_status scn_engine_initialized(scn_engine* engine, int* out);
 
 #ifdef __cplusplus
 }

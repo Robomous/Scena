@@ -370,3 +370,23 @@ def test_traffic_signal_value_types_round_trip() -> None:
     assert plain.delay is None
     assert plain.reference is None
     assert plain.phases == []
+
+
+def test_entity_enumeration_and_host_signal_publication() -> None:
+    """The p6-s1 engine surface, from Python: entity enumeration in id order and
+    host-side signal publication (#35)."""
+    scenario = scn.Scenario("p6-s1")
+    for name in ("ego", "alpha"):
+        scenario.add_entity(scn.Entity(name, name, scn.ControlMode.EngineControlled))
+
+    engine = scn.Engine()
+    assert engine.entity_ids() == []  # nothing before init
+    assert engine.init(scenario) == scn.Status.Ok
+    # Ascending id order, whatever order the scenario declared them in.
+    assert engine.entity_ids() == ["alpha", "ego"]
+
+    assert engine.set_traffic_signal_state("s1", "green") == scn.Status.Ok
+    assert engine.traffic_signal_state("s1") == "green"
+    assert engine.set_traffic_signal_state("s1", "red") == scn.Status.Ok
+    assert engine.traffic_signal_state("s1") == "red"
+    assert engine.traffic_signal_state("never-written") is None

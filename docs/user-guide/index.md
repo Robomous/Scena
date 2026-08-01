@@ -55,6 +55,9 @@ The user guide grows sprint by sprint along the
   any/all, speed/relative-speed/acceleration, stand still, traveled distance,
   reach position), the traffic-signal conditions, the scalar-velocity model, the observation-sampling
   contract, and the host interface (C++/C/Python).
+- [The C API](c-api.md) — the stable ABI: versioning and the major check,
+  loading a scenario in one call, entity enumeration, storyboard-element state
+  by path, host-side signal publication, and the borrowed-string lifetime.
 - [Error handling](error-handling.md) — status codes, structured
   diagnostics, the severity/status invariant, the path grammar, and the
   C-ABI borrowed-string lifetime.

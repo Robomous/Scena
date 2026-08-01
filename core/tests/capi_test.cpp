@@ -17,6 +17,7 @@
 #include "scena/capi.h"
 
 #include <cmath>
+#include <string>
 
 #include <gtest/gtest.h>
 
@@ -1602,5 +1603,240 @@ TEST(CApiTest, NullArgumentsAreRejectedForGlobalActions) {
     // A negative maximumExecutionCount.
     EXPECT_EQ(scn_engine_add_variable_set_action(engine, "v", "1", 0.0, SCN_PRIORITY_PARALLEL, -1),
               SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}
+
+// --- p6-s1: the full-engine surface ---------------------------------------
+
+namespace {
+
+/// A minimal but complete OpenSCENARIO XML document: one vehicle, one event
+/// that steps its speed to 10 m/s at t > 0.
+constexpr const char* kScenarioXml = R"(<?xml version="1.0"?>
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-01T00:00:00" description="capi" author="scena"/>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+    <ScenarioObject name="alpha"><Vehicle name="alpha_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions><Private entityRef="ego"><PrivateAction><TeleportAction>
+      <Position><WorldPosition x="0" y="0" z="0" h="0"/></Position>
+    </TeleportAction></PrivateAction></Private></Actions></Init>
+    <Story name="story"><Act name="act">
+      <ManeuverGroup name="group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="maneuver"><Event name="event" priority="parallel">
+          <Action name="go"><PrivateAction><LongitudinalAction><SpeedAction>
+            <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+            <SpeedActionTarget><AbsoluteTargetSpeed value="10"/></SpeedActionTarget>
+          </SpeedAction></LongitudinalAction></PrivateAction></Action>
+          <StartTrigger><ConditionGroup><Condition name="c" delay="0" conditionEdge="none">
+            <ByValueCondition><SimulationTimeCondition value="0" rule="greaterThan"/></ByValueCondition>
+          </Condition></ConditionGroup></StartTrigger>
+        </Event></Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+  </Storyboard>
+</OpenSCENARIO>)";
+
+} // namespace
+
+TEST(CApiTest, AbiVersionMatchesTheHeader) {
+    // The whole point of the symbol: a host that dlopen()s the library compares
+    // the runtime major against the one it compiled against.
+    EXPECT_EQ(scn_abi_version(), SCN_ABI_VERSION);
+    EXPECT_EQ(scn_abi_version() / 10000U, 1U);
+}
+
+TEST(CApiTest, LoadXmlStringInitializesTheEngine) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    int initialized = 1;
+    ASSERT_EQ(scn_engine_initialized(engine, &initialized), SCN_OK);
+    EXPECT_EQ(initialized, 0);
+
+    ASSERT_EQ(scn_engine_load_xml_string(engine, kScenarioXml), SCN_OK);
+    ASSERT_EQ(scn_engine_initialized(engine, &initialized), SCN_OK);
+    EXPECT_EQ(initialized, 1);
+
+    // The loaded scenario is queryable through the metadata accessors, exactly
+    // as a scenario built with scn_engine_add_* is.
+    scn_object_type type = SCN_OBJECT_MISC;
+    ASSERT_EQ(scn_engine_entity_object_type(engine, "ego", &type), SCN_OK);
+    EXPECT_EQ(type, SCN_OBJECT_VEHICLE);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "ego", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 10.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LoadXmlStringReportsAMalformedDocument) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    EXPECT_NE(scn_engine_load_xml_string(engine, "<OpenSCENARIO>"), SCN_OK);
+    // The load's findings reached the engine's list even though init never ran.
+    size_t count = 0;
+    ASSERT_EQ(scn_engine_diagnostic_count(engine, &count), SCN_OK);
+    EXPECT_GE(count, 1U);
+    int initialized = 1;
+    ASSERT_EQ(scn_engine_initialized(engine, &initialized), SCN_OK);
+    EXPECT_EQ(initialized, 0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, LoadXmlFileReadsFromDisk) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // A path that does not exist is a content defect, not a crash.
+    EXPECT_NE(scn_engine_load_xml_file(engine, "no/such/file.xosc"), SCN_OK);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, EntityEnumerationIsOrderedAndBounded) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    size_t count = 0;
+    // Before init the scenario declares nothing.
+    ASSERT_EQ(scn_engine_entity_count(engine, &count), SCN_OK);
+    EXPECT_EQ(count, 0U);
+
+    ASSERT_EQ(scn_engine_load_xml_string(engine, kScenarioXml), SCN_OK);
+    ASSERT_EQ(scn_engine_entity_count(engine, &count), SCN_OK);
+    ASSERT_EQ(count, 2U);
+
+    // Ascending id order, so an index names the same entity on every platform.
+    // The returned string is borrowed and the next call overwrites it, so a
+    // caller walking the list copies as it goes — as this one does.
+    const char* borrowed = nullptr;
+    ASSERT_EQ(scn_engine_entity_id_at(engine, 0, &borrowed), SCN_OK);
+    const std::string first(borrowed);
+    ASSERT_EQ(scn_engine_entity_id_at(engine, 1, &borrowed), SCN_OK);
+    const std::string second(borrowed);
+    EXPECT_EQ(first, "alpha");
+    EXPECT_EQ(second, "ego");
+    // ... and the documented lifetime really is that short.
+    EXPECT_STREQ(borrowed, "ego");
+    const char* past_end = nullptr;
+    EXPECT_EQ(scn_engine_entity_id_at(engine, 2, &past_end), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(past_end, nullptr); // untouched
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, StoryboardElementStateIsQueryableByPath) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_load_xml_string(engine, kScenarioXml), SCN_OK);
+
+    scn_element_state state = SCN_ELEMENT_COMPLETE;
+    ASSERT_EQ(scn_engine_element_state(engine, "story/act/group/maneuver/event", &state), SCN_OK);
+    EXPECT_EQ(state, SCN_ELEMENT_STANDBY);
+    // The empty path addresses the storyboard itself.
+    ASSERT_EQ(scn_engine_element_state(engine, "", &state), SCN_OK);
+    EXPECT_EQ(state, SCN_ELEMENT_RUNNING);
+
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_element_state(engine, "story/act/group/maneuver/event", &state), SCN_OK);
+    EXPECT_EQ(state, SCN_ELEMENT_COMPLETE);
+    scn_element_transition transition = SCN_TRANSITION_NONE;
+    ASSERT_EQ(scn_engine_element_transition(engine, "story/act/group/maneuver/event", &transition),
+              SCN_OK);
+    EXPECT_EQ(transition, SCN_TRANSITION_END);
+
+    // A path naming no element leaves the out parameter untouched.
+    scn_element_state untouched = SCN_ELEMENT_RUNNING;
+    EXPECT_EQ(scn_engine_element_state(engine, "story/act/nope", &untouched),
+              SCN_ERROR_UNKNOWN_NAME);
+    EXPECT_EQ(untouched, SCN_ELEMENT_RUNNING);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, HostCanPublishATrafficSignalState) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    // Before init there is no scenario to write into.
+    EXPECT_EQ(scn_engine_set_traffic_signal_state(engine, "s1", "green"),
+              SCN_ERROR_NOT_INITIALIZED);
+
+    ASSERT_EQ(scn_engine_load_xml_string(engine, kScenarioXml), SCN_OK);
+    ASSERT_EQ(scn_engine_set_traffic_signal_state(engine, "s1", "green"), SCN_OK);
+    const char* state = nullptr;
+    ASSERT_EQ(scn_engine_traffic_signal_state(engine, "s1", &state), SCN_OK);
+    EXPECT_STREQ(state, "green");
+    // Overwriting is the same operation a controller phase performs.
+    ASSERT_EQ(scn_engine_set_traffic_signal_state(engine, "s1", "red"), SCN_OK);
+    ASSERT_EQ(scn_engine_traffic_signal_state(engine, "s1", &state), SCN_OK);
+    EXPECT_STREQ(state, "red");
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, SimulationTimeIsReadable) {
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    double time = -1.0;
+    ASSERT_EQ(scn_engine_get_time(engine, &time), SCN_OK);
+    EXPECT_EQ(time, 0.0);
+    ASSERT_EQ(scn_engine_load_xml_string(engine, kScenarioXml), SCN_OK);
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(scn_engine_step(engine, 0.25), SCN_OK);
+    }
+    ASSERT_EQ(scn_engine_get_time(engine, &time), SCN_OK);
+    EXPECT_EQ(time, 1.0);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, EveryNewEntryPointRejectsNullArguments) {
+    // The null-safety sweep: every function added by p6-s1, with each pointer
+    // parameter nulled in turn. None of them may crash, and each must answer
+    // SCN_ERROR_INVALID_ARGUMENT.
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+
+    size_t count = 0;
+    const char* text = nullptr;
+    double number = 0.0;
+    int flag = 0;
+    scn_element_state state = SCN_ELEMENT_STANDBY;
+    scn_element_transition transition = SCN_TRANSITION_NONE;
+
+    EXPECT_EQ(scn_engine_load_xml_file(nullptr, "x"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_load_xml_file(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_load_xml_string(nullptr, "x"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_load_xml_string(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_entity_count(nullptr, &count), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_count(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_id_at(nullptr, 0, &text), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_entity_id_at(engine, 0, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_element_state(nullptr, "", &state), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_element_state(engine, nullptr, &state), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_element_state(engine, "", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_element_transition(nullptr, "", &transition), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_element_transition(engine, nullptr, &transition),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_element_transition(engine, "", nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_set_traffic_signal_state(nullptr, "s", "g"), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_traffic_signal_state(engine, nullptr, "g"),
+              SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_set_traffic_signal_state(engine, "s", nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_engine_get_time(nullptr, &number), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_get_time(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_initialized(nullptr, &flag), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_engine_initialized(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+
     scn_engine_destroy(engine);
 }
