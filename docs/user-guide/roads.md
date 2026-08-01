@@ -72,3 +72,40 @@ non-finite input, uniform no-answer behavior for unknown ids, well-formed
 answered values, centre-lane exclusion, and bit-identical repeated queries.
 It runs against `FlatWorldRoadQuery` today; every real backend instantiates
 the same suite and must pass it unchanged.
+
+## The OpenDRIVE backend (p3-s2 onward)
+
+`roads/opendrive/` is a separate library (`scena::roads-opendrive`) the core
+never links: hosts parse a map with it and inject the resulting backend
+through the gateway. p3-s2 delivers the document reader and exact
+reference-line geometry; lanes, routing and the `IRoadQuery` implementation
+follow in p3-s3.
+
+Loading follows the kernel's diagnostics contract: content defects are
+errors citing the `asam.net:xodr` rule id where one exists, and map features
+outside the consumed subset are **never dropped silently** — each is
+reported as an `UnsupportedFeature` warning (`DeprecatedFeature` for
+`<poly3>`, which is still evaluated). Numeric attributes are parsed
+locale-independently (`std::from_chars`), and evaluation runs through the
+deterministic math layer, so identical maps evaluate bit-identically on
+every platform.
+
+### Supported OpenDRIVE subset
+
+| Feature (OpenDRIVE 1.9.0) | Status |
+|---|---|
+| `<header>` revMajor/revMinor | read; non-1.x majors warned |
+| `<road>` id/name/length | read |
+| `<planView>` `<line>` (§9.3) | evaluated (closed form) |
+| `<planView>` `<arc>` (§9.5) | evaluated (closed form) |
+| `<planView>` `<spiral>` (§9.4) | evaluated (deterministic quadrature) |
+| `<planView>` `<paramPoly3>` (§9.6), both pRange modes | evaluated (exact cubics, fixed-resolution s table) |
+| `<planView>` `<poly3>` (§9.7) | evaluated; deprecation warned |
+| `<lanes>`, `<link>`, `<junction>` | planned p3-s3; warned until then |
+| elevation/superelevation/crossfall, lane offsets | scoped out for v0.0.1 (flat world); warned |
+| `<objects>`, `<signals>`, surface/OpenCRG, georeferencing | scoped out for v0.0.1; warned |
+
+The reference line is evaluated by `scena::opendrive::ReferenceLine`:
+`pose_at(s)` returns the inertial pose of the s-axis, and `project(x, y)`
+inverts it into track coordinates `(s, t)` with t positive to the left
+(§8.3) and a documented smallest-s tie-break.
