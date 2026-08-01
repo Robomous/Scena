@@ -54,19 +54,31 @@ public:
 
     /// Enters a new frame. Every `push` is matched by a `pop` — the RAII
     /// `ParameterFrame` below does that pairing.
-    void push();
+    ///
+    /// An *isolated* frame hides everything below it: lookup stops there
+    /// rather than continuing outwards. That is what a catalog entry needs —
+    /// "no other parameters may be referenced from within the catalog"
+    /// (§9.5) — so an entry cannot silently pick up a scenario parameter
+    /// that happens to share a name.
+    void push(bool isolated = false);
     void pop();
 
 private:
+    struct Frame {
+        std::map<std::string, Value, std::less<>> values;
+        bool isolated = false;
+    };
     // Ordered map, never unordered: a scope is walked when reporting and the
     // report order must not depend on a hash seed.
-    std::vector<std::map<std::string, Value, std::less<>>> frames_{1};
+    std::vector<Frame> frames_{Frame{}};
 };
 
 /// Scoped guard that pushes a parameter frame and pops it at end of scope.
 class ParameterFrame {
 public:
-    explicit ParameterFrame(ParameterScope& scope) : scope_(scope) { scope_.push(); }
+    explicit ParameterFrame(ParameterScope& scope, bool isolated = false) : scope_(scope) {
+        scope_.push(isolated);
+    }
     ~ParameterFrame() { scope_.pop(); }
     ParameterFrame(const ParameterFrame&) = delete;
     ParameterFrame& operator=(const ParameterFrame&) = delete;

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 add_library(scena-frontend-xml STATIC
     src/attributes.cpp
+    src/catalog.cpp
     src/expression.cpp
     src/loader.cpp
     src/parameters.cpp
