@@ -716,7 +716,7 @@ TEST(ScenarioDefinition, RoadNetworkGoesToTheHostAndSignalsToTheIr) {
     EXPECT_EQ(controller.phases.front().signal_states.front().state, "green");
 }
 
-TEST(ScenarioDefinition, LiteralDeclarationsLowerAndReferencesDefer) {
+TEST(ScenarioDefinition, DeclarationsLowerWithTheirResolvedValues) {
     constexpr std::string_view kBody = R"(<ParameterDeclarations>
       <ParameterDeclaration name="speed" parameterType="double" value="30.0"/>
       <ParameterDeclaration name="derived" parameterType="double" value="${$speed * 2}"/>
@@ -727,10 +727,12 @@ TEST(ScenarioDefinition, LiteralDeclarationsLowerAndReferencesDefer) {
     Document document;
     DiagnosticSink sink;
     ASSERT_EQ(load(kBody, document, sink), Status::Ok);
-    ASSERT_EQ(document.scenario.parameters.size(), 1U);
-    EXPECT_EQ(document.scenario.parameters.at("speed"), "30.0");
+    // References and expressions resolve at load time (p4-s3): the IR carries
+    // the values, not the text that produced them.
+    EXPECT_EQ(document.scenario.parameters.at("speed"), "30");
+    EXPECT_EQ(document.scenario.parameters.at("derived"), "60");
     EXPECT_EQ(document.scenario.variables.at("counter"), "0");
-    EXPECT_TRUE(has_message_containing(sink, "p4-s3"));
+    EXPECT_TRUE(sink.diagnostics().empty());
 }
 
 TEST(ScenarioDefinition, CatalogLocationsAreDeferred) {
