@@ -116,6 +116,30 @@ SUITE: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        name="gs3",
+        file="gs3-overtake.xosc",
+        duration=14.0,
+        exercises="event sequencing via storyboard-state conditions, headway and "
+        "freespace triggers, absolute lane targets on a real road network",
+        checkpoints=(
+            # Outer lane (-2 centre) at the declared speed before anything fires.
+            Checkpoint(t=1.0, entity="ego", field="y", value=-5.25),
+            Checkpoint(t=1.0, entity="ego", field="speed", value=22.0),
+            # Phase 1 done: ego sits on the inner lane's centre (-1.75), which
+            # only a road backend can supply — the flat-world model has no lane
+            # identity at all.
+            Checkpoint(t=6.0, entity="ego", field="y", value=-1.75, tolerance=0.01),
+            # Phase 2 done: accelerated past the lead.
+            Checkpoint(t=9.0, entity="ego", field="speed", value=30.0),
+            # Phase 3 done: back on the outer lane, still at the overtaking speed.
+            Checkpoint(t=13.0, entity="ego", field="y", value=-5.25, tolerance=0.01),
+            Checkpoint(t=13.0, entity="ego", field="speed", value=30.0),
+            # The lead never changed anything.
+            Checkpoint(t=13.0, entity="lead", field="speed", value=12.0),
+            Checkpoint(t=13.0, entity="lead", field="y", value=-5.25),
+        ),
+    ),
+    Scenario(
         name="gs4",
         file="gs4-traffic-jam-approach.xosc",
         duration=20.0,
@@ -162,6 +186,28 @@ SUITE: tuple[Scenario, ...] = (
             Checkpoint(t=6.0, entity="ego", field="y", value=-2.0, tolerance=0.1),
             Checkpoint(t=11.0, entity="ego", field="y", value=0.0, tolerance=0.1),
             Checkpoint(t=11.0, entity="ego", field="speed", value=12.0),
+        ),
+    ),
+    Scenario(
+        name="gs8",
+        file="gs8-junction-route.xosc",
+        duration=20.0,
+        exercises="four-way junction map, route assignment and acquire-position, "
+        "a crossing vehicle yielding on a distance trigger",
+        checkpoints=(
+            # Ego holds lane -1 of the west-east corridor all the way through
+            # the junction box (x in [100,150]) and out along road 4.
+            Checkpoint(t=5.0, entity="ego", field="x", value=75.0),
+            Checkpoint(t=5.0, entity="ego", field="y", value=-1.75),
+            Checkpoint(t=9.0, entity="ego", field="y", value=-1.75),  # inside the box
+            Checkpoint(t=19.0, entity="ego", field="y", value=-1.75),
+            # The crosser yields: stopped while ego is approaching and inside
+            # the junction, moving only after ego has cleared it.
+            Checkpoint(t=5.0, entity="crosser", field="speed", value=0.0),
+            Checkpoint(t=9.0, entity="crosser", field="speed", value=0.0),
+            Checkpoint(t=19.0, entity="crosser", field="speed", value=12.0),
+            # ... and it crosses along its own lane centre, not ego's.
+            Checkpoint(t=19.0, entity="crosser", field="x", value=126.75),
         ),
     ),
     Scenario(

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored from the ASAM OpenSCENARIO XML specification text (ADR-0002).
+
+     GS-3 overtake, on tests/golden/maps/overtake.xodr: two same-direction
+     driving lanes on the right side of a 400 m straight. Ego starts behind a
+     slower lead in the outer lane (-2, centre y = -5.25), pulls into the inner
+     lane (-1, centre y = -1.75) when the headway closes, accelerates past, and
+     returns to the outer lane once it is clear. The three phases are sequenced
+     the way the spec intends: each later event waits on the previous one's
+     endTransition, not on a hand-tuned time. -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-01T00:00:00"
+              description="GS-3 overtake" author="Scena golden suite"/>
+  <RoadNetwork><LogicFile filepath="../maps/overtake.xodr"/></RoadNetwork>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+    <ScenarioObject name="lead"><Vehicle name="lead_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions>
+      <Private entityRef="ego">
+        <PrivateAction><TeleportAction>
+          <Position><WorldPosition x="0" y="-5.25" z="0" h="0"/></Position>
+        </TeleportAction></PrivateAction>
+        <PrivateAction><LongitudinalAction><SpeedAction>
+          <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+          <SpeedActionTarget><AbsoluteTargetSpeed value="22"/></SpeedActionTarget>
+        </SpeedAction></LongitudinalAction></PrivateAction>
+      </Private>
+      <Private entityRef="lead">
+        <PrivateAction><TeleportAction>
+          <Position><WorldPosition x="60" y="-5.25" z="0" h="0"/></Position>
+        </TeleportAction></PrivateAction>
+        <PrivateAction><LongitudinalAction><SpeedAction>
+          <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+          <SpeedActionTarget><AbsoluteTargetSpeed value="12"/></SpeedActionTarget>
+        </SpeedAction></LongitudinalAction></PrivateAction>
+      </Private>
+    </Actions></Init>
+    <Story name="story"><Act name="act">
+      <ManeuverGroup name="group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="maneuver">
+          <!-- Phase 1: the headway to the lead closes below 2 s. -->
+          <Event name="pull_out" priority="parallel">
+            <Action name="pull_out_action"><PrivateAction><LateralAction><LaneChangeAction>
+              <LaneChangeActionDynamics dynamicsShape="sinusoidal" dynamicsDimension="time" value="3"/>
+              <LaneChangeTarget><AbsoluteTargetLane value="-1"/></LaneChangeTarget>
+            </LaneChangeAction></LateralAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="closing" delay="0" conditionEdge="none"><ByEntityCondition>
+                <TriggeringEntities triggeringEntitiesRule="any"><EntityRef entityRef="ego"/></TriggeringEntities>
+                <EntityCondition><TimeHeadwayCondition entityRef="lead" value="2.0"
+                    freespace="true" relativeDistanceType="longitudinal" rule="lessThan"/></EntityCondition>
+              </ByEntityCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+          <!-- Phase 2: accelerate once the lane change has ended regularly. -->
+          <Event name="accelerate" priority="parallel">
+            <Action name="accelerate_action"><PrivateAction><LongitudinalAction><SpeedAction>
+              <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time" value="4"/>
+              <SpeedActionTarget><AbsoluteTargetSpeed value="30"/></SpeedActionTarget>
+            </SpeedAction></LongitudinalAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="pulled_out" delay="0" conditionEdge="none"><ByValueCondition>
+                <StoryboardElementStateCondition storyboardElementType="event"
+                    storyboardElementRef="pull_out" state="completeState"/>
+              </ByValueCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+          <!-- Phase 3: back into the outer lane once ego is well clear ahead. -->
+          <Event name="pull_in" priority="parallel">
+            <Action name="pull_in_action"><PrivateAction><LateralAction><LaneChangeAction>
+              <LaneChangeActionDynamics dynamicsShape="sinusoidal" dynamicsDimension="time" value="3"/>
+              <LaneChangeTarget><AbsoluteTargetLane value="-2"/></LaneChangeTarget>
+            </LaneChangeAction></LateralAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="clear" delay="0" conditionEdge="none"><ByEntityCondition>
+                <TriggeringEntities triggeringEntitiesRule="any"><EntityRef entityRef="ego"/></TriggeringEntities>
+                <EntityCondition><RelativeDistanceCondition entityRef="lead" value="30.0"
+                    freespace="true" relativeDistanceType="longitudinal" rule="greaterThan"/></EntityCondition>
+              </ByEntityCondition></Condition>
+              <Condition name="after_accelerate" delay="0" conditionEdge="none"><ByValueCondition>
+                <StoryboardElementStateCondition storyboardElementType="event"
+                    storyboardElementRef="accelerate" state="completeState"/>
+              </ByValueCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+        </Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+  </Storyboard>
+</OpenSCENARIO>
