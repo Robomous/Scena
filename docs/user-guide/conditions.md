@@ -7,8 +7,9 @@ and the **by-entity** conditions (§7.6.5.1, observing one or more entities'
 kinematics or position). This chapter covers both, and the host interface
 they read.
 
-> The kernel exposes these conditions and their host interface; lowering them
-> from OpenSCENARIO XML is a P4 frontend concern and lands separately.
+Both families lower from OpenSCENARIO XML — see
+[loading scenarios](loading-scenarios.md) — and the sections below describe
+the semantics the loaded conditions get.
 
 ## By-value conditions
 
@@ -50,6 +51,13 @@ operators and how Scena applies them:
 
 The left operand is always the **stored/actual** value, the right operand the
 condition's reference literal.
+
+`equalTo`, `greaterThan` and `lessThan` are the 1.0 operator set; the
+non-strict and negated ones arrived in a later 1.x revision. The reference
+text Scena works from does not record which, so a document that declares an
+older revision and uses a newer operator is **loaded with its meaning
+intact** and warned about, rather than rejected on an unverified
+introduction version.
 
 - **Numeric comparison is exact IEEE-754**, with no tolerance — the standard
   defines none, and an epsilon would tie the result to operand magnitude and
