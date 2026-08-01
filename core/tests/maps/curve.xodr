@@ -1,0 +1,32 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Hand-authored Scena test map (GS-8 prerequisite): line, easing spiral
+     and arc chained C1-continuously, one 3.5 m driving lane per side. -->
+<OpenDRIVE>
+  <header revMajor="1" revMinor="8" name="scena-curve"/>
+  <road id="1" length="95" junction="-1">
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="40"><line/></geometry>
+      <geometry s="40" x="40" y="0" hdg="0" length="30">
+        <spiral curvStart="0" curvEnd="0.02"/>
+      </geometry>
+      <geometry s="70" x="69.7311" y="2.9807" hdg="0.3" length="25">
+        <arc curvature="0.02"/>
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+</OpenDRIVE>

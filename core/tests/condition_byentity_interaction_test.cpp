@@ -259,14 +259,21 @@ TEST(DistanceConditionTest, FreespaceWithoutBoundingBoxIsFalse) {
         holds(DistanceCondition{ego_only(), target, 0.0, true, Rule::GreaterOrEqual}, context));
 }
 
-TEST(DistanceConditionTest, RoadCoordinateSystemEvaluatesFalse) {
-    // Road CS is deferred (no road network): the metric is a deterministic
-    // false even for a rule a real distance would satisfy.
+TEST(DistanceConditionTest, RoadCoordinateSystemDefersWithoutARoadNetwork) {
+    // A projected distance type in the road CS needs a road network (p3-s4);
+    // a context without one keeps the metric a deterministic false even for
+    // a rule a real distance would satisfy.
     const KinematicsContext context{{{"ego", pose(0.0, 0.0)}}};
     const WorldPosition target{3.0, 4.0, 0.0};
-    EXPECT_FALSE(holds(DistanceCondition{ego_only(), target, 0.0, false, Rule::GreaterOrEqual,
-                                         CoordinateSystem::Road},
-                       context));
+    EXPECT_FALSE(
+        holds(DistanceCondition{ego_only(), target, 0.0, false, Rule::GreaterOrEqual,
+                                CoordinateSystem::Road, RelativeDistanceType::Longitudinal},
+              context));
+    // Euclidean distance is coordinate-system independent (§6.4.3): it
+    // measures under the road CS with no road network at all.
+    EXPECT_TRUE(holds(
+        DistanceCondition{ego_only(), target, 5.0, false, Rule::EqualTo, CoordinateSystem::Road},
+        context));
 }
 
 TEST(DistanceConditionTest, CartesianDistanceIsTreatedAsEuclidean) {

@@ -1,0 +1,107 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Hand-authored Scena test map (GS-8 prerequisite): incoming road 1 into
+     common junction 50 with two equal connecting roads (2, 3) onto outgoing
+     road 4; one 3.5 m driving lane per side on every road. -->
+<OpenDRIVE>
+  <header revMajor="1" revMinor="8" name="scena-junction"/>
+  <road id="1" length="100" junction="-1">
+    <link><successor elementType="junction" elementId="50"/></link>
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="100"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving"><link><successor id="-1"/></link>
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+  <road id="2" length="50" junction="50">
+    <link>
+      <predecessor elementType="road" elementId="1" contactPoint="end"/>
+      <successor elementType="road" elementId="4" contactPoint="start"/>
+    </link>
+    <planView>
+      <geometry s="0" x="100" y="0" hdg="0" length="50"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <link><predecessor id="-1"/><successor id="-1"/></link>
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+  <road id="3" length="50" junction="50">
+    <link>
+      <predecessor elementType="road" elementId="1" contactPoint="end"/>
+      <successor elementType="road" elementId="4" contactPoint="start"/>
+    </link>
+    <planView>
+      <geometry s="0" x="100" y="0" hdg="0" length="50"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <link><predecessor id="-1"/><successor id="-1"/></link>
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+  <road id="4" length="100" junction="-1">
+    <link><predecessor elementType="junction" elementId="50"/></link>
+    <planView>
+      <geometry s="0" x="150" y="0" hdg="0" length="100"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving"><link><predecessor id="-1"/></link>
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+  <junction id="50" type="default">
+    <connection id="0" incomingRoad="1" connectingRoad="2" contactPoint="start">
+      <laneLink from="-1" to="-1"/>
+    </connection>
+    <connection id="1" incomingRoad="1" connectingRoad="3" contactPoint="start">
+      <laneLink from="-1" to="-1"/>
+    </connection>
+  </junction>
+</OpenDRIVE>
