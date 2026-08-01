@@ -30,6 +30,7 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 |---|---|---|---|---|---|
 | Lexical structure (indentation blocks, comments, continuation, escaped identifiers) | §7.2.1 | In | n/a | p7-s1 | **Landed** (`dsl_lexer_test.cpp`): logical lines with explicit `\` and implicit bracket joining, CR/LF/CRLF, offside rule → INDENT/DEDENT with 8-column tab stops, `#` comments, both identifier forms. No `Keyword` token kind — §7.2.1.5.1 makes reserved words positional, so the parser decides (ADR-0027) |
 | Literals (int/uint/hex/float/bool/string/physical) | §7.2.1.5.2 | In | In | p7-s1, p8-s1 | **Lexing landed** (`dsl_lexer_test.cpp`): uint/int/hex with exact 64-bit values, every float form incl. `inf`/`nan`, short and long strings with escapes, physical literal = number joined to a unit name with no intervening whitespace. `std::from_chars`, never locale-dependent parsing |
+| Grammar (declarations, structured-type members, behavior specification, expression ladder) | §7.2.2 | In | n/a | p7-s2 | **Landed** (`dsl_parser_test.cpp`): recursive-descent parser over the §7.2.2 productions → AST (`ast.h`), left recursions rewritten as loops per the spec's own note. Error recovery is contractual — a parse error resynchronises at the end of the logical line or block and the parse continues, so one run reports many §-cited diagnostics (ADR-0027) |
 | Physical types + units, SI dimensions, conversion factors/offsets | §7.2.2.2.1, §7.3.4 | In | In | p7-s3, p8-s1 | Dimension checking; global unit namespace |
 | Enums (incl. `enum!member`, extension) | §7.3.3 | In | In | p7-s3, p8-s1 | |
 | Primitive types (bool, int, uint, float, string) | §7.3.2 | In | In | p7-s3 | IEEE 754 float; 64-bit int/uint |
@@ -50,11 +51,11 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 | Inheritance (single; conditional `inherits X(f == v)`) | §7.3.8 | In | In | p7-s3 | Latent subtypes via `is()`/`as()` |
 | Extension (`extend`) | §7.3.9 | In | In | p7-s3 | Compile-time composition |
 | Events (`event`, predefined start/end/fail) | §7.3.10 | In | In | p7-s3, p8-s2 | Predefined events map to storyboard element transitions |
-| Event specifications (`@`, `rise`, `fall`, `elapsed`, `every`, `if`, `as` binding) | §7.3.10.4 | In | In except `every` | p7-s2, p8-s2 | `every` (periodic) Post: no v0.0.1 scenario needs it; deterministic period machinery deferred |
+| Event specifications (`@`, `rise`, `fall`, `elapsed`, `every`, `if`, `as` binding) | §7.3.10.4 | In | In except `every` | p7-s2, p8-s2 | **Parsing landed** (`dsl_parser_test.cpp`): all five condition forms plus the `as` binding and `if` guard. `every` (periodic) Post: no v0.0.1 scenario needs it; deterministic period machinery deferred |
 | Global parameters | §7.3.14 | In | In | p7-s3 | |
 | Type resolution order (declare-anywhere) | §7.3.15 | In | n/a | p7-s3 | Multi-pass resolution |
 | Namespaces + `::`, export rules | §7.7.4 | In | n/a | p7-s3 | |
-| Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2 | Dedup per spec |
+| Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2 | **Parsing landed** (`dsl_parser_test.cpp`): both reference forms, and prelude-before-main enforced (§7.2.2.1.1). Dedup and resolution with the symbol table (p7-s3) |
 | Scenario entry-point selection | §7.7.2 | n/a | In | p8-s1 | Implementation-defined per spec: qualified name via API/CLI |
 
 ## Expressions (§7.4)
@@ -77,12 +78,12 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |
 |---|---|---|---|---|---|
-| Direct invocation in `do` | §7.6.2.1.1 | In | In | p7-s2, p8-s2 | |
+| Direct invocation in `do` | §7.6.2.1.1 | In | In | p7-s2, p8-s2 | **Parsing landed** (`dsl_parser_test.cpp`): actor-qualified invocation, arguments, and the `with:` block (modifiers, constraints, `until`) |
 | `serial` | §7.6.2.1.2 | In | In | p8-s2 | Member starts when predecessor ends |
 | `parallel` (default `start` overlap; duration) | §7.6.2.1.4 | In | In | p8-s2 | All-members-complete join |
 | `parallel` non-default overlap kinds + `start_to_start`/`end_to_end` offsets | §7.6.2.1.4 | In | Post | p8-s2 | Declared honestly: only default overlap executes in v0.0.1 |
 | `one_of` | §7.6.2.1.3 | In | In | p8-s2 | Deterministic host-selected alternative (default: first) — any single branch is a valid acceptance; randomness barred by the determinism contract. The exact operator set in 2.2.0 is serial/parallel/one_of — there is no `first_of` or `mix` |
-| Labels on do-members | §7.2.2.4.7 | In | In | p7-s2, p8-s2 | |
+| Labels on do-members | §7.2.2.4.7 | In | In | p7-s2, p8-s2 | **Parsing landed** (`dsl_parser_test.cpp`) on compositions and invocations alike |
 | `duration` bounds on compositions/invocations | §7.6.2.4 | In | In | p8-s2 | |
 | `until` | §7.6.2.5.4 | In | In | p8-s2 | Terminates the annotated invocation exactly at the event; first-of-any for multiples |
 | `wait` | §7.6.2.5.3 | In | In | p8-s2 | Pure synchronization |
