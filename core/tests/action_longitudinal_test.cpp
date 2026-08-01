@@ -30,6 +30,7 @@
 
 #include <gtest/gtest.h>
 
+#include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
@@ -235,9 +236,10 @@ TEST(RelativeSpeedEngineTest, ContinuousTargetFollowsAChangingReference) {
     EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 14.0);  // lead + 2, same step
 }
 
-TEST(RelativeSpeedEngineTest, LaterAbsoluteActionSupersedesARunningRamp) {
-    // ego ramps toward 20 over 10 s, but at t=2 an absolute Step action jumps it
-    // to 5. The ramp is retired: it neither reinstalls nor drives the entity.
+TEST(RelativeSpeedEngineTest, LaterShapedActionSupersedesARunningRamp) {
+    // ego ramps toward 20 over 10 s, but at t=2 a second shaped action takes the
+    // longitudinal domain. The first ramp is retired: it neither reinstalls nor
+    // drives the entity (§7.5.1).
     Engine engine;
     ASSERT_EQ(engine.init(make_relative_scenario(
                   8.0, 0.0, {},
@@ -246,18 +248,55 @@ TEST(RelativeSpeedEngineTest, LaterAbsoluteActionSupersedesARunningRamp) {
                                    "ego", 20.0,
                                    TransitionDynamics{DynamicsShape::Linear,
                                                       DynamicsDimension::Time, 10.0})),
-                   timed_event("override", 2.0, std::make_shared<SpeedAction>("ego", 5.0))})),
+                   timed_event("override", 2.0,
+                               std::make_shared<SpeedAction>(
+                                   "ego", 5.0,
+                                   TransitionDynamics{DynamicsShape::Linear,
+                                                      DynamicsDimension::Time, 1.0}))})),
               Status::Ok);
     ASSERT_EQ(engine.step(1.0), Status::Ok);
     EXPECT_NEAR(speed_of(engine, "ego"), 2.0, kTol); // 1 s into a 0->20 / 10 s ramp
-    ASSERT_EQ(engine.step(1.0), Status::Ok);         // t=2: override fires
+    ASSERT_EQ(engine.step(1.0), Status::Ok);         // t=2: override fires and takes over
+    ASSERT_EQ(engine.step(1.0), Status::Ok);         // t=3: the override's 1 s ramp is done
     EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 5.0);
-    EXPECT_EQ(event_state(engine, "ego_maneuver", "override"),
-              scena::runtime::ElementState::Complete);
-    // The ramp does not claw the entity back on the following step.
+    // The retired ramp reports Complete on its next re-poll (ADR-0013).
+    EXPECT_EQ(event_state(engine, "ego_maneuver", "ramp"), scena::runtime::ElementState::Complete);
+    // The retired ramp does not claw the entity back afterwards.
     ASSERT_EQ(engine.step(1.0), Status::Ok);
     EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 5.0);
-    EXPECT_EQ(event_state(engine, "ego_maneuver", "ramp"), scena::runtime::ElementState::Complete);
+}
+
+TEST(RelativeSpeedEngineTest, StepActionSetsASpeedWithoutOverridingARunningRamp) {
+    // §7.4.1.2: a SpeedAction "used with the step dynamic option" sets a state
+    // and "does not assign a control strategy as the changes are enacted
+    // instantaneously" — so §7.5.1 sees nothing to compete over. The step writes
+    // the speed, and the ramp resumes from its own schedule on the next step.
+    Engine engine;
+    ASSERT_EQ(engine.init(make_relative_scenario(
+                  8.0, 0.0, {},
+                  {timed_event("ramp", 0.0,
+                               std::make_shared<SpeedAction>(
+                                   "ego", 20.0,
+                                   TransitionDynamics{DynamicsShape::Linear,
+                                                      DynamicsDimension::Time, 10.0})),
+                   timed_event("poke", 2.0, std::make_shared<SpeedAction>("ego", 5.0))})),
+              Status::Ok);
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 2.0, kTol);
+    ASSERT_EQ(engine.step(1.0), Status::Ok); // t=2: the step writes 5 ...
+    EXPECT_DOUBLE_EQ(speed_of(engine, "ego"), 5.0);
+    EXPECT_EQ(event_state(engine, "ego_maneuver", "poke"), scena::runtime::ElementState::Complete);
+    // ... and the ramp, which was never overridden, is back in charge at t=3.
+    ASSERT_EQ(engine.step(1.0), Status::Ok);
+    EXPECT_NEAR(speed_of(engine, "ego"), 6.0, kTol);
+    EXPECT_EQ(event_state(engine, "ego_maneuver", "ramp"), scena::runtime::ElementState::Running);
+    // The situation is reported: writing a speed a control strategy overwrites
+    // on the next step is almost never the authored intent.
+    bool reported = false;
+    for (const scena::Diagnostic& diagnostic : engine.diagnostics()) {
+        reported = reported || diagnostic.message.find("step transition") != std::string::npos;
+    }
+    EXPECT_TRUE(reported);
 }
 
 TEST(RelativeSpeedEngineTest, ContinuousWithTimedTransitionIsRejectedAtInit) {

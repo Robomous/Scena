@@ -548,6 +548,29 @@ private:
     void release_longitudinal_domain(EntityRecord& record);
     void release_lateral_domain(EntityRecord& record);
 
+    /// Ends `action` because its event was stopped — §7.5.2.1 "Override by
+    /// Event". Releases whatever control strategy the action had assigned on
+    /// its actor and leaves the entity where the release found it. The action
+    /// is not marked retired: the scheduler has already dropped it, so there is
+    /// no re-poll left to intercept.
+    ///
+    /// Called from the scheduler's stop callback for every action a
+    /// stopTransition takes out of runningState, in document order.
+    void stop_action(const ir::Action& action);
+
+    /// Retires every *other* instance of `action`'s bulk action, on whatever
+    /// entity it drives — §7.5.4: when a conflict overrides a bulk action,
+    /// "all its instances of Entity are supposed to fall back to default
+    /// behavior simultaneously". No-op for an action with no bulk group, which
+    /// is every action outside a multi-actor ManeuverGroup.
+    void retire_bulk_siblings(const ir::Action& action);
+
+    /// Bulk group currently being retired, or 0. Retiring a sibling supersedes
+    /// it, and superseding propagates to the bulk group, so without this the
+    /// two would call each other forever. Not simulation state: it is set and
+    /// cleared inside one call.
+    std::size_t retiring_bulk_group_ = 0;
+
     /// Applies the tri-state activation flags of a controller action to
     /// `record`: an unset flag means "no change for controlling that domain",
     /// activating restores normal dispatch, deactivating releases the domain.

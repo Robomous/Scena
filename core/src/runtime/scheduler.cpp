@@ -224,12 +224,18 @@ void Scheduler::bind(const ir::Storyboard& storyboard) {
     bound_ = true;
 }
 
+void Scheduler::step(const ir::EvaluationContext& context, const FireCallback& fire) {
+    // A caller that keeps no per-action state has nothing to release.
+    step(context, fire, [](const ir::Action&) {});
+}
+
 void Scheduler::step(double simulation_time, const FireCallback& fire) {
     const ir::TimeOnlyEvaluationContext context{simulation_time};
     step(context, fire);
 }
 
-void Scheduler::step(const ir::EvaluationContext& host_context, const FireCallback& fire) {
+void Scheduler::step(const ir::EvaluationContext& host_context, const FireCallback& fire,
+                     const StopCallback& stop) {
     if (!bound_ || root_.state == ElementState::Complete) {
         return;
     }
@@ -246,7 +252,7 @@ void Scheduler::step(const ir::EvaluationContext& host_context, const FireCallba
     // The storyboard enters runningState when the simulation starts; the
     // engine issues this first evaluation at t = 0 during init (§8.4.7).
     if (root_.state == ElementState::Standby) {
-        enter_running(root_, context, fire);
+        enter_running(root_, context, fire, stop);
     }
 
     // Stop trigger wins over any same-step starts: it moves the storyboard
@@ -254,11 +260,11 @@ void Scheduler::step(const ir::EvaluationContext& host_context, const FireCallba
     // same stop-before-start ordering applies to act stop triggers in
     // update().
     if (evaluate_trigger(root_.stop_trigger, context)) {
-        stop_cascade(root_);
+        stop_cascade(root_, stop);
         return;
     }
 
-    update(root_, context, fire);
+    update(root_, context, fire, stop);
 }
 
 void Scheduler::mark_transition(Node& node, TransitionKind transition) {
@@ -267,7 +273,7 @@ void Scheduler::mark_transition(Node& node, TransitionKind transition) {
 }
 
 void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
-                              const FireCallback& fire) {
+                              const FireCallback& fire, const StopCallback& stop) {
     node.state = ElementState::Running;
     mark_transition(node, TransitionKind::Start);
 
@@ -314,7 +320,7 @@ void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
         // and can equally override or be skipped.
         for (std::size_t i = 0; i < node.children.size(); ++i) {
             if (!node.children[i].start_trigger.present()) {
-                start_event(node, i, context, fire);
+                start_event(node, i, context, fire, stop);
             } else {
                 // An event that is about to wait for its own trigger with no
                 // executions left never gets to run (§8.4.2.1).
@@ -324,7 +330,7 @@ void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
     } else {
         for (Node& child : node.children) {
             if (!child.start_trigger.present()) {
-                enter_running(child, context, fire);
+                enter_running(child, context, fire, stop);
             }
         }
     }
@@ -370,7 +376,7 @@ void Scheduler::apply_standby_exhaustion(Node& event) {
 }
 
 void Scheduler::start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
-                            const FireCallback& fire) {
+                            const FireCallback& fire, const StopCallback& stop) {
     Node& event = maneuver.children[index];
     apply_standby_exhaustion(event);
     if (event.state != ElementState::Standby) {
@@ -389,7 +395,7 @@ void Scheduler::start_event(Node& maneuver, std::size_t index, const ir::Evaluat
         // stopped one are indistinguishable, as §8.4.2 requires.
         for (std::size_t i = 0; i < maneuver.children.size(); ++i) {
             if (i != index && maneuver.children[i].state == ElementState::Running) {
-                stop_cascade(maneuver.children[i]);
+                stop_cascade(maneuver.children[i], stop);
             }
         }
         break;
@@ -412,11 +418,11 @@ void Scheduler::start_event(Node& maneuver, std::size_t index, const ir::Evaluat
         break;
     }
 
-    enter_running(event, context, fire);
+    enter_running(event, context, fire, stop);
 }
 
 void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
-                                const FireCallback& fire) {
+                                const FireCallback& fire, const StopCallback& stop) {
     // Single pass in document order. Each decision is a pure function of the
     // time and of the decisions already taken by strictly earlier siblings,
     // which is what pins the outcome when several events trigger together —
@@ -448,7 +454,7 @@ void Scheduler::update_maneuver(Node& maneuver, const ir::EvaluationContext& con
         if (!evaluate_trigger(event.start_trigger, context)) {
             continue;
         }
-        start_event(maneuver, i, context, fire);
+        start_event(maneuver, i, context, fire, stop);
     }
 }
 
@@ -476,7 +482,8 @@ void Scheduler::progress_event(Node& event, const FireCallback& fire) {
     }
 }
 
-void Scheduler::update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire) {
+void Scheduler::update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire,
+                       const StopCallback& stop) {
     if (node.state == ElementState::Complete) {
         return;
     }
@@ -496,7 +503,7 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
     // whose stop and start triggers both hold at the same discrete time is
     // therefore stopped, not started.
     if (evaluate_trigger(node.stop_trigger, context)) {
-        stop_cascade(node);
+        stop_cascade(node, stop);
         return;
     }
 
@@ -504,7 +511,7 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
         if (!evaluate_trigger(node.start_trigger, context)) {
             return;
         }
-        enter_running(node, context, fire);
+        enter_running(node, context, fire, stop);
         if (node.state == ElementState::Complete) {
             return;
         }
@@ -513,10 +520,10 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
     // Advance children in document order, then check for a regular end
     // (§8.4.3–8.4.6).
     if (node.kind == Node::Kind::Maneuver) {
-        update_maneuver(node, context, fire);
+        update_maneuver(node, context, fire, stop);
     } else {
         for (Node& child : node.children) {
-            update(child, context, fire);
+            update(child, context, fire, stop);
         }
     }
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
@@ -525,7 +532,7 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
     }
 }
 
-void Scheduler::stop_cascade(Node& node) {
+void Scheduler::stop_cascade(Node& node, const StopCallback& stop) {
     // §7.6.1.2: every descendant inherits the stop trigger, even one that
     // hosts its own — hence the unconditional recursion.
     //
@@ -537,12 +544,27 @@ void Scheduler::stop_cascade(Node& node) {
         node.executions = node.max_executions;
     }
     if (node.state != ElementState::Complete) {
+        // §7.5.2.1 "Override by Event": the event's own stopTransition forces
+        // every action still in its scope to complete with a stopTransition
+        // too. The scheduler names them; the host releases whatever control
+        // strategy they had assigned. Reported before the state changes and in
+        // document order, so the host sees the same sequence on every platform.
+        for (const ir::Action* action : node.running_actions) {
+            if (action != nullptr) {
+                stop(*action);
+            }
+        }
         // stopTransition leaves runningState or standbyState (§8.2).
         node.state = ElementState::Complete;
         mark_transition(node, TransitionKind::Stop);
     }
+    // A stopped event keeps nothing in progress: the actions above are done,
+    // and a never-ending one has just been ended by the stopTransition
+    // (§7.5.3 — every ending but the regular one applies to it).
+    node.running_actions.clear();
+    node.has_ongoing = false;
     for (Node& child : node.children) {
-        stop_cascade(child);
+        stop_cascade(child, stop);
     }
 }
 

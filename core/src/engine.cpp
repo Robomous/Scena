@@ -31,6 +31,7 @@
 
 #include "scena/gateway/road_query.h"
 #include "scena/gateway/simulator_gateway.h"
+#include "scena/ir/action_domain.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/controller.h"
 #include "scena/ir/entity_condition.h"
@@ -2120,7 +2121,9 @@ Status Engine::init(ir::Scenario scenario) {
                            diagnostics_,
                            warned_values_,
                            attached_road_query()};
-    scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
+    scheduler_.step(
+        context, [this](const ir::Action& action) { return apply(action); },
+        [this](const ir::Action& action) { stop_action(action); });
 
     // The init phase has no integrate stage, so a follower that placed an
     // entity at t = 0 must not make the first step skip its integration.
@@ -2183,7 +2186,9 @@ Status Engine::step(double dt) {
         variables_,     user_defined_values_, entities_,
         signal_states_, controller_phases_,   current_date_time_seconds(clock_.now()),
         diagnostics_,   warned_values_,       attached_road_query()};
-    scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
+    scheduler_.step(
+        context, [this](const ir::Action& action) { return apply(action); },
+        [this](const ir::Action& action) { stop_action(action); });
 
     for (auto& [id, record] : entities_) {
         (void)id;
@@ -3020,6 +3025,30 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         if (is_owner) {
             // Owning finite controller's re-poll: the controller argument is unused.
             return drive_longitudinal(action, record, runtime::LongitudinalController{});
+        }
+        // §7.5.1 conflict test: only an action that assigns a control strategy on
+        // this domain competes for it. A Step-shaped SpeedAction sets a state
+        // and "does not assign a control strategy as the changes are enacted
+        // instantaneously" (§7.4.1.2), so it writes the speed and leaves a
+        // running strategy in charge — which then resumes from its own schedule
+        // on the next step. That is almost never what an author wanted mid-run,
+        // so it is reported.
+        if (!ir::conflicts(ir::control_domains(action), ir::ActionDomain::Longitudinal)) {
+            if (record.active_longitudinal_action != nullptr) {
+                warn_once("entities/" + action.entity_id() + "/longitudinal",
+                          Status::UnsupportedFeature,
+                          std::string(action.kind()) +
+                              " with a step transition sets a speed without assigning a control "
+                              "strategy (§7.4.1.2), so it does not override the control strategy "
+                              "already running on this entity, which resumes on the next step");
+            }
+            // Write the value and complete, without touching whatever owns the
+            // domain. The controller is instantaneous by construction (Step), so
+            // settling it at a zero step yields the target exactly.
+            runtime::LongitudinalController controller =
+                build_speed_controller(*speed_action, record);
+            record.state.speed = controller.advance(0.0, 0.0);
+            return runtime::ActionOutcome::Complete;
         }
         // First application, or a finite longitudinal action superseding whatever
         // drove this entity — including a running continuous relative target.
@@ -4240,10 +4269,12 @@ void Engine::release_lateral_domain(EntityRecord& record) {
 }
 
 void Engine::supersede_lateral(EntityRecord& record, const ir::Action* incoming) {
-    const auto retire = [&record, incoming](const ir::Action* outgoing) {
+    const ir::Action* retired_owner = nullptr;
+    const auto retire = [&record, incoming, &retired_owner](const ir::Action* outgoing) {
         if (outgoing == nullptr || outgoing == incoming) {
             return false;
         }
+        retired_owner = outgoing;
         // The outgoing owner is still Running in its own event; mark it so its
         // next re-poll reports Complete rather than reinstalling itself. Guard
         // against a duplicate entry (a given action owns the entity once).
@@ -4270,6 +4301,10 @@ void Engine::supersede_lateral(EntityRecord& record, const ir::Action* incoming)
             }
             record.trajectory.reset();
         }
+    }
+    // §7.5.4: a conflict on one entity overrides the whole bulk action.
+    if (retired_owner != nullptr) {
+        retire_bulk_siblings(*retired_owner);
     }
 }
 
@@ -4360,6 +4395,72 @@ void Engine::report_inactive_domain(const ir::Action& action, const char* domain
     diagnostics_.report(std::move(diagnostic));
 }
 
+void Engine::stop_action(const ir::Action& action) {
+    EntityRecord* found = record_for(action);
+    if (found == nullptr) {
+        return; // a global action, or an actor that is no longer in the scenario
+    }
+    EntityRecord& record = *found;
+    // Only the domains this action actually owns are released: a stopped event
+    // must not disturb a control strategy some other action assigned.
+    if (record.active_longitudinal_action == &action) {
+        record.longitudinal.reset();
+        record.continuous_speed.reset();
+        record.active_longitudinal_action = nullptr;
+    }
+    if (record.active_lateral_action == &action) {
+        record.active_lateral_action = nullptr;
+        record.lateral_transition.reset();
+        record.lateral_rate = 0.0;
+        record.lateral_dissolve_pending = false;
+        dissolve_lateral_axis(record);
+    }
+    if (record.trajectory.has_value() && record.trajectory->action == &action) {
+        record.trajectory.reset();
+    }
+    // The scheduler dropped this action from the event's running set before
+    // calling us, so no re-poll can reinstall it; a stale retirement marker
+    // would only outlive the action it names.
+    const auto retired =
+        std::find(record.retired_actions.begin(), record.retired_actions.end(), &action);
+    if (retired != record.retired_actions.end()) {
+        record.retired_actions.erase(retired);
+    }
+    // §7.5.4: stopping one instance of a bulk action stops every instance.
+    retire_bulk_siblings(action);
+}
+
+void Engine::retire_bulk_siblings(const ir::Action& action) {
+    const std::size_t group = action.bulk_group();
+    if (group == 0 || retiring_bulk_group_ == group) {
+        return;
+    }
+    const std::size_t outer = retiring_bulk_group_;
+    retiring_bulk_group_ = group;
+    // std::map iteration, so the release order is the entity id order on every
+    // platform (the determinism contract). Each sibling is retired rather than
+    // released outright: it is still Running inside its own event, and its next
+    // re-poll is what turns that into a Complete.
+    for (auto& [id, record] : entities_) {
+        (void)id;
+        const auto retire = [group](const ir::Action* owner) {
+            return owner != nullptr && owner->bulk_group() == group;
+        };
+        if (retire(record.active_longitudinal_action)) {
+            supersede_longitudinal(record, nullptr);
+            record.longitudinal.reset();
+            record.continuous_speed.reset();
+            record.active_longitudinal_action = nullptr;
+        }
+        if (retire(record.active_lateral_action) ||
+            (record.trajectory.has_value() && retire(record.trajectory->action))) {
+            supersede_lateral(record, nullptr);
+            dissolve_lateral_axis(record);
+        }
+    }
+    retiring_bulk_group_ = outer;
+}
+
 void Engine::supersede_longitudinal(EntityRecord& record, const ir::Action* incoming) {
     const ir::Action* outgoing = record.active_longitudinal_action;
     if (outgoing == nullptr || outgoing == incoming) {
@@ -4378,6 +4479,8 @@ void Engine::supersede_longitudinal(EntityRecord& record, const ir::Action* inco
     if (record.trajectory.has_value() && record.trajectory->action == outgoing) {
         record.trajectory.reset();
     }
+    // §7.5.4: a conflict on one entity overrides the whole bulk action.
+    retire_bulk_siblings(*outgoing);
 }
 
 double Engine::resolve_relative_speed(const ir::RelativeTargetSpeed& target,

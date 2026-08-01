@@ -149,6 +149,18 @@ class Scheduler {
 public:
     using FireCallback = std::function<ActionOutcome(const ir::Action&)>;
 
+    /// Called for every action a stopTransition takes out of runningState —
+    /// §7.5.2.1 "Override by Event": "an event which is stopped is forced to
+    /// stop all actions in its scope. The concerned actions move to the
+    /// completeState with a stopTransition." The scheduler owns element state;
+    /// only the host knows what a running action was doing to an entity, so the
+    /// scheduler names the actions and the host releases whatever they held.
+    ///
+    /// Called once per action still in progress, in document order, before the
+    /// element is marked Complete. An action that already completed is never
+    /// reported: it holds nothing.
+    using StopCallback = std::function<void(const ir::Action&)>;
+
     /// Binds the executor to a storyboard and builds its element tree,
     /// including a fresh evaluation history per trigger condition (any
     /// previous history is discarded). The storyboard must be valid —
@@ -174,6 +186,13 @@ public:
     /// facet (simulation time, named values, time of day) is forwarded to the
     /// host context unchanged.
     void step(const ir::EvaluationContext& context, const FireCallback& fire);
+
+    /// As above, additionally reporting every action a stopTransition ends
+    /// through `stop` (§7.5.2.1). The overload without it is equivalent to
+    /// passing a no-op, and is what a caller that holds no per-action state
+    /// wants.
+    void step(const ir::EvaluationContext& context, const FireCallback& fire,
+              const StopCallback& stop);
 
     /// Convenience overload for time-only evaluation: wraps `simulation_time`
     /// in a TimeOnlyEvaluationContext. A condition that reads any other facet
@@ -324,14 +343,16 @@ private:
     /// the transition is observable only within the evaluation it occurred.
     void mark_transition(Node& node, TransitionKind transition);
 
-    void enter_running(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
-    void update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire);
+    void enter_running(Node& node, const ir::EvaluationContext& context, const FireCallback& fire,
+                       const StopCallback& stop);
+    void update(Node& node, const ir::EvaluationContext& context, const FireCallback& fire,
+                const StopCallback& stop);
 
     /// Advances the events of a running Maneuver — the scope event priority
     /// is defined over (§7.3.3) and therefore the only place that can see
     /// all the siblings a starting event has to interact with.
     void update_maneuver(Node& maneuver, const ir::EvaluationContext& context,
-                         const FireCallback& fire);
+                         const FireCallback& fire, const StopCallback& stop);
     /// Re-polls the transition-dynamics actions of a running event (§8.4.2):
     /// each still-running action is fired again; those reporting Complete drop
     /// out, and once none remain and no never-ending action is present the
@@ -340,7 +361,7 @@ private:
     /// Resolves the priority of the event at `index` and starts it, skips
     /// it or overrides its running siblings accordingly (§8.4.2.2).
     void start_event(Node& maneuver, std::size_t index, const ir::EvaluationContext& context,
-                     const FireCallback& fire);
+                     const FireCallback& fire, const StopCallback& stop);
     [[nodiscard]] static bool has_running_sibling(const Node& maneuver, std::size_t index);
     /// Takes an event out of runningState with an endTransition (§8.4.2.1):
     /// back to standbyState while executions remain, complete once they are
@@ -350,7 +371,7 @@ private:
     /// maximum, with a skipTransition (§8.4.2.1).
     void apply_standby_exhaustion(Node& event);
 
-    void stop_cascade(Node& node);
+    void stop_cascade(Node& node, const StopCallback& stop);
     static bool all_children_complete(const Node& node);
     [[nodiscard]] const Node* find(const std::string& path) const;
 
