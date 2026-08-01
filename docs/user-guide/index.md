@@ -7,6 +7,11 @@ The user guide grows sprint by sprint along the
   the loader API, the 1.0–1.3 version policy, what a document lowers into
   (entities, storyboard, init actions, road-network references), xpath-ish
   diagnostics with rule ids, encodings, and locale-safe number reading.
+- [Parameters, expressions and variables](parameters.md) — the reuse
+  machinery: typed `ParameterDeclaration`s and their subtree scoping, value
+  constraints, `$references` and `${expressions}` with the operator whitelist
+  and typing rules, why expression evaluation is deterministic, and how
+  variables differ from parameters.
 - [The entity model](entities.md) — ScenarioObject and the Vehicle /
   Pedestrian / MiscObject taxonomy, bounding boxes, performance limits, the
   full h/p/r pose, and how to build and query entities from C++/C/Python.
