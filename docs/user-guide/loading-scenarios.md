@@ -1,11 +1,10 @@
 # Loading scenarios
 
 Scena reads ASAM OpenSCENARIO XML documents through the XML frontend
-(`scena::frontend-xml`). This chapter covers the document layer: how a file
-becomes a parsed document, which versions are accepted, and how the loader
-reports what it found. The lowering of entities and the storyboard into the
-Scenario IR arrives in later sprints; until then a document that loads
-cleanly reports one warning per element that is not consumed yet.
+(`scena::frontend-xml`): a file becomes a parsed, version-checked document
+and is compiled into the Scenario IR the engine executes. This chapter covers
+the loader API, the version policy, what is loaded today, and how findings
+are reported.
 
 ## The loader API
 
@@ -73,6 +72,45 @@ the loader resolves which at load time:
 
 Mixing two categories in one file is a `ValidationError`.
 
+## What is loaded
+
+A scenario document lowers into `Document::scenario`, the Scenario IR:
+
+- **Entities** (§7.2.2) — `ScenarioObject` with an inline `Vehicle`,
+  `Pedestrian` or `MiscObject`: category and role, bounding box,
+  `Performance`, axles, and properties in document order. The
+  `ScenarioObject` name is the entity's identity throughout the scenario, so
+  it is both the IR id and the name.
+- **The storyboard** (§8.3) — `Init` actions (global, user-defined and
+  per-entity private, applied concurrently before simulation time, §8.5), the
+  Story / Act / ManeuverGroup / Maneuver / Event hierarchy, event priorities
+  and execution counts, start and stop triggers with their condition groups,
+  edges and delays, and the storyboard stop trigger.
+- **Action and condition payloads** — every action and condition the runtime
+  implements: the longitudinal, lateral, routing, controller, visibility and
+  teleport private actions, the global actions (environment, entity
+  add/delete, parameter and variable, traffic signals, custom commands), and
+  the by-value and by-entity condition families.
+- **Declarations** — `ParameterDeclarations` and `VariableDeclarations`
+  lower as literal name/value pairs. A value containing `$` (a parameter
+  reference or a `${...}` expression) is reported rather than stored: the
+  expression machinery is a later sprint's.
+- **RoadNetwork** — the `LogicFile` and `SceneGraphFile` paths are reported
+  on `Document::road_network`, verbatim and unresolved. They are host input,
+  not kernel state: the engine reaches roads only through the `IRoadQuery`
+  gateway, so the embedder builds a road backend from those paths. Traffic
+  signal controllers declared inside `RoadNetwork` are scenario content and
+  do lower into the IR.
+
+A ManeuverGroup that asks for more than one execution is told so — the
+attribute is read, the count is not honoured yet.
+
+Deprecated constructs valid 1.0–1.3 files contain are accepted, mapped onto
+their successors, and reported with `Status::DeprecatedFeature`: the pre-1.1
+`ActivateControllerAction` placement, the `overwrite` event priority,
+`ParameterAction`, `ReachPositionCondition`, `alongRoute`, the pre-1.1
+`GeoPosition` attribute names, and `curvatureDot`.
+
 ## Diagnostics
 
 Every finding carries:
@@ -92,8 +130,12 @@ Every finding carries:
   `FileHeader` date outside the ISO 8601 basic notation.
 
 Nothing is dropped silently. Elements the loader does not implement yet are
-reported as `Warning` / `Status::UnsupportedFeature`, so the warning list of
-a real file is an honest statement of what Scena did and did not read.
+reported as `Warning` / `Status::UnsupportedFeature` and each names where it
+went — catalogs and controller assignment, expression evaluation, or
+"Post-v0.0.1" for what the
+[coverage matrix](../roadmap/coverage/osc-xml-coverage.md) excludes. The
+warning list of a real file is an honest statement of what Scena did and did
+not read.
 
 Two loads of the same bytes produce element-wise identical diagnostics: the
 sink never reorders, deduplicates, or timestamps, and messages never contain
@@ -119,3 +161,7 @@ the engine ever ran. Conversions are whole-token, so `"1,5"`, `"1.5x"` and
   determinism bug, not a formatting preference.
 - [ADR-0020](../architecture/ADR-0020-xml-document-layer.md) — the document
   layer's design decisions.
+- [ADR-0021](../architecture/ADR-0021-xml-structural-lowering.md) — how a
+  document maps onto the Scenario IR.
+- [The storyboard model](storyboard.md) — what the loaded hierarchy does at
+  run time.

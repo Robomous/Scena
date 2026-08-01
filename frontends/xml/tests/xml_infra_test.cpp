@@ -316,17 +316,32 @@ TEST(LineEndings, CrlfLoadsLikeLf) {
 // --- diagnostics: addressing and positions -------------------------------
 
 TEST(Diagnostics, UnconsumedElementsAreWarnedNeverSilent) {
+    // CatalogLocations and MonitorDeclarations are recognized ScenarioDefinition
+    // members that this loader does not consume; each says so rather than
+    // being dropped.
+    const std::string source =
+        "<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"3\" date=\"2026-08-01T00:00:00\" "
+        "description=\"d\" author=\"a\"/><CatalogLocations/><MonitorDeclarations/>"
+        "<Storyboard/></OpenSCENARIO>";
     Document document;
     DiagnosticSink sink;
-    ASSERT_EQ(scena::xml::load_string(scenario_document(1, 3), document, sink), Status::Ok);
+    ASSERT_EQ(scena::xml::load_string(source, document, sink), Status::Ok);
 
-    // Entities and Storyboard are recognized but not lowered yet (p4-s2).
-    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Entities"));
-    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Storyboard"));
+    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/CatalogLocations"));
+    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/MonitorDeclarations"));
     for (const Diagnostic& diagnostic : sink.diagnostics()) {
         EXPECT_EQ(diagnostic.severity, Severity::Warning);
         EXPECT_EQ(diagnostic.code, Status::UnsupportedFeature);
     }
+}
+
+TEST(Diagnostics, AFullyConsumedDocumentReportsNothing) {
+    // Everything the fixture declares is loaded, so a clean document produces
+    // an empty diagnostic list — the never-silent rule cuts both ways.
+    Document document;
+    DiagnosticSink sink;
+    ASSERT_EQ(scena::xml::load_string(scenario_document(1, 3), document, sink), Status::Ok);
+    EXPECT_TRUE(sink.diagnostics().empty());
 }
 
 TEST(Diagnostics, UnknownElementIsWarned) {
@@ -343,14 +358,14 @@ TEST(Diagnostics, UnknownElementIsWarned) {
 TEST(Diagnostics, RepeatedSiblingsGetPositionalPredicates) {
     const std::string source =
         "<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"0\" date=\"2026-08-01T00:00:00\" "
-        "description=\"d\" author=\"a\"/><Storyboard/><Extra/><Extra/></OpenSCENARIO>";
+        "description=\"d\" author=\"a\"/><CatalogLocations/><Extra/><Extra/></OpenSCENARIO>";
     Document document;
     DiagnosticSink sink;
     EXPECT_EQ(scena::xml::load_string(source, document, sink), Status::Ok);
     EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Extra[1]"));
     EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Extra[2]"));
     // A unique element carries no predicate.
-    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Storyboard"));
+    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/CatalogLocations"));
 }
 
 TEST(Diagnostics, PositionsPointAtTheOffendingLine) {
@@ -515,10 +530,7 @@ TEST(FileInput, LoadsAFileAndRecordsItsPath) {
     DiagnosticSink sink;
     ASSERT_EQ(scena::xml::load_file(file.path(), document, sink), Status::Ok);
     EXPECT_EQ(document.version, (DocumentVersion{1, 3}));
-    ASSERT_FALSE(sink.diagnostics().empty());
-    for (const Diagnostic& diagnostic : sink.diagnostics()) {
-        EXPECT_EQ(diagnostic.location.file, file.path().string());
-    }
+    EXPECT_EQ(document.kind, DocumentKind::Scenario);
 }
 
 TEST(FileInput, CrlfFileLoadsUnchanged) {

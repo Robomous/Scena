@@ -63,16 +63,27 @@ enum class DocumentKind {
     ParameterValueDistribution ///< §9.7; outside v0.0.1 scope (roadmap P4).
 };
 
+/// The road-network files a scenario references, per §RoadNetwork.
+///
+/// These are host-side inputs, not kernel state: the engine reaches roads
+/// only through the `IRoadQuery` gateway, so the loader hands the file
+/// references to the embedder — who builds a road backend from them — rather
+/// than putting a file path into the Scenario IR. Paths are the document's
+/// text, verbatim and unresolved; interpreting them relative to the scenario
+/// file is the host's decision.
+struct RoadNetwork {
+    std::string logic_file;       ///< §LogicFile: the OpenDRIVE road network.
+    std::string scene_graph_file; ///< §SceneGraphFile: 3D model, rendering only.
+};
+
 /// One loaded OpenSCENARIO XML document: what the file declared about itself
 /// plus the Scenario IR compiled from it.
-///
-/// The document layer (p4-s1) fills `version` and `kind`; the storyboard and
-/// entity lowering that fills `scenario` arrives with p4-s2, so a successful
-/// load currently yields an empty scenario and a warning per unconsumed
-/// element.
 struct Document {
     DocumentVersion version;
     DocumentKind kind = DocumentKind::Unknown;
+    /// Road-network references of a scenario document; empty when the file
+    /// declares none.
+    RoadNetwork road_network;
     ir::Scenario scenario;
 };
 

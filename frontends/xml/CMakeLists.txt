@@ -3,6 +3,12 @@
 add_library(scena-frontend-xml STATIC
     src/attributes.cpp
     src/loader.cpp
+    src/read_actions.cpp
+    src/read_common.cpp
+    src/read_conditions.cpp
+    src/read_entities.cpp
+    src/read_geometry.cpp
+    src/read_storyboard.cpp
     src/reader_context.cpp
 )
 add_library(scena::frontend-xml ALIAS scena-frontend-xml)
