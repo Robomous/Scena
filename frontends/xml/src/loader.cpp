@@ -193,6 +193,8 @@ bool read_file_header(ReadContext& ctx, const pugi::xml_node& root, Document& ou
         return false;
     }
     out.version = DocumentVersion{rev_major, rev_minor};
+    // From here on the readers may gate constructs on the declared revision.
+    ctx.set_version(out.version);
 
     if (!out.version.is_supported()) {
         // 1.4 exists and is the version of the local reference copy, but

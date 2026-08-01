@@ -24,6 +24,7 @@
 
 #include "scena/diagnostic.h"
 #include "scena/status.h"
+#include "scena/xml/document.h"
 
 // Internal to the XML frontend: pugixml is a private dependency of the
 // frontend target and must never appear in a public scena/xml header.
@@ -69,6 +70,23 @@ public:
     ReadContext(DiagnosticSink& sink, std::string_view source, std::string file)
         : sink_(sink), source_(source), file_(std::move(file)) {}
 
+    /// Records the revision the document declared, once FileHeader has been
+    /// read. Element readers consult it for the constructs whose availability
+    /// depends on the version (`version_at_least`).
+    void set_version(DocumentVersion version) noexcept { version_ = version; }
+
+    [[nodiscard]] DocumentVersion version() const noexcept { return version_; }
+
+    /// True when the document declares revision `major.minor` or later.
+    ///
+    /// A document whose FileHeader has not been read yet (version 0.0)
+    /// answers false for every real revision, so a version-gated check never
+    /// fires before the version is known.
+    [[nodiscard]] bool version_at_least(int major, int minor) const noexcept {
+        return version_.rev_major > major ||
+               (version_.rev_major == major && version_.rev_minor >= minor);
+    }
+
     /// Reports a finding anchored at `path` with no source position.
     void report(Severity severity, Status code, std::string path, std::string message,
                 std::string rule_id = {});
@@ -96,6 +114,7 @@ private:
     DiagnosticSink& sink_;
     std::string_view source_;
     std::string file_;
+    DocumentVersion version_;
     Status first_error_ = Status::Ok;
 };
 
