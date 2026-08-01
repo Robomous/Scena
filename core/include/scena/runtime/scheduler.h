@@ -212,6 +212,18 @@ public:
     /// True when the storyboard reached completeState (stop trigger fired).
     [[nodiscard]] bool storyboard_complete() const noexcept;
 
+    /// Calls `visit(path, state, transition)` for every element that took a
+    /// transition in the most recent evaluation.
+    ///
+    /// A transition is a one-evaluation pulse, so this reports each of them
+    /// exactly once if it is called once per step. The walk is document order,
+    /// depth first, parents before their children — the order a host observing
+    /// the storyboard sees, and part of the deterministic run. `path` is the
+    /// element's name path from the story down joined with '/', with the empty
+    /// string addressing the storyboard itself.
+    void for_each_transition(
+        const std::function<void(const std::string&, ElementState, TransitionKind)>& visit) const;
+
     /// Unbinds the storyboard and clears all element states.
     void reset() noexcept;
 
@@ -387,6 +399,11 @@ private:
     static void reset_trigger(TriggerState& trigger);
 
     void stop_cascade(Node& node, const StopCallback& stop);
+
+    /// Depth-first half of for_each_transition, carrying the path built so far.
+    void visit_transitions(
+        const Node& node, const std::string& path,
+        const std::function<void(const std::string&, ElementState, TransitionKind)>& visit) const;
     static bool all_children_complete(const Node& node);
     [[nodiscard]] const Node* find(const std::string& path) const;
 

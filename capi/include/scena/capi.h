@@ -1155,6 +1155,68 @@ SCN_API scn_status scn_engine_element_state(scn_engine* engine, const char* path
 SCN_API scn_status scn_engine_element_transition(scn_engine* engine, const char* path,
                                                  scn_element_transition* out);
 
+/* --- Gateway callbacks ---------------------------------------------------- */
+
+/* Host callbacks the engine invokes during step() (and init()).
+ *
+ * Every member may be NULL, which means "not interested" — the engine behaves
+ * exactly as it does without a gateway for that hook. `user_data` is passed
+ * back verbatim to every callback and is never interpreted.
+ *
+ * Timing is the ADR-0003 step order, unchanged:
+ *
+ *   on_step_begin(dt)
+ *   -> poll_state() for each host-controlled entity      (before evaluation)
+ *   -> the storyboard is evaluated; on_controller_assigned / on_visibility_changed
+ *      / on_custom_command fire from the actions that cause them
+ *   -> on_element_transition() for each element that transitioned, document order
+ *   -> entity motion is integrated
+ *   -> publish_state() for each engine-controlled entity  (after integration)
+ *   on_step_end(dt)
+ *
+ * A callback must not call back into the engine: the engine invokes them
+ * synchronously inside step(), and a reentrant call would observe a half-built
+ * step. React between steps, through the setters.
+ *
+ * Strings and structs handed to a callback are borrowed for the duration of
+ * that call only.
+ *
+ * Transparent struct; append fields only. Zero-initialize it
+ * (`scn_callbacks cb = {0};`) so fields added by a later ABI minor stay NULL. */
+typedef struct scn_callbacks {
+    void* user_data;
+    /* Engine-controlled entity state, once per step after integration. */
+    void (*publish_state)(void* user_data, const char* entity_id, const scn_entity_state* state);
+    /* Host-controlled entity state, once per step before evaluation. Return
+     * non-zero and fill *out to update the entity; return 0 to leave it. */
+    int (*poll_state)(void* user_data, const char* entity_id, scn_entity_state* out);
+    /* A storyboard element transitioned; `state` is the state after it. */
+    void (*on_element_transition)(void* user_data, const char* path, scn_element_state state,
+                                  scn_element_transition transition);
+    /* A CustomCommandAction fired (§7.4.3). */
+    void (*on_custom_command)(void* user_data, const char* type, const char* content);
+    /* An AssignControllerAction assigned a controller model (§6.6). The
+     * controller's property list stays in C++; C sees name and type. */
+    void (*on_controller_assigned)(void* user_data, const char* entity_id,
+                                   const char* controller_name, scn_controller_type type);
+    /* A VisibilityAction changed an entity's detectability. */
+    void (*on_visibility_changed)(void* user_data, const char* entity_id, int graphics, int traffic,
+                                  int sensors);
+    /* Batching brackets around each step. */
+    void (*on_step_begin)(void* user_data, double dt);
+    void (*on_step_end)(void* user_data, double dt);
+} scn_callbacks;
+
+/* Installs `callbacks` on the engine, replacing any previous set. Pass NULL to
+ * remove them. The struct is copied, so the caller's copy need not outlive the
+ * call; whatever `user_data` points at must outlive the engine.
+ *
+ * An engine constructed in C always exchanges state through these callbacks
+ * rather than through a C++ gateway object — this is the C ABI's whole gateway
+ * surface. Road-network injection stays a C++ interface: IRoadQuery is a
+ * geometry service with no C representation, and ADR-0003 keeps it that way. */
+SCN_API scn_status scn_engine_set_callbacks(scn_engine* engine, const scn_callbacks* callbacks);
+
 /* --- Signals, time and lifecycle ------------------------------------------ */
 
 /* Forces the observable state of a traffic signal from the host side

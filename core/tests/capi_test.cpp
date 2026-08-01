@@ -1840,3 +1840,133 @@ TEST(CApiTest, EveryNewEntryPointRejectsNullArguments) {
 
     scn_engine_destroy(engine);
 }
+
+// --- p6-s2: gateway callbacks through the C ABI ----------------------------
+
+namespace {
+
+/// Accumulates the C callback stream, exactly as the C++ gateway test does.
+struct CallbackLog {
+    std::vector<std::string> entries;
+    int poll_calls = 0;
+    double injected_speed = 0.0;
+    bool inject = false;
+};
+
+void on_publish(void* user, const char* id, const scn_entity_state* state) {
+    static_cast<CallbackLog*>(user)->entries.push_back(std::string("publish:") + id + ":" +
+                                                       (state->speed > 0.0 ? "moving" : "still"));
+}
+
+int on_poll(void* user, const char* id, scn_entity_state* out) {
+    auto* log = static_cast<CallbackLog*>(user);
+    ++log->poll_calls;
+    log->entries.push_back(std::string("poll:") + id);
+    if (!log->inject) {
+        return 0;
+    }
+    out->speed = log->injected_speed;
+    return 1;
+}
+
+void on_transition(void* user, const char* path, scn_element_state state,
+                   scn_element_transition transition) {
+    static_cast<CallbackLog*>(user)->entries.push_back(
+        std::string("transition:") + path + ":" + std::to_string(static_cast<int>(state)) + ":" +
+        std::to_string(static_cast<int>(transition)));
+}
+
+void on_begin(void* user, double /*dt*/) {
+    static_cast<CallbackLog*>(user)->entries.emplace_back("begin");
+}
+
+void on_end(void* user, double /*dt*/) {
+    static_cast<CallbackLog*>(user)->entries.emplace_back("end");
+}
+
+} // namespace
+
+TEST(CApiTest, CallbacksRoundTripThroughTheAbi) {
+    CallbackLog log;
+    scn_callbacks callbacks{};
+    callbacks.user_data = &log;
+    callbacks.publish_state = &on_publish;
+    callbacks.on_element_transition = &on_transition;
+    callbacks.on_step_begin = &on_begin;
+    callbacks.on_step_end = &on_end;
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_set_callbacks(engine, &callbacks), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_add_speed_action(engine, "ego", 10.0, 1.0), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    log.entries.clear();
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    ASSERT_FALSE(log.entries.empty());
+    EXPECT_EQ(log.entries.front(), "begin");
+    EXPECT_EQ(log.entries.back(), "end");
+    // The event started this step, so a transition was reported in between.
+    bool saw_transition = false;
+    for (const std::string& entry : log.entries) {
+        saw_transition = saw_transition || entry.rfind("transition:", 0) == 0;
+    }
+    EXPECT_TRUE(saw_transition);
+    EXPECT_EQ(log.poll_calls, 0); // no host-controlled entity, and no hook set
+
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, PollCallbackInjectsHostState) {
+    CallbackLog log;
+    log.inject = true;
+    log.injected_speed = 4.5;
+    scn_callbacks callbacks{};
+    callbacks.user_data = &log;
+    callbacks.poll_state = &on_poll;
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_set_callbacks(engine, &callbacks), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "npc", "npc", SCN_CONTROL_HOST), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+
+    ASSERT_EQ(scn_engine_step(engine, 0.5), SCN_OK);
+    EXPECT_EQ(log.poll_calls, 1);
+    scn_entity_state state{};
+    ASSERT_EQ(scn_engine_get_state(engine, "npc", &state), SCN_OK);
+    EXPECT_EQ(state.speed, 4.5);
+    scn_engine_destroy(engine);
+}
+
+TEST(CApiTest, CallbacksCanBeRemovedAndEveryHookIsOptional) {
+    CallbackLog log;
+    // A zero-initialized struct with only user_data set: every hook NULL, which
+    // must behave exactly like no gateway at all.
+    scn_callbacks empty{};
+    empty.user_data = &log;
+
+    scn_engine* engine = scn_engine_create();
+    ASSERT_NE(engine, nullptr);
+    ASSERT_EQ(scn_engine_set_callbacks(engine, &empty), SCN_OK);
+    ASSERT_EQ(scn_engine_add_entity(engine, "ego", "ego", SCN_CONTROL_ENGINE), SCN_OK);
+    ASSERT_EQ(scn_engine_init(engine), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    EXPECT_TRUE(log.entries.empty());
+
+    // Installing, then removing.
+    scn_callbacks callbacks{};
+    callbacks.user_data = &log;
+    callbacks.on_step_begin = &on_begin;
+    ASSERT_EQ(scn_engine_set_callbacks(engine, &callbacks), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    EXPECT_EQ(log.entries.size(), 1U);
+
+    ASSERT_EQ(scn_engine_set_callbacks(engine, nullptr), SCN_OK);
+    ASSERT_EQ(scn_engine_step(engine, 1.0), SCN_OK);
+    EXPECT_EQ(log.entries.size(), 1U); // unchanged
+
+    EXPECT_EQ(scn_engine_set_callbacks(nullptr, &callbacks), SCN_ERROR_INVALID_ARGUMENT);
+    scn_engine_destroy(engine);
+}

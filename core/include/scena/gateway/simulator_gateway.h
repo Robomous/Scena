@@ -21,6 +21,7 @@
 #include "scena/entity_state.h"
 #include "scena/entity_visibility.h"
 #include "scena/ir/controller.h"
+#include "scena/runtime/scheduler.h"
 
 namespace scena::gateway {
 
@@ -95,6 +96,44 @@ public:
     /// callback. Reactions feed back only through the sanctioned setters
     /// between steps.
     virtual void on_custom_command(const std::string& /*type*/, const std::string& /*content*/) {}
+
+    /// Called once at the start of every step(), before anything else the
+    /// gateway sees, with the dt the host passed.
+    ///
+    /// The batching hook: a host that writes into a scene graph, a shared
+    /// buffer or a network frame opens it here, receives the step's
+    /// poll_state()/publish_state() calls, and commits in on_step_end(). The
+    /// per-entity contract and the step order of ADR-0003 are unchanged — this
+    /// only brackets them, so a gateway that ignores both hooks behaves exactly
+    /// as before.
+    ///
+    /// Called even for a zero-dt step: a dt = 0 step is a real evaluation (it
+    /// re-checks triggers and republishes state) and a host batching writes
+    /// needs its brackets.
+    virtual void on_step_begin(double /*dt*/) {}
+
+    /// Called once at the end of every step(), after the last publish_state().
+    /// The commit half of on_step_begin(). Not called if the step is rejected
+    /// (an invalid dt, an uninitialized engine): nothing was opened.
+    virtual void on_step_end(double /*dt*/) {}
+
+    /// Called for every storyboard element that took a transition in the
+    /// evaluation this step performed — the observer half of the storyboard,
+    /// so a host does not have to poll every element it cares about.
+    ///
+    /// `path` is the element's name path from the story down, joined with '/'
+    /// (the empty string is the storyboard itself), the same addressing
+    /// Engine::storyboard_element_state uses. `state` is the state the element
+    /// is in *after* the transition.
+    ///
+    /// Order is deterministic and part of the contract: document order, depth
+    /// first, parents before their children, reported after the evaluation
+    /// completes and before entity motion is integrated. A transition is a
+    /// one-evaluation pulse, so each is reported exactly once.
+    ///
+    /// Same borrowing and no-reentrancy rules as the other callbacks.
+    virtual void on_element_transition(const std::string& /*path*/, runtime::ElementState /*state*/,
+                                       runtime::TransitionKind /*transition*/) {}
 };
 
 } // namespace scena::gateway

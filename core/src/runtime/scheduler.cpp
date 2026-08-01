@@ -612,6 +612,27 @@ void Scheduler::reset_trigger(TriggerState& trigger) {
     }
 }
 
+void Scheduler::for_each_transition(
+    const std::function<void(const std::string&, ElementState, TransitionKind)>& visit) const {
+    if (!bound_ || !visit) {
+        return;
+    }
+    visit_transitions(root_, std::string{}, visit);
+}
+
+void Scheduler::visit_transitions(
+    const Node& node, const std::string& path,
+    const std::function<void(const std::string&, ElementState, TransitionKind)>& visit) const {
+    // The parent is reported before its children: an observer sees an act start
+    // before the events inside it, which is the order they happened in.
+    if (node.transition != TransitionKind::None && node.transition_evaluation == evaluation_) {
+        visit(path, node.state, node.transition);
+    }
+    for (const Node& child : node.children) {
+        visit_transitions(child, path.empty() ? child.name : path + "/" + child.name, visit);
+    }
+}
+
 void Scheduler::stop_cascade(Node& node, const StopCallback& stop) {
     // §7.6.1.2: every descendant inherits the stop trigger, even one that
     // hosts its own — hence the unconditional recursion.

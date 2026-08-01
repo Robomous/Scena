@@ -55,6 +55,11 @@ The user guide grows sprint by sprint along the
   any/all, speed/relative-speed/acceleration, stand still, traveled distance,
   reach position), the traffic-signal conditions, the scalar-velocity model, the observation-sampling
   contract, and the host interface (C++/C/Python).
+- [Embedding Scena](embedding.md) — the step contract and its phase order,
+  control ownership, the gateway (batching brackets, storyboard observation,
+  controller/visibility/custom-command hooks), the three host-clock patterns
+  including zero-dt query steps, and what the host owns of the determinism
+  contract.
 - [The C API](c-api.md) — the stable ABI: versioning and the major check,
   loading a scenario in one call, entity enumeration, storyboard-element state
   by path, host-side signal publication, and the borrowed-string lifetime.
