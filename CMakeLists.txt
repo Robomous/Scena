@@ -29,6 +29,7 @@ endif()
 
 add_subdirectory(core)
 add_subdirectory(frontends/xml)
+add_subdirectory(roads/opendrive)
 
 if(SCN_BUILD_CAPI)
     add_subdirectory(capi)
@@ -41,4 +42,5 @@ endif()
 # Tests are added last so they can link targets from capi/ (declared after core/).
 if(SCN_BUILD_TESTS)
     add_subdirectory(core/tests)
+    add_subdirectory(roads/opendrive/tests)
 endif()
