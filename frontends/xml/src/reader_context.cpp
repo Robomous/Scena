@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "parameters.h"
+
 namespace scena::xml::detail {
 
 namespace {
@@ -99,6 +101,14 @@ LineColumn line_column_at(std::string_view source, std::ptrdiff_t offset) {
     }
     return position;
 }
+
+ReadContext::ReadContext(DiagnosticSink& sink, std::string_view source, std::string file)
+    : sink_(sink), parameters_(std::make_unique<ParameterScope>()), source_(source),
+      file_(std::move(file)) {}
+
+// Out of line so the header can forward-declare ParameterScope and keep the
+// expression machinery out of every reader's include graph.
+ReadContext::~ReadContext() = default;
 
 void ReadContext::report(Severity severity, Status code, std::string path, std::string message,
                          std::string rule_id) {

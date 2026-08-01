@@ -66,7 +66,18 @@ namespace scena::xml::detail {
                                   std::string& out);
 
 /// Optional string attribute: absent leaves `out` alone.
-void optional_string(const pugi::xml_node& node, const char* name, std::string& out);
+void optional_string(ReadContext& ctx, const pugi::xml_node& node, const char* name,
+                     std::string& out);
+
+/// The text of `name` on `node` after parameter resolution: a whole-token
+/// `$reference` is replaced by the parameter's value and a `${expression}`
+/// by its result (§9.1, §9.2), a literal passes through unchanged.
+///
+/// Returns nullopt when the attribute is absent, and reports plus returns
+/// nullopt when it is present but its reference or expression is broken —
+/// callers distinguish the two through `node.attribute(name)`.
+[[nodiscard]] std::optional<std::string>
+attribute_text(ReadContext& ctx, const pugi::xml_node& node, const char* name);
 
 /// One enumeration literal and the value it maps to.
 template <typename T> struct EnumEntry {
@@ -83,20 +94,21 @@ template <typename T> struct EnumEntry {
 template <typename T>
 [[nodiscard]] bool read_enum(ReadContext& ctx, const pugi::xml_node& node, const char* name,
                              std::initializer_list<EnumEntry<T>> entries, T& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         return true;
     }
-    const std::string_view text = attr.value();
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    if (!text.has_value()) {
+        return false; // already reported: a broken reference or expression
+    }
     for (const EnumEntry<T>& entry : entries) {
-        if (text == entry.literal) {
+        if (*text == entry.literal) {
             out = entry.value;
             return true;
         }
     }
     ctx.report_at(node, Severity::Error, Status::ValidationError, attribute_path(node, name),
-                  std::string("attribute '") + name + "' has the unknown value '" + attr.value() +
-                      "'");
+                  std::string("attribute '") + name + "' has the unknown value '" + *text + "'");
     return false;
 }
 
