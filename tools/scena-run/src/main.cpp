@@ -32,6 +32,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -43,6 +44,8 @@
 #include "scena/engine.h"
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/entity.h"
+#include "scena/opendrive/reader.h"
+#include "scena/opendrive/road_query.h"
 #include "scena/xml/loader.h"
 
 namespace {
@@ -56,6 +59,7 @@ enum ExitCode : int {
     kRunFailed = 4,    ///< a step returned a non-Ok status
     kOutputFailed = 5, ///< the trace could not be written
     kReplayFailed = 6, ///< a --replay file was unreadable or malformed
+    kMapFailed = 7,    ///< the road network did not load
 };
 
 struct Options {
@@ -67,6 +71,8 @@ struct Options {
     /// entity id -> replay file, from --replay <entity>=<csv>.
     std::map<std::string, std::filesystem::path> replay;
     std::string select; ///< --select <alt>, the one_of alternative (p8-s2)
+    /// --map <file.xodr>, overriding the scenario's own RoadNetwork/LogicFile.
+    std::filesystem::path map;
     bool quiet = false;
 };
 
@@ -82,13 +88,14 @@ options:
   --duration <seconds>       how long to run (default 10)
   --trace <file>             write the trace to <file> (.csv or .json)
   --trace-format <csv|json>  override the format inferred from the extension
+  --map <file.xodr>          road network, overriding the scenario's LogicFile
   --replay <entity>=<file>   drive a host-controlled entity from a trace file
   --select <alternative>     choose a one_of alternative by name (DSL, p8-s2)
   --quiet                    do not print diagnostics to stderr
   -h, --help                 this text
 
 exit codes:
-  0 ok   2 usage   3 load/validation   4 run   5 output   6 replay
+  0 ok   2 usage   3 load/validation   4 run   5 output   6 replay   7 map
 )";
 }
 
@@ -139,6 +146,12 @@ public:
 
     void set_time(double t) { now_ = t; }
 
+    /// Takes ownership of the road network the engine will query. Set before
+    /// init; the engine holds the pointer for the whole run.
+    void set_road_query(std::unique_ptr<scena::opendrive::OpenDriveRoadQuery> road) {
+        road_ = std::move(road);
+    }
+
     void publish_state(const std::string& entity_id, const scena::EntityState& state) override {
         samples.push_back(Sample{now_, entity_id, state});
     }
@@ -157,7 +170,7 @@ public:
         return true;
     }
 
-    scena::gateway::IRoadQuery* road_query() override { return nullptr; }
+    scena::gateway::IRoadQuery* road_query() override { return road_.get(); }
 
 private:
     struct Replay {
@@ -165,6 +178,7 @@ private:
         std::size_t cursor = 0;
     };
     std::map<std::string, Replay> replay_;
+    std::unique_ptr<scena::opendrive::OpenDriveRoadQuery> road_;
     double now_ = 0.0;
 };
 
@@ -335,6 +349,13 @@ std::optional<Options> parse_options(int argc, char** argv, int& exit_code) {
                 return std::nullopt;
             }
             options.trace_format = std::string(text);
+        } else if (arg == "--map") {
+            const std::string_view text = value_of(i, arg);
+            if (text.empty()) {
+                exit_code = kUsage;
+                return std::nullopt;
+            }
+            options.map = std::filesystem::path(std::string(text));
         } else if (arg == "--select") {
             const std::string_view text = value_of(i, arg);
             if (text.empty()) {
@@ -433,6 +454,31 @@ int main(int argc, char** argv) {
     }
 
     TraceGateway gateway;
+
+    // The road network. A scenario names its own map in RoadNetwork/LogicFile,
+    // relative to the scenario file; --map overrides it, which is how a host
+    // points a scenario at a different network without editing it. Without
+    // either, the engine runs road-free and the flat-world model applies.
+    std::filesystem::path map = options.map;
+    if (map.empty() && !document.road_network.logic_file.empty()) {
+        map = std::filesystem::path(document.road_network.logic_file);
+        if (map.is_relative()) {
+            map = options.scenario.parent_path() / map;
+        }
+    }
+    if (!map.empty()) {
+        scena::DiagnosticSink map_sink;
+        scena::opendrive::Map network;
+        const scena::Status loaded_map = scena::opendrive::load_file(map, network, map_sink);
+        print_diagnostics(map_sink.diagnostics(), options.quiet);
+        if (loaded_map != scena::Status::Ok) {
+            std::cerr << "scena-run: could not load the road network " << map.string() << '\n';
+            return kMapFailed;
+        }
+        gateway.set_road_query(
+            std::make_unique<scena::opendrive::OpenDriveRoadQuery>(std::move(network)));
+    }
+
     for (const auto& [entity, path] : options.replay) {
         std::vector<Sample> rows;
         if (!read_trace_csv(path, rows, entity)) {

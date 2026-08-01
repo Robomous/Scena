@@ -7,7 +7,12 @@
 # visualization (ADR-0001, library-first).
 
 add_executable(scena-run src/main.cpp)
-target_link_libraries(scena-run PRIVATE scena::core scena::frontend-xml)
+# Links the OpenDRIVE backend as well: a scenario that names a RoadNetwork
+# LogicFile gets a real road network, which is what the lane-relative and
+# routing golden scenarios need. The engine still reaches it only through
+# gateway::IRoadQuery (ADR-0003).
+target_link_libraries(scena-run PRIVATE scena::core scena::frontend-xml
+                                        scena::roads-opendrive)
 target_compile_features(scena-run PRIVATE cxx_std_20)
 set_target_properties(scena-run PROPERTIES CXX_EXTENSIONS OFF)
 scn_set_warnings(scena-run)

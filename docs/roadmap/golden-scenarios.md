@@ -14,7 +14,9 @@ unit and conformance tests.
   (ADR-0002). Maps are small hand-written `.xodr` files.
 - **Layout** (live as of p6-s4; extended by later sprints):
   - `tests/golden/scenarios/` — `.xosc` and `.osc` files, GS-numbered.
-  - `tests/golden/catalogs/`, `tests/golden/maps/` — shared fixtures.
+  - `tests/golden/catalogs/`, `tests/golden/maps/` — shared fixtures. The maps
+    are hand-authored `.xodr` files; a scenario names its own in
+    `RoadNetwork/LogicFile`, resolved relative to the scenario file.
   - `tests/golden/traces/reference/` — the committed reference traces.
     **One shared set, not one per platform**: determinism is bit-identical
     across platforms, so a per-platform reference would be a place for a
@@ -127,6 +129,11 @@ via `StoryboardElementStateCondition` on the preceding events.
   P3 (lane queries), P4, P6.
 - **Pass:** bit-identical trace; the three maneuver phases occur in order;
   ego ends in its original lane with target speed.
+- **Status:** **live** —  `gs3-overtake.xosc` on `maps/overtake.xodr` (two
+  same-direction driving lanes), with eight checkpoints: the outer-lane start,
+  the inner-lane centre after phase 1 (a value only a road backend can supply),
+  the overtaking speed after phase 2, and the return to the outer lane after
+  phase 3, plus the lead holding its own lane and speed throughout.
 
 ### GS-4 — Traffic-jam approach
 
@@ -203,10 +210,14 @@ crossing vehicle yields via a `ReachPositionCondition` trigger.
   conversions), P5 (routing actions, reach position), P2, P4, P6.
 - **Pass:** bit-identical trace; ego's road-id sequence equals the declared
   route; both vehicles clear the junction without freespace violation.
-- **Status (p5-s5):** does **not** run yet. p5-s5 landed route *assignment*
-  (`AssignRouteAction`, `AcquirePositionAction`) and the per-entity route
-  state, but following a route through a junction needs the road network and
-  the hand-authored map, so GS-8 moves with p3-s4.
+- **Status:** **live** — `gs8-junction-route.xosc` on `maps/junction4.xodr`, a
+  hand-authored four-way junction where a west-east corridor
+  (roads 1 → junction 50 → 4) crosses a south-north one (5 → 50 → 6). Ego takes
+  the corridor under an `AssignRouteAction` plus an `AcquirePositionAction`
+  target; the crossing vehicle holds at the stop line and pulls away only once
+  a `DistanceCondition` says ego has cleared the junction box, so the two never
+  occupy it together. Eight checkpoints cover ego's lane through the junction
+  and the crosser's yield-then-go.
 
 ### GS-9 — Catalogs, parameters, and expressions
 

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored from the ASAM OpenSCENARIO XML specification text (ADR-0002).
+
+     GS-8 route through a junction, on tests/golden/maps/junction4.xodr: a
+     west-east corridor (roads 1 -> junction 50 -> 4) crossing a south-north
+     one (roads 5 -> junction 50 -> 6).
+
+     Ego is given an AssignRouteAction whose waypoints name the corridor it
+     takes, then an AcquirePositionAction target beyond the junction. The
+     crossing vehicle holds at the stop line and only pulls away once a
+     a DistanceCondition says ego has cleared the junction box — so the two
+     never occupy it at the same time, which is what the scenario is for.
+
+     Ego travels lane -1 of road 1 (centre y = -1.75); the crosser travels
+     lane -1 of road 5, whose reference line runs north, putting its centre at
+     x = 126.75. -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-01T00:00:00"
+              description="GS-8 route through a junction" author="Scena golden suite"/>
+  <RoadNetwork><LogicFile filepath="../maps/junction4.xodr"/></RoadNetwork>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+    <ScenarioObject name="crosser"><Vehicle name="crosser_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions>
+      <Private entityRef="ego">
+        <PrivateAction><TeleportAction>
+          <Position><WorldPosition x="0" y="-1.75" z="0" h="0"/></Position>
+        </TeleportAction></PrivateAction>
+        <PrivateAction><LongitudinalAction><SpeedAction>
+          <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+          <SpeedActionTarget><AbsoluteTargetSpeed value="15"/></SpeedActionTarget>
+        </SpeedAction></LongitudinalAction></PrivateAction>
+        <!-- The corridor ego takes: onto road 1, through the junction, out
+             along road 4. -->
+        <PrivateAction><RoutingAction><AssignRouteAction>
+          <Route name="through_junction" closed="false">
+            <Waypoint routeStrategy="fastest">
+              <Position><WorldPosition x="10" y="-1.75" z="0" h="0"/></Position>
+            </Waypoint>
+            <Waypoint routeStrategy="fastest">
+              <Position><WorldPosition x="125" y="-1.75" z="0" h="0"/></Position>
+            </Waypoint>
+            <Waypoint routeStrategy="fastest">
+              <Position><WorldPosition x="240" y="-1.75" z="0" h="0"/></Position>
+            </Waypoint>
+          </Route>
+        </AssignRouteAction></RoutingAction></PrivateAction>
+      </Private>
+      <Private entityRef="crosser">
+        <PrivateAction><TeleportAction>
+          <Position><WorldPosition x="126.75" y="-40" z="0" h="1.5707963267948966"/></Position>
+        </TeleportAction></PrivateAction>
+        <PrivateAction><LongitudinalAction><SpeedAction>
+          <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+          <SpeedActionTarget><AbsoluteTargetSpeed value="0"/></SpeedActionTarget>
+        </SpeedAction></LongitudinalAction></PrivateAction>
+      </Private>
+    </Actions></Init>
+    <Story name="story"><Act name="act">
+      <ManeuverGroup name="ego_group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="ego_maneuver">
+          <Event name="acquire_exit" priority="parallel">
+            <Action name="acquire_action"><PrivateAction><RoutingAction><AcquirePositionAction>
+              <Position><WorldPosition x="240" y="-1.75" z="0" h="0"/></Position>
+            </AcquirePositionAction></RoutingAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="at1" delay="0" conditionEdge="none"><ByValueCondition>
+                <SimulationTimeCondition value="1" rule="greaterThan"/>
+              </ByValueCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+        </Maneuver>
+      </ManeuverGroup>
+      <ManeuverGroup name="crosser_group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="crosser"/></Actors>
+        <Maneuver name="crosser_maneuver">
+          <!-- Yield: pull away only once ego has reached the far side. -->
+          <Event name="cross" priority="parallel">
+            <Action name="cross_action"><PrivateAction><LongitudinalAction><SpeedAction>
+              <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time" value="3"/>
+              <SpeedActionTarget><AbsoluteTargetSpeed value="12"/></SpeedActionTarget>
+            </SpeedAction></LongitudinalAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="ego_cleared" delay="0" conditionEdge="none"><ByEntityCondition>
+                <TriggeringEntities triggeringEntitiesRule="any"><EntityRef entityRef="ego"/></TriggeringEntities>
+                <EntityCondition><DistanceCondition value="3.0" freespace="false" rule="lessThan">
+                  <Position><WorldPosition x="175" y="-1.75" z="0" h="0"/></Position>
+                </DistanceCondition></EntityCondition>
+              </ByEntityCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+        </Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+  </Storyboard>
+</OpenSCENARIO>

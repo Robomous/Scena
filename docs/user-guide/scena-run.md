@@ -20,6 +20,7 @@ scena-run tests/golden/scenarios/gs1-cruise-baseline.xosc \
 | `--duration <seconds>` | how long to run (default `10`) |
 | `--trace <file>` | write the trace to `<file>` |
 | `--trace-format <csv\|json>` | override the format inferred from the extension |
+| `--map <file.xodr>` | road network, overriding the scenario's `RoadNetwork/LogicFile` |
 | `--replay <entity>=<file>` | drive an entity from a recorded trace |
 | `--select <alternative>` | choose a `one_of` alternative (DSL; p8-s2) |
 | `--quiet` | do not print diagnostics |
@@ -39,6 +40,7 @@ duration happens to divide.
 | `4` | a step returned a non-Ok status |
 | `5` | the trace could not be written |
 | `6` | a `--replay` file was unreadable, malformed, or named an entity the scenario does not declare |
+| `7` | the road network did not load |
 
 They are distinct so a script can branch on *why* a run failed. Diagnostics go
 to stderr with their path and rule id; the trace goes to the file.
@@ -65,6 +67,23 @@ so the same run writes the same bytes on every machine. That is what makes
 suite compares.
 
 The file is written with LF line endings on every platform, for the same reason.
+
+## Road networks
+
+A scenario names its own map in `RoadNetwork/LogicFile`, resolved relative to
+the scenario file; `scena-run` loads it with the OpenDRIVE backend and hands it
+to the engine through `gateway::IRoadQuery` — the engine never sees a concrete
+road representation (ADR-0003).
+
+```sh
+scena-run scenario.xosc --map other-network.xodr
+```
+
+`--map` overrides whatever the scenario declares, which is how a host points a
+scenario at a different network without editing it. With neither, the engine
+runs road-free and the flat-world lane model applies: lane-relative targets fall
+back to a configurable default lane width, and absolute lane ids — which name
+elements of a real network — are reported rather than guessed.
 
 ## Replaying a host-controlled entity
 

@@ -137,6 +137,38 @@ TEST(ScenaRunTest, AMissingReplayFileIsAReplayError) {
               6);
 }
 
+TEST(ScenaRunTest, AMissingMapIsAMapError) {
+    std::string output;
+    EXPECT_EQ(run("\"" + golden("gs1-cruise-baseline.xosc").string() + "\" --map no/such/map.xodr",
+                  output),
+              7);
+}
+
+TEST(ScenaRunTest, AScenarioNamingARoadNetworkGetsOne) {
+    // GS-3 declares its map in RoadNetwork/LogicFile, relative to the scenario
+    // file. If the map did not load, the absolute lane targets would fall back
+    // to the flat-world model and ego would never reach the lane centre the
+    // network defines.
+    const fs::path trace = temp_file("scena_run_map.csv");
+    std::string output;
+    ASSERT_EQ(run("\"" + golden("gs3-overtake.xosc").string() +
+                      "\" --dt 0.01 --duration 6 --trace \"" + trace.string() + "\"",
+                  output),
+              0)
+        << output;
+    const std::vector<std::string> lines = read_lines(trace);
+    ASSERT_GT(lines.size(), 2U);
+    // The lane -1 centre of the golden overtake map is y = -1.75; ego reaches
+    // it once the lane change completes (to a rounding ulp). Without a road
+    // network the absolute lane target has no world meaning at all.
+    bool reached_lane_centre = false;
+    for (const std::string& line : lines) {
+        reached_lane_centre = reached_lane_centre || (line.find(",ego,") != std::string::npos &&
+                                                      line.find(",-1.75") != std::string::npos);
+    }
+    EXPECT_TRUE(reached_lane_centre);
+}
+
 // --- running and tracing ---------------------------------------------------
 
 TEST(ScenaRunTest, RunsAScenarioAndWritesACsvTrace) {

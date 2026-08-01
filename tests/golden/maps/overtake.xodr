@@ -1,0 +1,33 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Hand-authored Scena golden map (GS-3): one straight road, 400 m along +x
+     from the origin, with two same-direction driving lanes on the right side
+     (-1 inner, -2 outer; right-hand traffic drives +s on negative lane ids,
+     §11.3.1) plus one oncoming lane on the left. Lane centres are therefore
+     y = -1.75 for lane -1 and y = -5.25 for lane -2. Authored from the ASAM
+     OpenDRIVE specification text (ADR-0002). -->
+<OpenDRIVE>
+  <header revMajor="1" revMinor="8" name="scena-overtake"/>
+  <road id="1" length="400" junction="-1">
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="400"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+          <lane id="-2" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+</OpenDRIVE>
