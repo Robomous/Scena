@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GS-1 "Cruise baseline" (docs/roadmap/golden-scenarios.md), authored from the
+  ASAM OpenSCENARIO XML specification: a single vehicle, an init teleport and
+  init speed, and a SimulationTimeCondition at t = 5 s that triggers an
+  absolute SpeedAction with linear transition dynamics.
+-->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="2" date="2026-08-01T00:00:00"
+              description="GS-1 cruise baseline" author="Scena"/>
+  <RoadNetwork>
+    <LogicFile filepath="straight.xodr"/>
+  </RoadNetwork>
+  <Entities>
+    <ScenarioObject name="ego">
+      <Vehicle name="ego_vehicle" vehicleCategory="car">
+        <BoundingBox>
+          <Center x="1.4" y="0.0" z="0.9"/>
+          <Dimensions width="2.0" length="4.6" height="1.8"/>
+        </BoundingBox>
+        <Performance maxSpeed="60.0" maxAcceleration="5.0" maxDeceleration="9.0"/>
+        <Axles>
+          <FrontAxle maxSteering="0.5" wheelDiameter="0.6" trackWidth="1.7"
+                     positionX="2.8" positionZ="0.3"/>
+          <RearAxle maxSteering="0.0" wheelDiameter="0.6" trackWidth="1.7"
+                    positionX="0.0" positionZ="0.3"/>
+        </Axles>
+      </Vehicle>
+    </ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init>
+      <Actions>
+        <Private entityRef="ego">
+          <PrivateAction>
+            <TeleportAction>
+              <Position>
+                <WorldPosition x="0.0" y="0.0" z="0.0" h="0.0"/>
+              </Position>
+            </TeleportAction>
+          </PrivateAction>
+          <PrivateAction>
+            <LongitudinalAction>
+              <SpeedAction>
+                <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0.0"/>
+                <SpeedActionTarget>
+                  <AbsoluteTargetSpeed value="20.0"/>
+                </SpeedActionTarget>
+              </SpeedAction>
+            </LongitudinalAction>
+          </PrivateAction>
+        </Private>
+      </Actions>
+    </Init>
+    <Story name="cruise">
+      <Act name="accelerate">
+        <ManeuverGroup name="ego_group" maximumExecutionCount="1">
+          <Actors selectTriggeringEntities="false">
+            <EntityRef entityRef="ego"/>
+          </Actors>
+          <Maneuver name="speed_up">
+            <Event name="reach_target_speed" priority="parallel" maximumExecutionCount="1">
+              <Action name="set_speed">
+                <PrivateAction>
+                  <LongitudinalAction>
+                    <SpeedAction>
+                      <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time"
+                                           value="4.0"/>
+                      <SpeedActionTarget>
+                        <AbsoluteTargetSpeed value="30.0"/>
+                      </SpeedActionTarget>
+                    </SpeedAction>
+                  </LongitudinalAction>
+                </PrivateAction>
+              </Action>
+              <StartTrigger>
+                <ConditionGroup>
+                  <Condition name="after_five_seconds" delay="0" conditionEdge="none">
+                    <ByValueCondition>
+                      <SimulationTimeCondition value="5.0" rule="greaterOrEqual"/>
+                    </ByValueCondition>
+                  </Condition>
+                </ConditionGroup>
+              </StartTrigger>
+            </Event>
+          </Maneuver>
+        </ManeuverGroup>
+        <StartTrigger>
+          <ConditionGroup>
+            <Condition name="act_start" delay="0" conditionEdge="none">
+              <ByValueCondition>
+                <SimulationTimeCondition value="0.0" rule="greaterOrEqual"/>
+              </ByValueCondition>
+            </Condition>
+          </ConditionGroup>
+        </StartTrigger>
+      </Act>
+    </Story>
+    <StopTrigger>
+      <ConditionGroup>
+        <Condition name="end_of_run" delay="0" conditionEdge="none">
+          <ByValueCondition>
+            <SimulationTimeCondition value="20.0" rule="greaterOrEqual"/>
+          </ByValueCondition>
+        </Condition>
+      </ConditionGroup>
+    </StopTrigger>
+  </Storyboard>
+</OpenSCENARIO>
