@@ -101,7 +101,10 @@ every platform.
 | `<planView>` `<spiral>` (§9.4) | evaluated (deterministic quadrature) |
 | `<planView>` `<paramPoly3>` (§9.6), both pRange modes | evaluated (exact cubics, fixed-resolution s table) |
 | `<planView>` `<poly3>` (§9.7) | evaluated; deprecation warned |
-| `<lanes>`, `<link>`, `<junction>` | planned p3-s3; warned until then |
+| `<lanes>` / `<laneSection>` left/center/right, `<lane>` id/type, `<width>` records (§11) | evaluated (polynomial widths, per-section lanes) |
+| `<lane><link>` predecessor/successor (§11.6) | consumed (routing; temporary-layer multi-links warned) |
+| road `<link>` predecessor/successor (§10.3) | consumed (routing) |
+| `<junction type="default">` connections + laneLinks (§12.2) | consumed (routing); other junction types warned |
 | elevation/superelevation/crossfall, lane offsets | scoped out for v0.0.1 (flat world); warned |
 | `<objects>`, `<signals>`, surface/OpenCRG, georeferencing | scoped out for v0.0.1; warned |
 
@@ -109,3 +112,27 @@ The reference line is evaluated by `scena::opendrive::ReferenceLine`:
 `pose_at(s)` returns the inertial pose of the s-axis, and `project(x, y)`
 inverts it into track coordinates `(s, t)` with t positive to the left
 (§8.3) and a documented smallest-s tie-break.
+
+### Lanes and routing (p3-s3)
+
+`OpenDriveRoadQuery` implements the complete frozen `IRoadQuery` v1 over the
+lane model:
+
+- **Lane ids** follow OpenDRIVE §11.1: 0 is the centre lane on the reference
+  line (no width), negative ids go right (−t), positive ids go left (+t).
+  Relative-lane arithmetic skips the centre lane, matching ASAM OpenSCENARIO
+  XML 1.4.0 §7.4.1.4.
+- **Widths** evaluate the §11.7.1 cubic records (`w(ds) = a + b·ds + c·ds² +
+  d·ds³`), with the active record chosen by `sOffset` and results clamped at
+  zero per the lane-width validity rule.
+- **On-road** means the lateral offset lies inside the cumulative lane span
+  of the cross-section at s. Elevation is scoped out for v0.0.1: roads live
+  in the z = 0 plane and points off it are off-road, which keeps the two
+  conversions exact mutual inverses.
+- **Routing** is a deterministic Dijkstra over (road, lane) nodes connected
+  by lane links across road links (§11.6/§10.3) and junction connections
+  (§12.2), weighted by driven length. Driving direction follows the lane-id
+  sign (negative lanes run along +s — §11.3.1, right-hand traffic). Equal
+  paths tie-break on the lexicographically smallest (road id, lane id); the
+  result is the frozen `RouteSpan` sequence, and `position_along_route`
+  measures into it. The subset assumes stable lane ids within a road.
