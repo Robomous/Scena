@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "parameters.h"
 #include "read_common.h"
 
 namespace scena::xml::detail {
@@ -388,8 +389,9 @@ bool read_transition_dynamics(ReadContext& ctx, const pugi::xml_node& node,
 std::shared_ptr<ir::Trajectory> read_trajectory(ReadContext& ctx, const pugi::xml_node& node) {
     static const char* const kConsumed[] = {"ParameterDeclarations", "Shape", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     auto trajectory = std::make_shared<ir::Trajectory>();
@@ -430,8 +432,9 @@ std::shared_ptr<ir::Trajectory> read_trajectory(ReadContext& ctx, const pugi::xm
 std::shared_ptr<ir::Route> read_route(ReadContext& ctx, const pugi::xml_node& node) {
     static const char* const kConsumed[] = {"ParameterDeclarations", "Waypoint", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     auto route = std::make_shared<ir::Route>();

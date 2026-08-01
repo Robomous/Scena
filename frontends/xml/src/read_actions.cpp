@@ -19,6 +19,7 @@
 #include <optional>
 #include <utility>
 
+#include "parameters.h"
 #include "read_common.h"
 #include "read_entities.h"
 #include "read_geometry.h"
@@ -494,8 +495,9 @@ bool read_environment(ReadContext& ctx, const pugi::xml_node& node, ir::Environm
     static const char* const kConsumed[] = {"TimeOfDay", "Weather", "RoadCondition",
                                             "ParameterDeclarations", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = require_string(ctx, node, "name", out.name);
