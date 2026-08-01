@@ -19,6 +19,7 @@
 #include <string>
 #include <utility>
 
+#include "parameters.h"
 #include "read_common.h"
 #include "scena/ir/entity_types.h"
 
@@ -154,8 +155,9 @@ bool read_vehicle(ReadContext& ctx, const pugi::xml_node& node, ir::Vehicle& out
             warn_out_of_scope(ctx, child, "trailers are outside the v0.0.1 scope");
         }
     }
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = read_enum(ctx, node, "vehicleCategory", kVehicleCategories, out.category);
@@ -176,8 +178,9 @@ bool read_pedestrian(ReadContext& ctx, const pugi::xml_node& node, ir::Pedestria
     static const char* const kConsumed[] = {"BoundingBox", "Properties", "ParameterDeclarations",
                                             nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = read_enum(ctx, node, "pedestrianCategory", kPedestrianCategories, out.category);
@@ -193,8 +196,9 @@ bool read_misc_object(ReadContext& ctx, const pugi::xml_node& node, ir::MiscObje
     static const char* const kConsumed[] = {"BoundingBox", "Properties", "ParameterDeclarations",
                                             nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = read_enum(ctx, node, "miscObjectCategory", kMiscObjectCategories, out.category);

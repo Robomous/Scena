@@ -28,6 +28,8 @@
 
 #include <pugixml.hpp>
 
+#include "expression.h"
+#include "parameters.h"
 #include "read_actions.h"
 #include "read_common.h"
 #include "read_entities.h"
@@ -255,33 +257,51 @@ bool read_file_header(ReadContext& ctx, const pugi::xml_node& root, Document& ou
 /// and no `$`-reference or `${...}` expression evaluation — that machinery is
 /// p4-s3's, and a value that carries a reference is reported rather than
 /// stored as the literal text it happens to be.
-void read_declarations(ReadContext& ctx, const pugi::xml_node& node, const char* item_name,
-                       const char* reference_attribute,
-                       std::map<std::string, std::string, std::less<>>& out) {
-    const char* const consumed[] = {item_name, nullptr};
-    detail::warn_unconsumed_children(ctx, node, consumed);
+/// Reads `VariableDeclarations` (§6.12) into the scenario's variable store.
+///
+/// Variables are runtime state, not expression inputs: their *initial* value
+/// is read at load time — so it may itself be a parameter reference or an
+/// expression, which the attribute readers resolve — but nothing may
+/// reference a variable from an expression, because its value changes while
+/// the scenario runs.
+void read_variable_declarations(ReadContext& ctx, const pugi::xml_node& node,
+                                std::map<std::string, std::string, std::less<>>& out) {
+    static const char* const kConsumed[] = {"VariableDeclaration", nullptr};
+    detail::warn_unconsumed_children(ctx, node, kConsumed);
 
-    for (pugi::xml_node declaration : node.children(item_name)) {
+    for (pugi::xml_node declaration : node.children("VariableDeclaration")) {
         static const char* const kItemConsumed[] = {"ConstraintGroup", nullptr};
         detail::warn_unconsumed_children(ctx, declaration, kItemConsumed);
-        if (const pugi::xml_node constraints = declaration.child("ConstraintGroup")) {
-            detail::warn_deferred(ctx, constraints, "p4-s3");
-        }
+
         std::string name;
+        std::string type_text;
         std::string value;
         if (!detail::require_string(ctx, declaration, "name", name) ||
+            !detail::require_string(ctx, declaration, "variableType", type_text) ||
             !detail::require_string(ctx, declaration, "value", value)) {
             continue;
         }
-        // The declared type is p4-s3's business; the by-value conditions
-        // compare stringly today (see ir::Scenario::parameters).
-        if (value.find('$') != std::string::npos) {
-            detail::warn_deferred(ctx, declaration, "p4-s3");
+        const std::optional<detail::ValueType> type = detail::parse_value_type(type_text);
+        if (!type.has_value()) {
+            ctx.report_at(declaration, Severity::Error, Status::ValidationError,
+                          detail::attribute_path(declaration, "variableType"),
+                          std::string("'") + type_text + "' is not a variable type");
+            continue;
+        }
+        // The declared type is checked here and then dropped: the runtime
+        // store is stringly (a VariableCondition compares text, and
+        // VariableModifyAction reads the value back as a scalar), so the
+        // type's job at load time is to reject a value that never was one.
+        if (!detail::parse_typed(value, *type).has_value()) {
+            ctx.report_at(declaration, Severity::Error, Status::ValidationError,
+                          detail::attribute_path(declaration, "value"),
+                          std::string("value '") + value + "' is not of the declared type '" +
+                              type_text + "'",
+                          "asam.net:xosc:1.2.0:data_type.variable_correctly_typed");
             continue;
         }
         out.insert_or_assign(std::move(name), std::move(value));
     }
-    (void)reference_attribute;
 }
 
 /// Reads the `RoadNetwork` element (§RoadNetwork): the file references, which
@@ -293,10 +313,10 @@ void read_road_network(ReadContext& ctx, const pugi::xml_node& node, Document& o
     detail::warn_unconsumed_children(ctx, node, kConsumed);
 
     if (const pugi::xml_node logic = node.child("LogicFile")) {
-        detail::optional_string(logic, "filepath", out.road_network.logic_file);
+        detail::optional_string(ctx, logic, "filepath", out.road_network.logic_file);
     }
     if (const pugi::xml_node scene = node.child("SceneGraphFile")) {
-        detail::optional_string(scene, "filepath", out.road_network.scene_graph_file);
+        detail::optional_string(ctx, scene, "filepath", out.road_network.scene_graph_file);
     }
     if (const pugi::xml_node used_area = node.child("UsedArea")) {
         detail::warn_out_of_scope(ctx, used_area, "used-area geo positions are Post-v0.0.1");
@@ -317,12 +337,17 @@ void read_road_network(ReadContext& ctx, const pugi::xml_node& node, Document& o
 void read_scenario_element(ReadContext& ctx, const pugi::xml_node& node, Document& out) {
     const std::string_view name = node.name();
     if (name == "ParameterDeclarations") {
-        read_declarations(ctx, node, "ParameterDeclaration", "parameterRef",
-                          out.scenario.parameters);
+        detail::read_parameter_declarations(ctx, node);
+        // The IR carries the resolved values so a ParameterCondition can
+        // compare against them at run time (§9.1: parameters are set at load
+        // time and immutable afterwards).
+        for (const auto& [parameter_name, value] : ctx.parameters().declared()) {
+            out.scenario.parameters.insert_or_assign(parameter_name, value.to_text());
+        }
         return;
     }
     if (name == "VariableDeclarations") {
-        read_declarations(ctx, node, "VariableDeclaration", "variableRef", out.scenario.variables);
+        read_variable_declarations(ctx, node, out.scenario.variables);
         return;
     }
     if (name == "RoadNetwork") {

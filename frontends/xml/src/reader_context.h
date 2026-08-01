@@ -17,14 +17,20 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <pugixml.hpp>
 
 #include "scena/diagnostic.h"
 #include "scena/status.h"
 #include "scena/xml/document.h"
+
+namespace scena::xml::detail {
+class ParameterScope;
+} // namespace scena::xml::detail
 
 // Internal to the XML frontend: pugixml is a private dependency of the
 // frontend target and must never appear in a public scena/xml header.
@@ -67,8 +73,10 @@ struct LineColumn {
 /// bytes produce element-wise identical diagnostics.
 class ReadContext {
 public:
-    ReadContext(DiagnosticSink& sink, std::string_view source, std::string file)
-        : sink_(sink), source_(source), file_(std::move(file)) {}
+    ReadContext(DiagnosticSink& sink, std::string_view source, std::string file);
+    ~ReadContext();
+    ReadContext(const ReadContext&) = delete;
+    ReadContext& operator=(const ReadContext&) = delete;
 
     /// Records the revision the document declared, once FileHeader has been
     /// read. Element readers consult it for the constructs whose availability
@@ -107,11 +115,21 @@ public:
 
     [[nodiscard]] const std::string& file() const noexcept { return file_; }
 
+    /// The parameter declarations in scope at the element being read.
+    ///
+    /// The context owns the scope because attribute reading itself consults
+    /// it: every attribute of every element may be a `$reference` or a
+    /// `${expression}` (§9.2), so resolution belongs in the one place all
+    /// readers funnel through rather than in each of them.
+    [[nodiscard]] ParameterScope& parameters() noexcept { return *parameters_; }
+    [[nodiscard]] const ParameterScope& parameters() const noexcept { return *parameters_; }
+
 private:
     void emit(Severity severity, Status code, std::string path, std::string message,
               std::string rule_id, LineColumn position);
 
     DiagnosticSink& sink_;
+    std::unique_ptr<ParameterScope> parameters_;
     std::string_view source_;
     std::string file_;
     DocumentVersion version_;

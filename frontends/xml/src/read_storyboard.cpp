@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "parameters.h"
 #include "read_actions.h"
 #include "read_common.h"
 #include "read_conditions.h"
@@ -144,8 +145,11 @@ bool read_maneuver(ReadContext& ctx, const pugi::xml_node& node,
                    const std::vector<std::string>& actors, ir::Maneuver& out) {
     static const char* const kConsumed[] = {"ParameterDeclarations", "Event", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    // A Maneuver's declarations are visible in every Event, Action and
+    // Trigger below it, and nowhere else (§9.1).
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = require_string(ctx, node, "name", out.name);
@@ -254,8 +258,9 @@ bool read_act(ReadContext& ctx, const pugi::xml_node& node, ir::Act& out) {
 bool read_story(ReadContext& ctx, const pugi::xml_node& node, ir::Story& out) {
     static const char* const kConsumed[] = {"ParameterDeclarations", "Act", nullptr};
     warn_unconsumed_children(ctx, node, kConsumed);
+    const ParameterFrame frame(ctx.parameters());
     if (const pugi::xml_node declarations = node.child("ParameterDeclarations")) {
-        warn_deferred(ctx, declarations, "p4-s3");
+        read_parameter_declarations(ctx, declarations);
     }
 
     bool ok = require_string(ctx, node, "name", out.name);

@@ -16,22 +16,24 @@
 
 #include "read_common.h"
 
+#include "parameters.h"
+
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace scena::xml::detail {
 
 namespace {
 
-/// Reads a double attribute that is known to be present.
+/// Parses a resolved double attribute value.
 bool read_present_double(ReadContext& ctx, const pugi::xml_node& node, const char* name,
-                         const pugi::xml_attribute& attr, double& out) {
-    const std::optional<double> value = parse_double(attr.value());
+                         const std::string& text, double& out) {
+    const std::optional<double> value = parse_double(text);
     if (!value.has_value()) {
         ctx.report_at(node, Severity::Error, Status::ParseError, attribute_path(node, name),
-                      std::string("attribute '") + name + "' is not a number: '" + attr.value() +
-                          "'");
+                      std::string("attribute '") + name + "' is not a number: '" + text + "'");
         return false;
     }
     out = *value;
@@ -40,32 +42,40 @@ bool read_present_double(ReadContext& ctx, const pugi::xml_node& node, const cha
 
 } // namespace
 
-bool require_double(ReadContext& ctx, const pugi::xml_node& node, const char* name, double& out) {
+std::optional<std::string> attribute_text(ReadContext& ctx, const pugi::xml_node& node,
+                                          const char* name) {
     const pugi::xml_attribute attr = node.attribute(name);
     if (!attr) {
+        return std::nullopt;
+    }
+    return resolve_attribute_text(ctx, node, name, attr.value());
+}
+
+bool require_double(ReadContext& ctx, const pugi::xml_node& node, const char* name, double& out) {
+    if (!node.attribute(name)) {
         ctx.report_at(node, Severity::Error, Status::ValidationError, attribute_path(node, name),
                       std::string("missing required attribute '") + name + "'");
         return false;
     }
-    return read_present_double(ctx, node, name, attr, out);
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    return text.has_value() && read_present_double(ctx, node, name, *text, out);
 }
 
 bool optional_double(ReadContext& ctx, const pugi::xml_node& node, const char* name, double& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         return true;
     }
-    return read_present_double(ctx, node, name, attr, out);
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    return text.has_value() && read_present_double(ctx, node, name, *text, out);
 }
 
 bool optional_double(ReadContext& ctx, const pugi::xml_node& node, const char* name,
                      std::optional<double>& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         return true;
     }
     double value = 0.0;
-    if (!read_present_double(ctx, node, name, attr, value)) {
+    if (!optional_double(ctx, node, name, value)) {
         return false;
     }
     out = value;
@@ -73,8 +83,7 @@ bool optional_double(ReadContext& ctx, const pugi::xml_node& node, const char* n
 }
 
 bool require_int(ReadContext& ctx, const pugi::xml_node& node, const char* name, int& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         ctx.report_at(node, Severity::Error, Status::ValidationError, attribute_path(node, name),
                       std::string("missing required attribute '") + name + "'");
         return false;
@@ -83,15 +92,17 @@ bool require_int(ReadContext& ctx, const pugi::xml_node& node, const char* name,
 }
 
 bool optional_int(ReadContext& ctx, const pugi::xml_node& node, const char* name, int& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         return true;
     }
-    const std::optional<long long> value = parse_integer(attr.value());
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    if (!text.has_value()) {
+        return false;
+    }
+    const std::optional<long long> value = parse_integer(*text);
     if (!value.has_value()) {
         ctx.report_at(node, Severity::Error, Status::ParseError, attribute_path(node, name),
-                      std::string("attribute '") + name + "' is not an integer: '" + attr.value() +
-                          "'");
+                      std::string("attribute '") + name + "' is not an integer: '" + *text + "'");
         return false;
     }
     // The IR stores counts as int so that an out-of-range value arriving from
@@ -106,15 +117,17 @@ bool optional_int(ReadContext& ctx, const pugi::xml_node& node, const char* name
 }
 
 bool optional_bool(ReadContext& ctx, const pugi::xml_node& node, const char* name, bool& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         return true;
     }
-    const std::optional<bool> value = parse_boolean(attr.value());
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    if (!text.has_value()) {
+        return false;
+    }
+    const std::optional<bool> value = parse_boolean(*text);
     if (!value.has_value()) {
         ctx.report_at(node, Severity::Error, Status::ParseError, attribute_path(node, name),
-                      std::string("attribute '") + name + "' is not a boolean: '" + attr.value() +
-                          "'");
+                      std::string("attribute '") + name + "' is not a boolean: '" + *text + "'");
         return false;
     }
     out = *value;
@@ -123,19 +136,23 @@ bool optional_bool(ReadContext& ctx, const pugi::xml_node& node, const char* nam
 
 bool require_string(ReadContext& ctx, const pugi::xml_node& node, const char* name,
                     std::string& out) {
-    const pugi::xml_attribute attr = node.attribute(name);
-    if (!attr) {
+    if (!node.attribute(name)) {
         ctx.report_at(node, Severity::Error, Status::ValidationError, attribute_path(node, name),
                       std::string("missing required attribute '") + name + "'");
         return false;
     }
-    out = attr.value();
+    const std::optional<std::string> text = attribute_text(ctx, node, name);
+    if (!text.has_value()) {
+        return false;
+    }
+    out = *text;
     return true;
 }
 
-void optional_string(const pugi::xml_node& node, const char* name, std::string& out) {
-    if (const pugi::xml_attribute attr = node.attribute(name)) {
-        out = attr.value();
+void optional_string(ReadContext& ctx, const pugi::xml_node& node, const char* name,
+                     std::string& out) {
+    if (const std::optional<std::string> text = attribute_text(ctx, node, name)) {
+        out = *text;
     }
 }
 

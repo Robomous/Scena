@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Robomous
 # SPDX-License-Identifier: Apache-2.0
-# Forbids raw libm transcendentals in runtime code (core/ and roads/). Transcendental
+# Forbids raw libm transcendentals in runtime code (core/, roads/ and the
+# frontends, whose load-time expression results reach the IR). Transcendental
 # math must go through scena::runtime detmath (det_sin/det_cos/det_sincos),
 # which is bit-identical across platforms. IEEE-exact functions (sqrt, fabs,
 # floor, ceil, ...) are allowed and are not matched.
@@ -14,6 +15,7 @@ cd "$ROOT"
 PATTERN='(^|[^[:alnum:]_])(std::)?(sin|cos|tan|asin|acos|atan|atan2|sincos|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|expm1|log|log2|log10|log1p|pow|cbrt|hypot|erf|erfc|tgamma|lgamma)(f|l)?[[:space:]]*\('
 
 FILES=$(git ls-files 'core/src/**' 'core/include/**' 'roads/**/src/**' 'roads/**/include/**' \
+    'frontends/**/src/**' 'frontends/**/include/**' \
     | grep -E '\.(h|hpp|c|cpp)$' \
     | grep -v '^core/src/runtime/detmath\.cpp$' || true)
 if [ -z "$FILES" ]; then
