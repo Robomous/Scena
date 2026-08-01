@@ -26,6 +26,15 @@ ctest --test-dir build --output-on-failure
 | `SCN_WARNINGS_AS_ERRORS` | `OFF` (ON in CI) | Treat warnings as errors |
 | `SCN_SANITIZE` | empty | `address`, `undefined`, `thread` (comma-separated) |
 
+`SCN_SANITIZE` instruments the fetched C++ dependencies (googletest, pugixml)
+as well as Scena's own targets. Sanitizer instrumentation has to be uniform
+across the whole process: libc++ emits its `std::vector` container annotations
+only in translation units built with `-fsanitize=address`, and both halves of
+that protocol live in weak inline templates, so a single uninstrumented
+dependency is enough to make AddressSanitizer report a container-overflow in
+correct code. Build with `SCN_BUILD_PYTHON=OFF` under AddressSanitizer — the
+Python module is loaded by an uninstrumented interpreter.
+
 Python bindings against the build tree (without installing):
 
 ```sh
