@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="2" date="2026-08-01T00:00:00"
+              description="controller catalog" author="Scena"/>
+  <Catalog name="ScenaControllers">
+    <Controller name="external_driver" controllerType="movement">
+      <Properties>
+        <Property name="module" value="host"/>
+      </Properties>
+    </Controller>
+  </Catalog>
+</OpenSCENARIO>

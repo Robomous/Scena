@@ -321,14 +321,14 @@ TEST(Diagnostics, UnconsumedElementsAreWarnedNeverSilent) {
     // being dropped.
     const std::string source =
         "<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"3\" date=\"2026-08-01T00:00:00\" "
-        "description=\"d\" author=\"a\"/><CatalogLocations/><MonitorDeclarations/>"
+        "description=\"d\" author=\"a\"/><MonitorDeclarations/><HouseKeeping/>"
         "<Storyboard/></OpenSCENARIO>";
     Document document;
     DiagnosticSink sink;
     ASSERT_EQ(scena::xml::load_string(source, document, sink), Status::Ok);
 
-    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/CatalogLocations"));
     EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/MonitorDeclarations"));
+    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/HouseKeeping"));
     for (const Diagnostic& diagnostic : sink.diagnostics()) {
         EXPECT_EQ(diagnostic.severity, Severity::Warning);
         EXPECT_EQ(diagnostic.code, Status::UnsupportedFeature);
@@ -358,14 +358,14 @@ TEST(Diagnostics, UnknownElementIsWarned) {
 TEST(Diagnostics, RepeatedSiblingsGetPositionalPredicates) {
     const std::string source =
         "<OpenSCENARIO><FileHeader revMajor=\"1\" revMinor=\"0\" date=\"2026-08-01T00:00:00\" "
-        "description=\"d\" author=\"a\"/><CatalogLocations/><Extra/><Extra/></OpenSCENARIO>";
+        "description=\"d\" author=\"a\"/><MonitorDeclarations/><Extra/><Extra/></OpenSCENARIO>";
     Document document;
     DiagnosticSink sink;
     EXPECT_EQ(scena::xml::load_string(source, document, sink), Status::Ok);
     EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Extra[1]"));
     EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/Extra[2]"));
     // A unique element carries no predicate.
-    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/CatalogLocations"));
+    EXPECT_TRUE(has_path(sink, "/OpenSCENARIO/MonitorDeclarations"));
 }
 
 TEST(Diagnostics, PositionsPointAtTheOffendingLine) {

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="2" date="2026-08-01T00:00:00"
+              description="maneuver catalog" author="Scena"/>
+  <Catalog name="ScenaManeuvers">
+    <Maneuver name="brake">
+      <ParameterDeclarations>
+        <ParameterDeclaration name="target" parameterType="double" value="0.0"/>
+      </ParameterDeclarations>
+      <Event name="slow_down" priority="parallel">
+        <Action name="brake">
+          <PrivateAction>
+            <LongitudinalAction>
+              <SpeedAction>
+                <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time" value="2.0"/>
+                <SpeedActionTarget><AbsoluteTargetSpeed value="$target"/></SpeedActionTarget>
+              </SpeedAction>
+            </LongitudinalAction>
+          </PrivateAction>
+        </Action>
+      </Event>
+    </Maneuver>
+  </Catalog>
+</OpenSCENARIO>

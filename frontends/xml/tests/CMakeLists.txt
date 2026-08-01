@@ -3,7 +3,8 @@
 # Added after core/tests at the top level, matching roads/opendrive/tests.
 include(GoogleTest)
 
-foreach(name xml_byvalue_test xml_expression_test xml_infra_test xml_storyboard_test)
+foreach(name xml_byvalue_test xml_catalog_test xml_expression_test xml_infra_test
+              xml_selection_test xml_storyboard_test)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE scena::frontend-xml GTest::gtest_main)
     target_compile_features(${name} PRIVATE cxx_std_20)
@@ -18,3 +19,8 @@ endforeach()
 # does not depend on the build layout.
 target_compile_definitions(xml_storyboard_test
     PRIVATE SCENA_TEST_SCENARIO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/scenarios")
+
+# The catalog fixture tree is committed and read from the source tree, so the
+# relative directories a scenario declares resolve the way a real one's do.
+target_compile_definitions(xml_catalog_test
+    PRIVATE SCENA_TEST_CATALOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/catalogs")
