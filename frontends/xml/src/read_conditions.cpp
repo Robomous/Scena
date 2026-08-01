@@ -40,6 +40,54 @@ constexpr std::initializer_list<EnumEntry<ir::Rule>> kRules = {
     {"lessOrEqual", ir::Rule::LessOrEqual}, {"notEqualTo", ir::Rule::NotEqualTo},
 };
 
+/// The revision each Rule literal is available from.
+///
+/// `equalTo`, `greaterThan` and `lessThan` are the 1.0 set; the non-strict
+/// and negated operators arrived later. The 1.4.0 reference text records no
+/// per-literal introduction version — confirming one needs the per-version
+/// XSDs of ASAM's gated bundle (roadmap open question OQ-4) — so this table
+/// is Scena's reading and the check it drives *warns*: a document declaring
+/// an older revision and using a newer literal loads with its meaning
+/// intact. Rejecting a possibly valid file over an unverified introduction
+/// version is the more damaging of the two errors.
+struct RuleAvailability {
+    ir::Rule rule;
+    int rev_major;
+    int rev_minor;
+};
+constexpr RuleAvailability kRuleAvailability[] = {
+    {ir::Rule::EqualTo, 1, 0},        {ir::Rule::GreaterThan, 1, 0}, {ir::Rule::LessThan, 1, 0},
+    {ir::Rule::GreaterOrEqual, 1, 2}, {ir::Rule::LessOrEqual, 1, 2}, {ir::Rule::NotEqualTo, 1, 2},
+};
+
+/// Reads a `rule` attribute and checks it against the document's revision.
+///
+/// The rule attribute is what turns every value-comparing condition into a
+/// predicate, so all of them read it through this one function: same literal
+/// set, same diagnostics, same version gate, whichever condition asked.
+[[nodiscard]] bool read_rule(ReadContext& ctx, const pugi::xml_node& node, ir::Rule& out) {
+    if (!read_enum(ctx, node, "rule", kRules, out)) {
+        return false;
+    }
+    const pugi::xml_attribute attr = node.attribute("rule");
+    if (!attr) {
+        return true;
+    }
+    for (const RuleAvailability& entry : kRuleAvailability) {
+        if (entry.rule != out) {
+            continue;
+        }
+        if (!ctx.version_at_least(entry.rev_major, entry.rev_minor)) {
+            ctx.report_at(
+                node, Severity::Warning, Status::UnsupportedFeature, attribute_path(node, "rule"),
+                std::string("rule '") + attr.value() + "' is not part of OpenSCENARIO XML " +
+                    ctx.version().to_string() + "; it is read with its documented meaning");
+        }
+        break;
+    }
+    return true;
+}
+
 constexpr std::initializer_list<EnumEntry<ir::ConditionEdge>> kEdges = {
     {"none", ir::ConditionEdge::None},
     {"rising", ir::ConditionEdge::Rising},
@@ -150,7 +198,7 @@ std::shared_ptr<ir::Condition> read_by_value(ReadContext& ctx, const pugi::xml_n
         double value = 0.0;
         ir::Rule rule = ir::Rule::GreaterOrEqual;
         bool ok = require_double(ctx, variant, "value", value);
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         return ok ? std::make_shared<ir::SimulationTimeCondition>(value, rule) : nullptr;
     }
     if (name == "ParameterCondition" || name == "VariableCondition") {
@@ -161,7 +209,7 @@ std::shared_ptr<ir::Condition> read_by_value(ReadContext& ctx, const pugi::xml_n
         bool ok =
             require_string(ctx, variant, is_parameter ? "parameterRef" : "variableRef", reference);
         ok = require_string(ctx, variant, "value", value) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         if (!ok) {
             return nullptr;
         }
@@ -178,7 +226,7 @@ std::shared_ptr<ir::Condition> read_by_value(ReadContext& ctx, const pugi::xml_n
         ir::Rule rule = ir::Rule::EqualTo;
         bool ok = require_string(ctx, variant, "name", value_name);
         ok = require_string(ctx, variant, "value", value) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         return ok ? std::make_shared<ir::UserDefinedValueCondition>(std::move(value_name), rule,
                                                                     std::move(value))
                   : nullptr;
@@ -187,7 +235,7 @@ std::shared_ptr<ir::Condition> read_by_value(ReadContext& ctx, const pugi::xml_n
         ir::DateTime date_time;
         ir::Rule rule = ir::Rule::EqualTo;
         bool ok = read_date_time(ctx, variant, "dateTime", date_time);
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         return ok ? std::make_shared<ir::TimeOfDayCondition>(date_time, rule) : nullptr;
     }
     if (name == "TrafficSignalCondition") {
@@ -298,7 +346,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         ir::Rule rule = ir::Rule::GreaterThan;
         std::optional<ir::DirectionalDimension> direction;
         bool ok = require_double(ctx, variant, "value", value);
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "direction", kDirections, direction) && ok;
         if (!ok) {
             return nullptr;
@@ -317,7 +365,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         std::optional<ir::DirectionalDimension> direction;
         bool ok = require_string(ctx, variant, "entityRef", entity_ref);
         ok = require_double(ctx, variant, "value", value) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "direction", kDirections, direction) && ok;
         return ok ? std::make_shared<ir::RelativeSpeedCondition>(
                         std::move(triggering), std::move(entity_ref), value, rule, direction)
@@ -380,7 +428,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         std::optional<bool> along_route;
         bool ok = require_double(ctx, variant, "value", value);
         ok = optional_bool(ctx, variant, "freespace", freespace) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "coordinateSystem", kCoordinateSystems,
                            coordinate_system) &&
              ok;
@@ -406,7 +454,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         ok = require_double(ctx, variant, "value", value) && ok;
         ok = optional_bool(ctx, variant, "freespace", freespace) && ok;
         ok = read_enum(ctx, variant, "relativeDistanceType", kDistanceTypes, distance_type) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "coordinateSystem", kCoordinateSystems,
                            coordinate_system) &&
              ok;
@@ -428,7 +476,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         bool ok = require_string(ctx, variant, "entityRef", entity_ref);
         ok = require_double(ctx, variant, "value", value) && ok;
         ok = optional_bool(ctx, variant, "freespace", freespace) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "coordinateSystem", kCoordinateSystems,
                            coordinate_system) &&
              ok;
@@ -451,7 +499,7 @@ std::shared_ptr<ir::Condition> read_entity_condition(ReadContext& ctx, const pug
         std::optional<bool> along_route;
         bool ok = require_double(ctx, variant, "value", value);
         ok = optional_bool(ctx, variant, "freespace", freespace) && ok;
-        ok = read_enum(ctx, variant, "rule", kRules, rule) && ok;
+        ok = read_rule(ctx, variant, rule) && ok;
         ok = optional_enum(ctx, variant, "coordinateSystem", kCoordinateSystems,
                            coordinate_system) &&
              ok;
