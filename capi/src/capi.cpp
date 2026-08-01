@@ -16,6 +16,7 @@
 
 #include "scena/capi.h"
 
+#include <filesystem>
 #include <memory>
 #include <new>
 #include <optional>
@@ -38,6 +39,7 @@
 #include "scena/ir/trajectory.h"
 #include "scena/status.h"
 #include "scena/version.h"
+#include "scena/xml/loader.h"
 
 struct scn_engine {
     scena::ir::Scenario scenario;
@@ -283,6 +285,10 @@ void append_storyboard_event(scn_engine* engine, double at_time, scena::ir::Even
 const char* scn_version(void) {
     static const std::string version = scena::version_string();
     return version.c_str();
+}
+
+unsigned int scn_abi_version(void) {
+    return SCN_ABI_VERSION;
 }
 
 scn_engine* scn_engine_create(void) {
@@ -1838,4 +1844,170 @@ scn_status scn_engine_set_date_time(scn_engine* engine, int year, int month, int
     } catch (...) {
         return SCN_ERROR_INTERNAL;
     }
+}
+
+scn_status scn_engine_load_xml_file(scn_engine* engine, const char* path) {
+    if (engine == nullptr || path == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        // The loader's findings and init's findings belong in the same list:
+        // from C there is one call, so there is one place to look afterwards.
+        // init() clears the list, so the load's findings are prepended after it
+        // and the combined list reads chronologically.
+        scena::DiagnosticSink load_sink;
+        scena::xml::Document document;
+        const scena::Status loaded =
+            scena::xml::load_file(std::filesystem::path(path), document, load_sink);
+        scena::Status status = loaded;
+        if (loaded == scena::Status::Ok) {
+            // The loaded scenario becomes the builder scenario, so the entity
+            // metadata accessors read it and a re-init after close works the
+            // same way it does for a scenario built through scn_engine_add_*.
+            engine->scenario = std::move(document.scenario);
+            status = engine->engine.init(engine->scenario);
+        } else {
+            engine->engine.clear_diagnostics();
+        }
+        engine->engine.prepend_diagnostics(load_sink.take());
+        return to_c_status(status);
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_load_xml_string(scn_engine* engine, const char* xml) {
+    if (engine == nullptr || xml == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        scena::DiagnosticSink load_sink;
+        scena::xml::Document document;
+        const scena::Status loaded = scena::xml::load_string(xml, document, load_sink);
+        scena::Status status = loaded;
+        if (loaded == scena::Status::Ok) {
+            engine->scenario = std::move(document.scenario);
+            status = engine->engine.init(engine->scenario);
+        } else {
+            engine->engine.clear_diagnostics();
+        }
+        engine->engine.prepend_diagnostics(load_sink.take());
+        return to_c_status(status);
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_entity_count(scn_engine* engine, size_t* out_count) {
+    if (engine == nullptr || out_count == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out_count = engine->engine.entity_ids().size();
+    return SCN_OK;
+}
+
+scn_status scn_engine_entity_id_at(scn_engine* engine, size_t index, const char** out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const std::vector<std::string> ids = engine->engine.entity_ids();
+        if (index >= ids.size()) {
+            return SCN_ERROR_INVALID_ARGUMENT; // *out untouched
+        }
+        engine->value_buffer = ids[index];
+        *out = engine->value_buffer.c_str();
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_element_state(scn_engine* engine, const char* path, scn_element_state* out) {
+    if (engine == nullptr || path == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const std::optional<scena::runtime::ElementState> state =
+            engine->engine.storyboard_element_state(path);
+        if (!state.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out untouched
+        }
+        switch (*state) {
+        case scena::runtime::ElementState::Standby:
+            *out = SCN_ELEMENT_STANDBY;
+            break;
+        case scena::runtime::ElementState::Running:
+            *out = SCN_ELEMENT_RUNNING;
+            break;
+        case scena::runtime::ElementState::Complete:
+            *out = SCN_ELEMENT_COMPLETE;
+            break;
+        }
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_element_transition(scn_engine* engine, const char* path,
+                                         scn_element_transition* out) {
+    if (engine == nullptr || path == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const std::optional<scena::runtime::TransitionKind> transition =
+            engine->engine.storyboard_element_transition(path);
+        if (!transition.has_value()) {
+            return SCN_ERROR_UNKNOWN_NAME; // *out untouched
+        }
+        switch (*transition) {
+        case scena::runtime::TransitionKind::None:
+            *out = SCN_TRANSITION_NONE;
+            break;
+        case scena::runtime::TransitionKind::Start:
+            *out = SCN_TRANSITION_START;
+            break;
+        case scena::runtime::TransitionKind::End:
+            *out = SCN_TRANSITION_END;
+            break;
+        case scena::runtime::TransitionKind::Stop:
+            *out = SCN_TRANSITION_STOP;
+            break;
+        case scena::runtime::TransitionKind::Skip:
+            *out = SCN_TRANSITION_SKIP;
+            break;
+        }
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_set_traffic_signal_state(scn_engine* engine, const char* name,
+                                               const char* state) {
+    if (engine == nullptr || name == nullptr || state == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        return to_c_status(engine->engine.set_traffic_signal_state(name, state));
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_engine_get_time(scn_engine* engine, double* out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out = engine->engine.time();
+    return SCN_OK;
+}
+
+scn_status scn_engine_initialized(scn_engine* engine, int* out) {
+    if (engine == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out = engine->engine.initialized() ? 1 : 0;
+    return SCN_OK;
 }

@@ -1768,6 +1768,15 @@ NB_MODULE(_scena, m) {
         .def("entity_active", &scena::Engine::entity_active, "entity_id"_a,
              "Whether a declared entity is currently in the scenario (§EntityAction); "
              "None when the id is not declared at all.")
+        .def("entity_ids", &scena::Engine::entity_ids,
+             "Every entity the scenario declares, in ascending id order — the order the "
+             "engine iterates them in. Includes entities a DeleteEntityAction removed; ask "
+             "entity_active() to tell them apart. Empty before init().")
+        .def("set_traffic_signal_state", &scena::Engine::set_traffic_signal_state, "name"_a,
+             "state"_a,
+             "Publishes a traffic signal's observable state from the host side (§6.11.4), "
+             "the same write a TrafficSignalStateAction performs. Any signal id is accepted; "
+             "a controller phase naming it overwrites it on its next transition.")
         .def("traffic_signal_state", &scena::Engine::traffic_signal_state, "name"_a,
              "Current observable state of a traffic signal, or None when nothing has "
              "written it yet.")

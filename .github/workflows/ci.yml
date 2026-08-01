@@ -41,8 +41,10 @@ jobs:
           python -m pip install pytest
           python -m pytest python/tests -v
 
-      - name: Python example
-        run: python python/examples/hello_engine.py
+      - name: Python examples
+        run: |
+          python python/examples/hello_engine.py
+          python python/examples/host_queries.py
 
   sanitize:
     name: ASan + UBSan (ubuntu)

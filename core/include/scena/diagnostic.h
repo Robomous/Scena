@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,6 +116,25 @@ public:
 
     /// Drops every collected diagnostic.
     void clear() noexcept { diagnostics_.clear(); }
+
+    /// Moves the collected diagnostics out, leaving the sink empty. For a
+    /// caller that owns a temporary sink and hands its findings somewhere else
+    /// — the C ABI's load-and-init entry points do exactly that.
+    [[nodiscard]] std::vector<Diagnostic> take() noexcept { return std::move(diagnostics_); }
+
+    /// Inserts `findings` before everything already collected. The one
+    /// deviation from "insertion order is report order", and it exists to
+    /// restore that order rather than break it: findings produced before this
+    /// sink saw anything (a frontend's load pass, whose results are handed over
+    /// after init() has cleared the sink) belong at the front.
+    void prepend(std::vector<Diagnostic> findings) {
+        if (findings.empty()) {
+            return;
+        }
+        findings.insert(findings.end(), std::make_move_iterator(diagnostics_.begin()),
+                        std::make_move_iterator(diagnostics_.end()));
+        diagnostics_ = std::move(findings);
+    }
 
 private:
     std::vector<Diagnostic> diagnostics_;
