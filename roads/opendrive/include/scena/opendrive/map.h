@@ -17,6 +17,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,8 +77,54 @@ struct Geometry {
     PRange p_range = PRange::ArcLength;
 };
 
-/// One `<road>` restricted to what p3-s2 consumes: identity and the plan
-/// view. Lanes, links and junctions join the model in p3-s3.
+/// One `<width>` record of a lane (§11.7.1): within its validity range the
+/// width at distance `ds` past the record start is
+/// `w(ds) = a + b·ds + c·ds² + d·ds³`, with `ds` restarting at zero per
+/// record and the record starting at `s_section + s_offset`.
+struct WidthRecord {
+    double s_offset = 0.0; ///< Start s relative to the lane section, meters.
+    double a = 0.0;
+    double b = 0.0;
+    double c = 0.0;
+    double d = 0.0;
+};
+
+/// One `<lane>` of a lane section (§11.2): centre lane 0, negative ids to
+/// the right of the reference line, positive to the left (§11.1).
+struct Lane {
+    int id = 0;
+    /// The `<lane>` @type string verbatim ("driving", "border", ...); the
+    /// backend hands it through `IRoadQuery::lane_type` uninterpreted.
+    std::string type;
+    /// Width records in ascending s_offset order; empty for the centre lane
+    /// (asam.net:xodr:1.4.0:road.lane.center_lane_no_width).
+    std::vector<WidthRecord> widths;
+    /// Lane-level linkage (§11.6): id of the connected lane in the previous /
+    /// next lane section — or, at the road boundary, on the linked road.
+    std::optional<int> predecessor;
+    std::optional<int> successor;
+};
+
+/// One `<laneSection>` (§11.4): the road cross-section from `s` to the next
+/// section (or the road end). Lanes are keyed by id in an ordered map —
+/// deterministic iteration, never a hash order.
+struct LaneSection {
+    double s = 0.0;
+    std::map<int, Lane> lanes;
+};
+
+/// One side of a road-level `<link>` (§10.3).
+struct RoadLink {
+    enum class Kind { Road, Junction };
+    /// Contact point on the linked road (meaningful for Kind::Road).
+    enum class Contact { Start, End };
+    Kind kind = Kind::Road;
+    std::string element_id;
+    Contact contact = Contact::Start;
+};
+
+/// One `<road>` in the consumed subset: identity, the plan view, the lane
+/// model and road-level linkage.
 struct Road {
     std::string id;
     std::string name;
@@ -87,16 +134,49 @@ struct Road {
     double length = 0.0;
     /// `<geometry>` elements in ascending-s document order (§9.2).
     std::vector<Geometry> plan_view;
+    /// `<laneSection>`s in ascending-s order; empty for a geometry-only road
+    /// (lane queries then answer false).
+    std::vector<LaneSection> sections;
+    std::optional<RoadLink> predecessor;
+    std::optional<RoadLink> successor;
+    /// The junction this road belongs to as a connecting road, or empty
+    /// ("-1" in the file means none and is stored as empty).
+    std::string junction;
 };
 
-/// A parsed OpenDRIVE map, restricted to the p3-s2 subset.
+/// One `<laneLink>` of a junction connection (§12.4): incoming lane `from`
+/// connects to connecting-road lane `to`.
+struct JunctionLaneLink {
+    int from = 0;
+    int to = 0;
+};
+
+/// One `<connection>` of a common junction (§12.2): the path from an
+/// incoming road onto a connecting road, entered at the given contact point.
+struct JunctionConnection {
+    std::string id;
+    std::string incoming_road;
+    std::string connecting_road;
+    RoadLink::Contact contact = RoadLink::Contact::Start;
+    std::vector<JunctionLaneLink> lane_links;
+};
+
+/// One `<junction>` of @type default (§12.2). Other junction types are
+/// outside the subset and diagnosed at load.
+struct Junction {
+    std::string id;
+    std::vector<JunctionConnection> connections;
+};
+
+/// A parsed OpenDRIVE map, restricted to the consumed subset.
 ///
-/// Roads are keyed by id in an ordered map: iteration order is part of the
-/// determinism contract (never a hash order).
+/// Roads and junctions are keyed by id in ordered maps: iteration order is
+/// part of the determinism contract (never a hash order).
 struct Map {
     int rev_major = 0; ///< `<header>` @revMajor.
     int rev_minor = 0; ///< `<header>` @revMinor.
     std::map<std::string, Road> roads;
+    std::map<std::string, Junction> junctions;
 };
 
 } // namespace scena::opendrive
