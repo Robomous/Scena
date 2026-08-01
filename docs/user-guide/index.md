@@ -3,10 +3,10 @@
 The user guide grows sprint by sprint along the
 [roadmap](../roadmap/roadmap.md). Current chapters:
 
-- [Loading scenarios](loading-scenarios.md) — the OpenSCENARIO XML document
-  layer: the loader API, the 1.0–1.3 version policy, document kinds,
-  xpath-ish diagnostics with rule ids, encodings, and locale-safe number
-  reading.
+- [Loading scenarios](loading-scenarios.md) — the OpenSCENARIO XML frontend:
+  the loader API, the 1.0–1.3 version policy, what a document lowers into
+  (entities, storyboard, init actions, road-network references), xpath-ish
+  diagnostics with rule ids, encodings, and locale-safe number reading.
 - [The entity model](entities.md) — ScenarioObject and the Vehicle /
   Pedestrian / MiscObject taxonomy, bounding boxes, performance limits, the
   full h/p/r pose, and how to build and query entities from C++/C/Python.
