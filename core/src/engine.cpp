@@ -2132,6 +2132,9 @@ Status Engine::init(ir::Scenario scenario) {
     scheduler_.step(
         context, [this](const ir::Action& action) { return apply(action); },
         [this](const ir::Action& action) { stop_action(action); });
+    // Init's evaluation at t = 0 is a real evaluation (§8.4.7), so its
+    // transitions are reported like any other.
+    report_transitions();
 
     // The init phase has no integrate stage, so a follower that placed an
     // entity at t = 0 must not make the first step skip its integration.
@@ -2154,6 +2157,14 @@ Status Engine::step(double dt) {
     // The scheduler's fire callback re-polls longitudinal actions without a dt
     // argument; expose the current step to it.
     last_dt_ = dt;
+
+    // §ADR-0003 step order, with the batching brackets around it: a host that
+    // writes into a scene graph or a network frame opens it here and commits at
+    // on_step_end. The step was not rejected, so a bracket that opens will
+    // close.
+    if (gateway_ != nullptr) {
+        gateway_->on_step_begin(dt);
+    }
 
     clock_.advance(dt);
 
@@ -2197,6 +2208,7 @@ Status Engine::step(double dt) {
     scheduler_.step(
         context, [this](const ir::Action& action) { return apply(action); },
         [this](const ir::Action& action) { stop_action(action); });
+    report_transitions();
 
     for (auto& [id, record] : entities_) {
         (void)id;
@@ -2261,9 +2273,22 @@ Status Engine::step(double dt) {
                 gateway_->publish_state(id, record.state);
             }
         }
+        gateway_->on_step_end(dt);
     }
 
     return Status::Ok;
+}
+
+void Engine::report_transitions() {
+    if (gateway_ == nullptr) {
+        return;
+    }
+    // Reported after the evaluation completes and before motion is integrated,
+    // in the scheduler's document order — the same order on every platform.
+    scheduler_.for_each_transition([this](const std::string& path, runtime::ElementState state,
+                                          runtime::TransitionKind transition) {
+        gateway_->on_element_transition(path, state, transition);
+    });
 }
 
 void Engine::refresh_observations(double dt) {
@@ -2702,6 +2727,14 @@ void Engine::advance_signal_controllers(double t) {
 
 void Engine::prepend_diagnostics(std::vector<Diagnostic> findings) {
     diagnostics_.prepend(std::move(findings));
+}
+
+void Engine::set_gateway(gateway::ISimulatorGateway* gateway) noexcept {
+    gateway_ = gateway;
+}
+
+gateway::ISimulatorGateway* Engine::gateway() const noexcept {
+    return gateway_;
 }
 
 std::vector<std::string> Engine::entity_ids() const {

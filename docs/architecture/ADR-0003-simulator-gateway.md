@@ -95,3 +95,48 @@ in this phase, and none will live inside the core.
   changing the surface from here on is an ADR-level decision. The executable
   contract every backend must pass lives in
   `core/tests/support/road_query_contract.h`.
+- **p6-s2 — `ISimulatorGateway` v1: step brackets, storyboard observation, and
+  the C ABI's gateway.** Three additions, all defaulted to no-ops so every
+  existing implementation keeps compiling and behaving identically.
+
+  - **`on_step_begin(dt)` / `on_step_end(dt)`** bracket each step. They are the
+    *batching* hook: a host that writes into a scene graph, a shared buffer or a
+    network frame opens it at the start and commits at the end, receiving the
+    step's `poll_state` / `publish_state` calls in between. The per-entity
+    contract and the step order above are unchanged — the brackets only enclose
+    them. A rejected step (invalid dt, uninitialized engine) opens no bracket, so
+    a host can rely on open/close pairing. A zero-dt step *does* bracket: it is a
+    real evaluation.
+  - **`on_element_transition(path, state, transition)`** reports every storyboard
+    element that transitioned in the step's evaluation, so a host observing the
+    storyboard does not have to poll every element it cares about. The order is
+    part of the deterministic run: document order, depth first, **parents before
+    their children**, reported after the evaluation completes and before entity
+    motion is integrated. A transition is a one-evaluation pulse, so a host that
+    steps once sees each exactly once. Parents-before-children means an act's
+    `endTransition` is reported before the event's that caused it; the order is
+    a stable traversal, not a causal one, and the state each callback carries is
+    the state after the transition, so nothing is ambiguous.
+  - **`Engine::set_gateway` / `gateway()`** make attachment a runtime operation
+    rather than a constructor-only one. The engine reads the pointer only at the
+    points this ADR fixes, so a swap between steps cannot be observed
+    half-applied.
+
+  **Time sourcing.** The host owns the clock, and three patterns are supported
+  and tested: a **fixed dt** loop; a **variable dt** loop, where the explicit
+  integrator means two different dt sequences do not generally agree mid-ramp
+  but a replayed sequence reproduces exactly (that, not dt-independence, is the
+  determinism contract); and **zero-dt query steps**, where a host re-evaluates
+  the storyboard without advancing time — the clock does not move, no motion is
+  integrated, the derived observations are deliberately not updated (no 0/0),
+  and the brackets, polls, publishes and transitions all still happen.
+
+  **The C ABI's gateway is function pointers.** `scn_callbacks` mirrors this
+  interface as a struct of optional function pointers plus a `void* user_data`,
+  installed with `scn_engine_set_callbacks`; the C API owns an adapter that
+  implements `ISimulatorGateway` and forwards. Every member may be NULL, which
+  behaves exactly like no gateway for that hook. One thing deliberately does not
+  cross: **`road_query()` stays C++-only**. `IRoadQuery` is a geometry service
+  with a wide surface and no natural C representation, and a C host that has a
+  road network is better served by implementing the C++ interface directly than
+  by marshalling every query through function pointers.

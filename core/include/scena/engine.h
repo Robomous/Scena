@@ -97,6 +97,18 @@ public:
 
     ~Engine() = default;
 
+    /// Attaches (or, with nullptr, detaches) a simulator gateway after
+    /// construction — the constructor form is the convenience, this is the
+    /// general one. The gateway must outlive the engine or be detached first.
+    ///
+    /// Changing it mid-run is legal and takes effect from the next step: the
+    /// engine only reads the pointer at the points ADR-0003 fixes, so a swap
+    /// between steps cannot be observed half-applied.
+    void set_gateway(gateway::ISimulatorGateway* gateway) noexcept;
+
+    /// The attached gateway, or nullptr.
+    [[nodiscard]] gateway::ISimulatorGateway* gateway() const noexcept;
+
     /// Loads a scenario and resets simulation time to zero. All entities
     /// start with a zero-initialized state.
     ///
@@ -589,6 +601,11 @@ private:
     /// Called from the scheduler's stop callback for every action a
     /// stopTransition takes out of runningState, in document order.
     void stop_action(const ir::Action& action);
+
+    /// Reports every storyboard-element transition of the evaluation that just
+    /// ran to the gateway, in the scheduler's document order. No-op without a
+    /// gateway.
+    void report_transitions();
 
     /// Retires every *other* instance of `action`'s bulk action, on whatever
     /// entity it drives — §7.5.4: when a conflict overrides a bulk action,

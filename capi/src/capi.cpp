@@ -27,6 +27,7 @@
 #include "scena/diagnostic.h"
 #include "scena/engine.h"
 #include "scena/entity_visibility.h"
+#include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/action.h"
 #include "scena/ir/condition.h"
 #include "scena/ir/controller.h"
@@ -41,8 +42,121 @@
 #include "scena/version.h"
 #include "scena/xml/loader.h"
 
+/// Forwards the ISimulatorGateway interface to a set of C function pointers.
+///
+/// One adapter per engine, owned by it, so a C host never sees a C++ object and
+/// the engine never sees function pointers. Every member of scn_callbacks may
+/// be NULL; a NULL hook falls through to the base class's no-op, which is
+/// exactly "no gateway" for that hook.
+class CCallbackGateway final : public scena::gateway::ISimulatorGateway {
+public:
+    void set_callbacks(const scn_callbacks& callbacks) { callbacks_ = callbacks; }
+    void clear() { callbacks_ = scn_callbacks{}; }
+    [[nodiscard]] bool installed() const noexcept { return installed_; }
+    void mark_installed(bool installed) noexcept { installed_ = installed; }
+
+    void publish_state(const std::string& entity_id, const scena::EntityState& state) override {
+        if (callbacks_.publish_state == nullptr) {
+            return;
+        }
+        const scn_entity_state out = to_c_state(state);
+        callbacks_.publish_state(callbacks_.user_data, entity_id.c_str(), &out);
+    }
+
+    bool poll_state(const std::string& entity_id, scena::EntityState& out) override {
+        if (callbacks_.poll_state == nullptr) {
+            return false;
+        }
+        scn_entity_state polled{};
+        if (callbacks_.poll_state(callbacks_.user_data, entity_id.c_str(), &polled) == 0) {
+            return false;
+        }
+        out = from_c_state(polled);
+        return true;
+    }
+
+    // Road-network injection stays a C++ interface: IRoadQuery is a geometry
+    // service with no C representation (ADR-0003).
+    scena::gateway::IRoadQuery* road_query() override { return nullptr; }
+
+    void on_custom_command(const std::string& type, const std::string& content) override {
+        if (callbacks_.on_custom_command != nullptr) {
+            callbacks_.on_custom_command(callbacks_.user_data, type.c_str(), content.c_str());
+        }
+    }
+
+    void on_controller_assigned(const std::string& entity_id,
+                                const scena::ir::Controller& controller) override {
+        if (callbacks_.on_controller_assigned != nullptr) {
+            callbacks_.on_controller_assigned(callbacks_.user_data, entity_id.c_str(),
+                                              controller.name.c_str(),
+                                              static_cast<scn_controller_type>(controller.type));
+        }
+    }
+
+    void on_visibility_changed(const std::string& entity_id,
+                               const scena::EntityVisibility& visibility) override {
+        if (callbacks_.on_visibility_changed != nullptr) {
+            callbacks_.on_visibility_changed(
+                callbacks_.user_data, entity_id.c_str(), visibility.graphics ? 1 : 0,
+                visibility.traffic ? 1 : 0, visibility.sensors ? 1 : 0);
+        }
+    }
+
+    void on_step_begin(double dt) override {
+        if (callbacks_.on_step_begin != nullptr) {
+            callbacks_.on_step_begin(callbacks_.user_data, dt);
+        }
+    }
+
+    void on_step_end(double dt) override {
+        if (callbacks_.on_step_end != nullptr) {
+            callbacks_.on_step_end(callbacks_.user_data, dt);
+        }
+    }
+
+    void on_element_transition(const std::string& path, scena::runtime::ElementState state,
+                               scena::runtime::TransitionKind transition) override {
+        if (callbacks_.on_element_transition == nullptr) {
+            return;
+        }
+        callbacks_.on_element_transition(callbacks_.user_data, path.c_str(),
+                                         static_cast<scn_element_state>(state),
+                                         static_cast<scn_element_transition>(transition));
+    }
+
+private:
+    static scn_entity_state to_c_state(const scena::EntityState& state) {
+        scn_entity_state out{};
+        out.x = state.x;
+        out.y = state.y;
+        out.z = state.z;
+        out.heading = state.heading;
+        out.speed = state.speed;
+        out.pitch = state.pitch;
+        out.roll = state.roll;
+        return out;
+    }
+
+    static scena::EntityState from_c_state(const scn_entity_state& state) {
+        scena::EntityState out;
+        out.x = state.x;
+        out.y = state.y;
+        out.z = state.z;
+        out.heading = state.heading;
+        out.speed = state.speed;
+        out.pitch = state.pitch;
+        out.roll = state.roll;
+        return out;
+    }
+
+    scn_callbacks callbacks_{};
+    bool installed_ = false;
+};
+
 struct scn_engine {
     scena::ir::Scenario scenario;
+    CCallbackGateway callbacks;
     scena::Engine engine;
     // Backing store for the last string returned by a get_* borrowed-string
     // accessor; overwritten by the next such call (see capi.h lifetime docs).
@@ -2009,5 +2123,22 @@ scn_status scn_engine_initialized(scn_engine* engine, int* out) {
         return SCN_ERROR_INVALID_ARGUMENT;
     }
     *out = engine->engine.initialized() ? 1 : 0;
+    return SCN_OK;
+}
+
+scn_status scn_engine_set_callbacks(scn_engine* engine, const scn_callbacks* callbacks) {
+    if (engine == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (callbacks == nullptr) {
+        engine->callbacks.clear();
+        engine->engine.set_gateway(nullptr);
+        engine->callbacks.mark_installed(false);
+        return SCN_OK;
+    }
+    // The struct is copied, so the caller's copy need not outlive the call.
+    engine->callbacks.set_callbacks(*callbacks);
+    engine->engine.set_gateway(&engine->callbacks);
+    engine->callbacks.mark_installed(true);
     return SCN_OK;
 }
