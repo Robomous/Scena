@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "catalog.h"
 #include "parameters.h"
 #include "read_actions.h"
 #include "read_common.h"
@@ -201,14 +202,36 @@ bool read_maneuver_group(ReadContext& ctx, const pugi::xml_node& node, ir::Maneu
     }
     for (pugi::xml_node entity : actors.children("EntityRef")) {
         std::string entity_ref;
-        if (require_string(ctx, entity, "entityRef", entity_ref)) {
-            out.actors.push_back(std::move(entity_ref));
+        if (!require_string(ctx, entity, "entityRef", entity_ref)) {
+            ok = false;
+            continue;
+        }
+        // An actor may be an EntitySelection (§7.2.2.2: "all private actions
+        // within the maneuver group are applied individually, to each
+        // ScenarioObject instance in the entity selection"), so a selection
+        // expands here into its members.
+        if (const std::vector<std::string>* selected = ctx.entity_selection(entity_ref)) {
+            for (const std::string& member : *selected) {
+                out.actors.push_back(member);
+            }
+            continue;
+        }
+        out.actors.push_back(std::move(entity_ref));
+    }
+    for (pugi::xml_node reference : node.children("CatalogReference")) {
+        const pugi::xml_node entry =
+            ctx.catalogs().resolve(ctx, reference, CatalogKind::Maneuver, "Maneuver");
+        if (!entry) {
+            ok = false;
+            continue;
+        }
+        const CatalogEntryScope scope(ctx, reference, entry);
+        ir::Maneuver maneuver;
+        if (read_maneuver(ctx, entry, out.actors, maneuver)) {
+            out.maneuvers.push_back(std::move(maneuver));
         } else {
             ok = false;
         }
-    }
-    for (pugi::xml_node reference : node.children("CatalogReference")) {
-        warn_deferred(ctx, reference, "p4-s4");
     }
     for (pugi::xml_node maneuver_node : node.children("Maneuver")) {
         ir::Maneuver maneuver;
