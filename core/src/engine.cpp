@@ -95,12 +95,14 @@ public:
                    const NamedValueStore& user_defined_values, const EntityMap& entities,
                    const NamedValueStore& signal_states, const NamedValueStore& controller_phases,
                    std::optional<double> date_time_seconds, DiagnosticSink& sink,
-                   std::set<std::string>& warned)
+                   std::set<std::string>& warned, const gateway::IRoadQuery* road = nullptr)
         : simulation_time_(simulation_time), parameters_(&parameters),
           parameter_overrides_(&parameter_overrides), variables_(&variables),
           user_defined_values_(&user_defined_values), entities_(&entities),
           signal_states_(&signal_states), controller_phases_(&controller_phases),
-          date_time_seconds_(date_time_seconds), sink_(&sink), warned_(&warned) {}
+          date_time_seconds_(date_time_seconds), sink_(&sink), warned_(&warned), road_(road) {}
+
+    [[nodiscard]] const gateway::IRoadQuery* road_query() const override { return road_; }
 
     [[nodiscard]] double simulation_time() const override { return simulation_time_; }
 
@@ -114,8 +116,13 @@ public:
             return std::nullopt;
         }
         const auto& record = it->second;
-        return ir::EntityKinematics{record.state, record.acceleration, record.traveled_distance,
-                                    record.standstill_seconds, record.bounding_box};
+        return ir::EntityKinematics{record.state,
+                                    record.acceleration,
+                                    record.traveled_distance,
+                                    record.standstill_seconds,
+                                    record.bounding_box,
+                                    record.end_of_road_seconds,
+                                    record.offroad_seconds};
     }
 
     [[nodiscard]] std::optional<std::string_view>
@@ -212,6 +219,7 @@ private:
     std::optional<double> date_time_seconds_;
     DiagnosticSink* sink_;
     std::set<std::string>* warned_;
+    const gateway::IRoadQuery* road_ = nullptr;
 };
 
 /// Index of the controller named `name` in `controllers`, or npos.
@@ -1151,15 +1159,20 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                       path);
             }
         }
-        // A road-based coordinate system needs a road network (p3-s4). The
-        // action then completes immediately at runtime rather than keeping a
-        // distance it cannot measure, so this is a warning, not an error —
+        // A road-based coordinate system needs a road network at run time
+        // (p3-s4); validation cannot see whether the host attaches one, so
+        // the warning is phrased conditionally. The action then completes
+        // immediately rather than keeping a distance it cannot measure —
         // the ADR-0009 precedent for the interaction conditions.
         const ir::CoordinateSystem cs = keeping->coordinate_system();
-        if (cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road ||
-            cs == ir::CoordinateSystem::Trajectory) {
+        if (cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road) {
             warn(sink, Status::UnsupportedFeature,
-                 "road-based coordinate system needs a road network (§6.4); the longitudinal "
+                 "road-based coordinate system needs a road network (§6.4); without one the "
+                 "longitudinal distance action completes immediately",
+                 path);
+        } else if (cs == ir::CoordinateSystem::Trajectory) {
+            warn(sink, Status::UnsupportedFeature,
+                 "the trajectory coordinate system is not supported (§6.4); the longitudinal "
                  "distance action completes immediately",
                  path);
         }
@@ -1266,9 +1279,14 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                  "the lateral distance in the lane coordinate system is undefined (§6.4.8.2.2); "
                  "the lateral distance action completes immediately",
                  path);
-        } else if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+        } else if (cs == ir::CoordinateSystem::Road) {
             warn(sink, Status::UnsupportedFeature,
-                 "road-based coordinate system needs a road network (§6.4); the lateral distance "
+                 "road-based coordinate system needs a road network (§6.4); without one the "
+                 "lateral distance action completes immediately",
+                 path);
+        } else if (cs == ir::CoordinateSystem::Trajectory) {
+            warn(sink, Status::UnsupportedFeature,
+                 "the trajectory coordinate system is not supported (§6.4); the lateral distance "
                  "action completes immediately",
                  path);
         }
@@ -2016,7 +2034,8 @@ Status Engine::init(ir::Scenario scenario) {
                            controller_phases_,
                            current_date_time_seconds(0.0),
                            diagnostics_,
-                           warned_values_};
+                           warned_values_,
+                           attached_road_query()};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     // The init phase has no integrate stage, so a follower that placed an
@@ -2079,7 +2098,7 @@ Status Engine::step(double dt) {
         clock_.now(),   scenario_.parameters, parameter_overrides_,
         variables_,     user_defined_values_, entities_,
         signal_states_, controller_phases_,   current_date_time_seconds(clock_.now()),
-        diagnostics_,   warned_values_};
+        diagnostics_,   warned_values_,       attached_road_query()};
     scheduler_.step(context, [this](const ir::Action& action) { return apply(action); });
 
     for (auto& [id, record] : entities_) {
@@ -2175,6 +2194,47 @@ void Engine::refresh_observations(double dt) {
                 record.standstill_seconds += dt;
             } else {
                 record.standstill_seconds = 0.0;
+            }
+            // End-of-road / offroad clocks (§EndOfRoadCondition,
+            // §OffroadCondition, p3-s4): observed against the road network
+            // each step, the standstill pattern. Without one both clocks
+            // stay 0 and the conditions are deterministic false.
+            if (const gateway::IRoadQuery* road = attached_road_query()) {
+                gateway::LanePosition lane;
+                const bool on_road =
+                    road->to_lane_position(record.state.x, record.state.y, record.state.z, lane);
+                if (on_road) {
+                    record.offroad_seconds = 0.0;
+                } else {
+                    record.offroad_seconds += dt;
+                }
+                bool at_end = false;
+                if (on_road) {
+                    double length = 0.0;
+                    double tangent_heading = 0.0;
+                    if (road->road_length(lane.road_id, length) &&
+                        road->road_heading(lane.road_id, lane.s, tangent_heading)) {
+                        // "End of road" is read in the entity's own driving
+                        // direction (tangent-aligned forward, opposed
+                        // backward), reached when the bounding-box front
+                        // touches the road boundary — the reference point
+                        // alone for a box-less entity.
+                        const double half = record.bounding_box.has_value()
+                                                ? record.bounding_box->length * 0.5
+                                                : 0.0;
+                        const runtime::SinCos toward =
+                            runtime::det_sincos(record.state.heading - tangent_heading);
+                        // The boundary slack matches the backend projection
+                        // precision (~1e-8 s), not machine epsilon.
+                        at_end = toward.cos >= 0.0 ? lane.s + half >= length - 1e-6
+                                                   : lane.s - half <= 1e-6;
+                    }
+                }
+                if (at_end) {
+                    record.end_of_road_seconds += dt;
+                } else {
+                    record.end_of_road_seconds = 0.0;
+                }
             }
         }
         record.prev_sample = record.state;
@@ -2431,13 +2491,15 @@ Engine::EntityRecord* Engine::record_for(const ir::Action& action) {
 
 bool Engine::resolve_position(const ir::Position& position, runtime::Pose& out,
                               const std::string& path) {
-    const runtime::PositionResolver resolver([this](std::string_view id) -> const EntityState* {
-        const auto it = entities_.find(id);
-        if (it == entities_.end() || !it->second.active) {
-            return nullptr;
-        }
-        return &it->second.state;
-    });
+    const runtime::PositionResolver resolver(
+        [this](std::string_view id) -> const EntityState* {
+            const auto it = entities_.find(id);
+            if (it == entities_.end() || !it->second.active) {
+                return nullptr;
+            }
+            return &it->second.state;
+        },
+        attached_road_query());
     const runtime::PositionResolution result = resolver.resolve(position, out);
     if (result.status == Status::Ok) {
         return true;
@@ -3164,8 +3226,13 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     };
 
     const ir::CoordinateSystem cs = action.coordinate_system();
-    if (cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road ||
-        cs == ir::CoordinateSystem::Trajectory) {
+    if (cs == ir::CoordinateSystem::Trajectory) {
+        // Needs the followed trajectory's geometry; beyond the v0.0.1 subset.
+        return give_up(diagnostics_, "longitudinal distance action in the trajectory coordinate "
+                                     "system is not supported (§6.4); action completed");
+    }
+    const bool road_based = cs == ir::CoordinateSystem::Lane || cs == ir::CoordinateSystem::Road;
+    if (road_based && attached_road_query() == nullptr) {
         // Road-based gaps need IRoadQuery (p3-s4); warned about at init too.
         return give_up(diagnostics_, "longitudinal distance action needs a road network for its "
                                      "coordinate system (§6.4); action completed");
@@ -3189,11 +3256,20 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
     const EntityRecord& reference = reference_it->second;
 
     const std::optional<double> gap =
-        signed_longitudinal_gap(record.state, record.bounding_box, reference.state,
-                                reference.bounding_box, cs, action.freespace());
+        road_based
+            ? runtime::road_signed_longitudinal_gap(attached_road_query(), record.state,
+                                                    record.bounding_box, reference.state,
+                                                    reference.bounding_box, action.freespace())
+            : signed_longitudinal_gap(record.state, record.bounding_box, reference.state,
+                                      reference.bounding_box, cs, action.freespace());
     if (!gap.has_value()) {
-        return give_up(diagnostics_, "longitudinal distance action needs bounding boxes for a "
-                                     "freespace gap (§6.4.7.2); action completed");
+        return give_up(diagnostics_,
+                       road_based
+                           ? "longitudinal distance action could not measure a road-coordinate "
+                             "gap (§6.4.5): entities off the network, on different roads, or "
+                             "missing a bounding box; action completed"
+                           : "longitudinal distance action needs bounding boxes for a "
+                             "freespace gap (§6.4.7.2); action completed");
     }
 
     // The target gap: an absolute distance, or a headway read against the
@@ -3288,6 +3364,10 @@ runtime::ActionOutcome Engine::drive_distance_keeping(const ir::LongitudinalDist
         record.state.speed = speed;
     }
     return runtime::ActionOutcome::Running;
+}
+
+gateway::IRoadQuery* Engine::attached_road_query() const {
+    return gateway_ != nullptr ? gateway_->road_query() : nullptr;
 }
 
 std::optional<double> Engine::resolve_lane_change_target(const ir::LaneChangeAction& action,
@@ -3531,7 +3611,13 @@ runtime::ActionOutcome Engine::drive_lateral_keeping(const ir::LateralDistanceAc
                        "the lateral distance in the lane coordinate system is undefined "
                        "(§6.4.8.2.2); action completed");
     }
-    if (cs == ir::CoordinateSystem::Road || cs == ir::CoordinateSystem::Trajectory) {
+    if (cs == ir::CoordinateSystem::Trajectory) {
+        return give_up(Status::UnsupportedFeature,
+                       "lateral distance action in the trajectory coordinate system is not "
+                       "supported (§6.4); action completed");
+    }
+    const bool road_based = cs == ir::CoordinateSystem::Road;
+    if (road_based && attached_road_query() == nullptr) {
         // Road-based gaps need IRoadQuery (p3-s4); warned about at init too.
         return give_up(Status::UnsupportedFeature,
                        "lateral distance action needs a road network for its coordinate system "
@@ -3558,18 +3644,31 @@ runtime::ActionOutcome Engine::drive_lateral_keeping(const ir::LateralDistanceAc
     // freespace clearance, when asked for, is what the target is compared
     // against. Keeping the two apart matters for `any`: the side an actor is on
     // is a fact about where it is, not about how much room its flanks leave.
-    const std::optional<double> reference_point_gap = signed_lateral_gap(
-        record.state, record.bounding_box, reference.state, reference.bounding_box, cs,
-        /*freespace=*/false, record.lateral_axis->heading);
+    const std::optional<double> reference_point_gap =
+        road_based ? runtime::road_signed_lateral_gap(attached_road_query(), record.state,
+                                                      record.bounding_box, reference.state,
+                                                      reference.bounding_box,
+                                                      /*freespace=*/false)
+                   : signed_lateral_gap(record.state, record.bounding_box, reference.state,
+                                        reference.bounding_box, cs,
+                                        /*freespace=*/false, record.lateral_axis->heading);
     const std::optional<double> gap =
-        action.freespace() ? signed_lateral_gap(record.state, record.bounding_box, reference.state,
-                                                reference.bounding_box, cs, /*freespace=*/true,
-                                                record.lateral_axis->heading)
-                           : reference_point_gap;
-    if (!gap.has_value()) {
+        action.freespace()
+            ? (road_based ? runtime::road_signed_lateral_gap(attached_road_query(), record.state,
+                                                             record.bounding_box, reference.state,
+                                                             reference.bounding_box,
+                                                             /*freespace=*/true)
+                          : signed_lateral_gap(record.state, record.bounding_box, reference.state,
+                                               reference.bounding_box, cs, /*freespace=*/true,
+                                               record.lateral_axis->heading))
+            : reference_point_gap;
+    if (!gap.has_value() || !reference_point_gap.has_value()) {
         return give_up(Status::UnsupportedFeature,
-                       "lateral distance action needs bounding boxes for a freespace gap "
-                       "(§6.4.7.2); action completed");
+                       road_based ? "lateral distance action could not measure a road-coordinate "
+                                    "gap (§6.4.5): entities off the network, on different roads, "
+                                    "or missing a bounding box; action completed"
+                                  : "lateral distance action needs bounding boxes for a freespace "
+                                    "gap (§6.4.7.2); action completed");
     }
 
     // Which side of the reference the actor holds (§LateralDisplacement).

@@ -171,6 +171,14 @@ bool OpenDriveRoadQuery::to_lane_position(double x, double y, double z,
         const double dx = x - foot.x;
         const double dy = y - foot.y;
         const double d2 = dx * dx + dy * dy;
+        // Beyond the reference line's extent the projection clamps to the
+        // road end and the planar distance exceeds |t| by the longitudinal
+        // overhang: such a point is past the road, not on it. The slack
+        // covers the projection's own convergence error (~1e-8 s).
+        const double lateral_abs = std::fabs(track->t);
+        if (std::sqrt(d2) - lateral_abs > 1e-6) {
+            continue;
+        }
         if (d2 < best_d2) {
             best_d2 = d2;
             found = true;

@@ -22,6 +22,10 @@
 #include "scena/entity_state.h"
 #include "scena/ir/bounding_box.h"
 
+namespace scena::gateway {
+class IRoadQuery;
+} // namespace scena::gateway
+
 namespace scena::ir {
 
 /// The kind of storyboard element a StoryboardElementStateCondition refers to,
@@ -75,6 +79,14 @@ struct EntityKinematics {
     /// the entity declared no bounding box; freespace metrics then evaluate to
     /// a deterministic false for that entity.
     std::optional<BoundingBox> bounding_box;
+    /// s, contiguous time the entity has been at the end of its road in its
+    /// driving direction (EndOfRoadCondition, p3-s4). Stays 0 without a road
+    /// network.
+    double end_of_road_seconds = 0.0;
+    /// s, contiguous time the entity's reference point has projected onto no
+    /// road of the network (OffroadCondition, p3-s4). Stays 0 without a road
+    /// network.
+    double offroad_seconds = 0.0;
 };
 
 /// Read-only runtime context a condition is evaluated against.
@@ -151,6 +163,13 @@ public:
     entity_kinematics(std::string_view /*id*/) const {
         return std::nullopt;
     }
+
+    /// Road-network access, or nullptr when no road data is available —
+    /// road-based conditions then take their deferred-false / degraded path
+    /// (p3-s4). The pointer borrows from the context for the duration of the
+    /// evaluate() call. Backends answer deterministically per the frozen
+    /// IRoadQuery v1 contract, so conditions stay pure observations.
+    [[nodiscard]] virtual const gateway::IRoadQuery* road_query() const { return nullptr; }
 };
 
 /// The trivial context: only simulation time, every other facet absent. Used

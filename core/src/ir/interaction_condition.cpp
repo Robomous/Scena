@@ -49,7 +49,8 @@ bool DistanceCondition::evaluate_for_entity(const EvaluationContext& context,
         return false;
     }
     const runtime::DistanceSpec spec{effective_coordinate_system(),
-                                     effective_relative_distance_type(), freespace_};
+                                     effective_relative_distance_type(), freespace_,
+                                     context.road_query()};
     const std::optional<double> measured =
         runtime::measure_distance(*trigger, nullptr, position_, spec);
     if (!measured.has_value()) {
@@ -126,7 +127,7 @@ bool RelativeDistanceCondition::evaluate_for_entity(const EvaluationContext& con
         return false; // a missing reference makes every triggering entity false
     }
     const runtime::DistanceSpec spec{effective_coordinate_system(), relative_distance_type_,
-                                     freespace_};
+                                     freespace_, context.road_query()};
     const std::optional<double> measured =
         runtime::measure_distance(*trigger, &reference.value(), WorldPosition{}, spec);
     if (!measured.has_value()) {
@@ -187,7 +188,8 @@ bool TimeHeadwayCondition::evaluate_for_entity(const EvaluationContext& context,
         return false;
     }
     const runtime::DistanceSpec spec{effective_coordinate_system(),
-                                     effective_relative_distance_type(), freespace_};
+                                     effective_relative_distance_type(), freespace_,
+                                     context.road_query()};
     const std::optional<double> distance =
         runtime::measure_distance(*trigger, &reference.value(), WorldPosition{}, spec);
     if (!distance.has_value()) {
@@ -283,7 +285,8 @@ bool TimeToCollisionCondition::evaluate_for_entity(const EvaluationContext& cont
     }
 
     const runtime::DistanceSpec spec{effective_coordinate_system(),
-                                     effective_relative_distance_type(), freespace_};
+                                     effective_relative_distance_type(), freespace_,
+                                     context.road_query()};
     const std::optional<double> distance =
         runtime::measure_distance(*trigger, target_entity, target_point, spec);
     if (!distance.has_value()) {
@@ -377,11 +380,18 @@ const std::string& CollisionCondition::entity_ref() const {
 EndOfRoadCondition::EndOfRoadCondition(TriggeringEntities triggering, double duration)
     : ByEntityCondition(std::move(triggering)), duration_(duration) {}
 
-bool EndOfRoadCondition::evaluate_for_entity(const EvaluationContext& /*context*/,
-                                             std::string_view /*entity_id*/) const {
-    // "End of road" is a road-network predicate (§7.6.5.1); without IRoadQuery
-    // (p3-s4) it is a deterministic false, warned once at init.
-    return false;
+bool EndOfRoadCondition::evaluate_for_entity(const EvaluationContext& context,
+                                             std::string_view entity_id) const {
+    // §EndOfRoadCondition: "true after the triggering entity/entities has
+    // reached the end of a road network for a given amount of time". The
+    // engine observes the at-end predicate against the road network each
+    // step and accumulates the clock (end_of_road_seconds, the
+    // standstill_seconds pattern); without a road network the clock stays 0
+    // and the condition is a deterministic false. The strictly-positive
+    // check keeps duration = 0 meaning "at the end now", not "always".
+    const std::optional<EntityKinematics> kinematics = context.entity_kinematics(entity_id);
+    return kinematics.has_value() && kinematics->end_of_road_seconds > 0.0 &&
+           kinematics->end_of_road_seconds >= duration_;
 }
 
 double EndOfRoadCondition::duration() const {
@@ -393,10 +403,18 @@ double EndOfRoadCondition::duration() const {
 OffroadCondition::OffroadCondition(TriggeringEntities triggering, double duration)
     : ByEntityCondition(std::move(triggering)), duration_(duration) {}
 
-bool OffroadCondition::evaluate_for_entity(const EvaluationContext& /*context*/,
-                                           std::string_view /*entity_id*/) const {
-    // Road-network predicate (§7.6.5.1); deferred to p3-s4, deterministic false.
-    return false;
+bool OffroadCondition::evaluate_for_entity(const EvaluationContext& context,
+                                           std::string_view entity_id) const {
+    // §OffroadCondition: "true after the entity has been offroad for a
+    // specific duration". Off-road is observed by the engine as the entity's
+    // reference point projecting onto no road of the network (the frozen
+    // IRoadQuery to_lane_position contract); the clock accumulates like
+    // standstill_seconds. Without a road network the clock stays 0: an
+    // entity in a road-less world is not "off road", there is no road to be
+    // off of — deterministic false, warned once at init.
+    const std::optional<EntityKinematics> kinematics = context.entity_kinematics(entity_id);
+    return kinematics.has_value() && kinematics->offroad_seconds > 0.0 &&
+           kinematics->offroad_seconds >= duration_;
 }
 
 double OffroadCondition::duration() const {

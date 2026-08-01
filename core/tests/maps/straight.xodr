@@ -1,0 +1,43 @@
+<?xml version="1.0" standalone="yes"?>
+<!-- Hand-authored Scena test map (GS-8 prerequisite): one straight road,
+     100 m along +x from the origin, one 3.5 m driving lane per side plus a
+     1.5 m border on the right for the first 60 m. -->
+<OpenDRIVE>
+  <header revMajor="1" revMinor="8" name="scena-straight"/>
+  <road id="1" length="100" junction="-1">
+    <planView>
+      <geometry s="0" x="0" y="0" hdg="0" length="100"><line/></geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+          <lane id="-2" type="border">
+            <width sOffset="0" a="1.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+      <laneSection s="60">
+        <left>
+          <lane id="1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </left>
+        <center><lane id="0"/></center>
+        <right>
+          <lane id="-1" type="driving">
+            <width sOffset="0" a="3.5" b="0" c="0" d="0"/>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+</OpenDRIVE>

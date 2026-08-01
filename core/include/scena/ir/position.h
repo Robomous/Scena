@@ -27,6 +27,9 @@ namespace scena::ir {
 // trajectory.h; that header includes this one for WorldPosition, so the
 // reference is held by (forward-declared) shared_ptr to break the cycle.
 struct Trajectory;
+// RoutePosition references its Route the same way (route.h includes this
+// header for WorldPosition, so the value type cannot be nested here).
+struct Route;
 
 /// Whether a value is stated in absolute (world-frame) or relative terms, per
 /// ASAM OpenSCENARIO XML 1.4.0 §ReferenceContext. On an Orientation it selects
@@ -138,11 +141,33 @@ struct RelativeLanePosition {
     std::optional<Orientation> orientation;
 };
 
-/// Position along a route (§RoutePosition). The route reference and the
-/// in-route coordinate arrive with the road/route backend (p3-s4); the variant
-/// exists so the resolver can dispatch it to an unsupported-feature diagnostic
-/// rather than silently mishandle it.
+/// Position along a route (§RoutePosition): a route reference plus one
+/// in-route coordinate (§InRoutePosition — "either through a position in the
+/// lane coordinate system, a position in a road coordinate system or through
+/// the current position of an entity"; the three are exclusive).
+///
+/// The route is referenced inline (`route`); catalog route references lower
+/// to the same shared route at load time (P4). Exactly one in-route form
+/// should be set: `from_entity` (§PositionOfCurrentEntity), or `path_s` with
+/// `t` (§PositionInRoadCoordinates), or `path_s` with `lane_id` and
+/// `lane_offset` (§PositionInLaneCoordinates — `lane_id` set selects the
+/// lane form). The resolver reports a content defect otherwise.
 struct RoutePosition {
+    std::shared_ptr<Route> route;
+    /// §PositionOfCurrentEntity: the position of `entityRef` projected onto
+    /// the route.
+    std::optional<std::string> from_entity;
+    /// §PositionInRoadCoordinates / §PositionInLaneCoordinates pathS:
+    /// distance along the route, meters. Range [0..route length].
+    std::optional<double> path_s;
+    /// §PositionInRoadCoordinates t: lateral offset from the route's
+    /// reference line at pathS, meters.
+    std::optional<double> t;
+    /// §PositionInLaneCoordinates laneId; selects the lane form when set.
+    std::optional<std::string> lane_id;
+    /// §PositionInLaneCoordinates laneOffset: lateral offset relative to the
+    /// lane centre line, meters; 0 when omitted.
+    double lane_offset = 0.0;
     std::optional<Orientation> orientation;
 };
 

@@ -73,6 +73,12 @@ scn_add_test(action_controller_visibility_test)
 scn_add_test(action_global_test)
 scn_add_test(traffic_signal_test)
 scn_add_test(road_query_contract_test)
+# p3-s4 integration: the test is the host — it loads the committed map
+# fixtures into the OpenDRIVE backend and injects it through the gateway.
+scn_add_test(road_integration_test)
+target_link_libraries(road_integration_test PRIVATE scena::roads-opendrive scena::testsupport)
+target_compile_definitions(road_integration_test
+    PRIVATE SCENA_TEST_MAP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/maps")
 
 # The determinism and detmath tests share the fixture and probe list with the
 # trace runner, so they link the support library.

@@ -452,6 +452,12 @@ private:
         std::optional<double> acceleration; ///< m/s^2; absent until the first dt>0 refresh.
         double traveled_distance = 0.0;     ///< m, cumulative path length since init.
         double standstill_seconds = 0.0;    ///< s, contiguous time at speed == 0.0.
+        /// s, contiguous time at the end of the road in driving direction
+        /// (EndOfRoadCondition, p3-s4); stays 0 without a road network.
+        double end_of_road_seconds = 0.0;
+        /// s, contiguous time off every road of the network (OffroadCondition,
+        /// p3-s4); stays 0 without a road network.
+        double offroad_seconds = 0.0;
     };
 
     /// Applies an action on its first fire and re-polls it on later steps (the
@@ -612,6 +618,10 @@ private:
     [[nodiscard]] std::optional<double>
     resolve_lane_change_target(const ir::LaneChangeAction& action,
                                const EntityRecord& record) const;
+
+    /// The road network the attached gateway provides, or nullptr — the one
+    /// access point the road-based runtime paths (p3-s4) go through.
+    [[nodiscard]] gateway::IRoadQuery* attached_road_query() const;
 
     /// Drives one step of a LateralDistanceAction on `record` (Class
     /// `LateralDistanceAction`): measures the signed lateral gap to the

@@ -25,6 +25,10 @@
 #include "scena/ir/position.h"
 #include "scena/runtime/obb2.h"
 
+namespace scena::gateway {
+class IRoadQuery;
+} // namespace scena::gateway
+
 namespace scena::runtime {
 
 /// Shared entity-to-target distance measurement, per ASAM OpenSCENARIO XML
@@ -35,10 +39,21 @@ namespace scena::runtime {
 /// longitudinal distance-keeping action measures the very same gap and must
 /// measure it identically — one implementation, one set of hex-pinned bits.
 ///
-/// Everything here is pure: no engine, gateway, or wall-clock dependency. All
-/// arithmetic is IEEE-exact with fixed operand order and the only trigonometry
-/// is det_sincos (inside make_obb / projection_axis), so results are
-/// bit-identical across platforms (the determinism contract).
+/// Everything here is pure observation: no engine or wall-clock dependency —
+/// the optional road network (p3-s4) is itself a deterministic pure-query
+/// interface. All arithmetic is IEEE-exact with fixed operand order and the
+/// only trigonometry is det_sincos (inside make_obb / projection_axis /
+/// the road tangent frames), so results are bit-identical across platforms
+/// (the determinism contract).
+///
+/// Road/Lane coordinate systems (§6.4.5, p3-s4 subset): both endpoints are
+/// converted to road coordinates through the frozen IRoadQuery v1; the
+/// longitudinal measure is the s-separation and the lateral measure the
+/// t-separation. Measurements are answered only when both endpoints project
+/// onto the SAME road — cross-road distances need route context and stay
+/// deferred. Freespace measures linearize the bounding-box corners into the
+/// road tangent frame at each entity's reference point (exact on straight
+/// roads, first-order on curved ones — documented in ADR-0019).
 
 /// The effective distance parameters after defaults/deprecations are resolved.
 struct DistanceSpec {
@@ -46,6 +61,9 @@ struct DistanceSpec {
     /// Effective relative-distance type.
     ir::RelativeDistanceType rdt = ir::RelativeDistanceType::EuclidianDistance;
     bool freespace = false; ///< Bounding-box (true) vs reference-point (false) distance.
+    /// Road network for the Road/Lane coordinate systems; null keeps them
+    /// deferred (std::nullopt results, the pre-p3-s4 behaviour).
+    const gateway::IRoadQuery* road = nullptr;
 };
 
 /// Builds the world-frame 2D oriented box for an entity from its state and its
@@ -87,5 +105,28 @@ void projection_axis(ir::CoordinateSystem cs, ir::RelativeDistanceType rdt, doub
                                                   const ir::EntityKinematics* target_entity,
                                                   const ir::WorldPosition& target_point,
                                                   const DistanceSpec& spec);
+
+/// Signed road-coordinate longitudinal gap from `actor` to `reference`:
+/// s_reference - s_actor on their shared road (§6.4.5). With `freespace` the
+/// bumper-to-bumper s-interval gap carrying the reference-point sign — the
+/// same conventions as the engine's world/entity-CS signed gap. std::nullopt
+/// when `road` is null, either endpoint is off the network, the endpoints
+/// are on different roads, or a freespace measure lacks a bounding box.
+[[nodiscard]] std::optional<double>
+road_signed_longitudinal_gap(const gateway::IRoadQuery* road, const EntityState& actor,
+                             const std::optional<ir::BoundingBox>& actor_box,
+                             const EntityState& reference,
+                             const std::optional<ir::BoundingBox>& reference_box, bool freespace);
+
+/// Signed road-coordinate lateral gap: t_actor - t_reference, positive when
+/// the actor is to the left (+t) of the reference (§6.4.5; matches the
+/// engine's lateral sign convention). Freespace is the t-interval clearance,
+/// clamped at zero and signed by the side. Same std::nullopt conditions as
+/// the longitudinal form.
+[[nodiscard]] std::optional<double>
+road_signed_lateral_gap(const gateway::IRoadQuery* road, const EntityState& actor,
+                        const std::optional<ir::BoundingBox>& actor_box,
+                        const EntityState& reference,
+                        const std::optional<ir::BoundingBox>& reference_box, bool freespace);
 
 } // namespace scena::runtime
