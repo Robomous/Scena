@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored from the ASAM OpenSCENARIO XML specification text (ADR-0002). -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-01T00:00:00"
+              description="GS-4 traffic-jam approach" author="Scena golden suite"/>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+    <ScenarioObject name="lead"><Vehicle name="lead_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="60" maxAcceleration="4" maxDeceleration="8"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions>
+    <Private entityRef="ego">
+      <PrivateAction><TeleportAction>
+        <Position><WorldPosition x="0" y="0.0" z="0" h="0.0"/></Position>
+      </TeleportAction></PrivateAction>
+      <PrivateAction><LongitudinalAction><SpeedAction>
+        <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+        <SpeedActionTarget><AbsoluteTargetSpeed value="25"/></SpeedActionTarget>
+      </SpeedAction></LongitudinalAction></PrivateAction>
+    </Private>
+    <Private entityRef="lead">
+      <PrivateAction><TeleportAction>
+        <Position><WorldPosition x="120" y="0.0" z="0" h="0.0"/></Position>
+      </TeleportAction></PrivateAction>
+      <PrivateAction><LongitudinalAction><SpeedAction>
+        <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+        <SpeedActionTarget><AbsoluteTargetSpeed value="8"/></SpeedActionTarget>
+      </SpeedAction></LongitudinalAction></PrivateAction>
+    </Private>
+    </Actions></Init>
+  <Story name="story"><Act name="act">
+      <ManeuverGroup name="group" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="maneuver">
+        <Event name="keep_distance" priority="parallel">
+          <Action name="keep_distance_action"><PrivateAction><LongitudinalAction><LongitudinalDistanceAction entityRef="lead"
+            distance="20" freespace="true" continuous="true" displacement="trailingReferencedEntity">
+            <DynamicConstraints maxAcceleration="3" maxDeceleration="6"/>
+          </LongitudinalDistanceAction></LongitudinalAction></PrivateAction></Action>
+          <StartTrigger><ConditionGroup>
+            <Condition name="at1" delay="0" conditionEdge="none"><ByValueCondition>
+              <SimulationTimeCondition value="1" rule="greaterThan"/>
+            </ByValueCondition></Condition>
+          </ConditionGroup></StartTrigger>
+        </Event>
+        </Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+  </Storyboard>
+</OpenSCENARIO>

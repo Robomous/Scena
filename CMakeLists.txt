@@ -30,6 +30,7 @@ endif()
 add_subdirectory(core)
 add_subdirectory(frontends/xml)
 add_subdirectory(roads/opendrive)
+add_subdirectory(tools/scena-run)
 
 if(SCN_BUILD_CAPI)
     add_subdirectory(capi)

@@ -52,6 +52,27 @@ jobs:
       - name: Parity audit (C++ / C / Python)
         run: python scripts/parity_audit.py
 
+  golden:
+    name: golden scenarios (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSCN_BUILD_PYTHON=OFF
+      - name: Build scena-run
+        run: cmake --build build --config Release --target scena-run --parallel
+      # Bit-identity against the committed per-platform reference trace, plus
+      # the semantic checkpoints each scenario declares.
+      - name: Golden suite
+        run: python scripts/golden.py check-all
+
   sanitize:
     name: ASan + UBSan (ubuntu)
     runs-on: ubuntu-latest

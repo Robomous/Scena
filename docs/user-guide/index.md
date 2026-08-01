@@ -55,6 +55,9 @@ The user guide grows sprint by sprint along the
   any/all, speed/relative-speed/acceleration, stand still, traveled distance,
   reach position), the traffic-signal conditions, the scalar-velocity model, the observation-sampling
   contract, and the host interface (C++/C/Python).
+- [`scena-run`](scena-run.md) — the headless CLI: options and exit codes, the
+  round-trip-exact trace format, replaying a host-controlled entity, and the
+  golden suite harness.
 - [Python quickstart](python.md) — installing, loading and running a scenario,
   building one in memory, observing a run, driving entities from the host with a
   `SimulatorGateway` subclass, the GIL and reentrancy policy, and the parity
