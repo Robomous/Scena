@@ -212,11 +212,35 @@ Two consequences follow:
   retired and all of its entities fall back to default behavior together
   (§7.5.4).
 
-`ManeuverGroup`'s own `maximumExecutionCount` (§8.4.4) remains deferred. See
-[ADR-0005](../architecture/ADR-0005-action-lifetime-and-event-priority.md) for
-the event lifetime and priority reasoning, and
+See [ADR-0005](../architecture/ADR-0005-action-lifetime-and-event-priority.md)
+for the event lifetime and priority reasoning, and
 [ADR-0025](../architecture/ADR-0025-action-conflicts-and-bulk-actions.md) for
 the conflict, override-by-event and bulk rules.
+
+## Repeating a maneuver group
+
+A `ManeuverGroup` carries its own `maximumExecutionCount` (§8.4.4). When a group
+ends regularly with executions left it returns to **standbyState** and starts
+again on the next evaluation, for as long as its Act is running — the group owns
+no start trigger, and Scena reads the one it inherits from the Act as "the Act is
+running" (ADR-0026).
+
+- **One execution per evaluation.** A group whose maneuvers complete instantly
+  does not burn its whole budget in one step; `maximumExecutionCount = N` costs
+  at most N evaluations, wherever in the tree the group sits.
+- **Each execution starts afresh.** The group's whole subtree returns to
+  standbyState with descendant execution tallies **and trigger condition
+  histories** cleared, so an `Event` with the default count of 1 fires once per
+  group execution and no execution depends on the previous one.
+- **Rising edges do not re-fire.** A cleared history means a later execution has
+  no previous sample, and a condition that is already true never produces a
+  rising edge (§7.6.4). A group whose events are gated on rising edges therefore
+  runs once and then waits. Use a level condition (`edge = none`) for an event
+  that should fire in every execution.
+- **Counting.** Only startTransitions count — a group has no priority and
+  therefore no skipTransition. `maximumExecutionCount = 0` means the group never
+  runs; a negative count is rejected at `init()`. A stop trigger completes the
+  group "regardless of the number of execution counts left".
 
 ## Example
 

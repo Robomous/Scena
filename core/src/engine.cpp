@@ -1546,6 +1546,14 @@ void validate_storyboard(const ir::Storyboard& storyboard, const Records& record
                 check_sibling_names(
                     group.maneuvers, [](const ir::Maneuver& m) { return m.name; }, "maneuver",
                     group_path, sink);
+                // Same reading as the Event counter: maximumExecutionCount is
+                // unsignedInt, so a negative budget has no meaning, while zero
+                // is schema-valid and means the group never runs (§8.3.3.2,
+                // §8.4.4). The standard defines no rule id for this constraint.
+                if (group.maximum_execution_count < 0) {
+                    error(sink, Status::ValidationError,
+                          "maneuver group maximumExecutionCount is negative", group_path);
+                }
                 for (const std::string& actor : group.actors) {
                     // The standard defines no checker rule for entity-reference
                     // resolvability (Annex C.7.20 covers only

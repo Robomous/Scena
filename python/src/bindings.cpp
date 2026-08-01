@@ -1589,12 +1589,15 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::ManeuverGroup>(m, "ManeuverGroup")
         .def(
             "__init__",
-            [](ir::ManeuverGroup* self, std::string name) {
-                new (self)
-                    ir::ManeuverGroup{.name = std::move(name), .actors = {}, .maneuvers = {}};
+            [](ir::ManeuverGroup* self, std::string name, int maximum_execution_count) {
+                new (self) ir::ManeuverGroup{.name = std::move(name),
+                                             .actors = {},
+                                             .maneuvers = {},
+                                             .maximum_execution_count = maximum_execution_count};
             },
-            "name"_a)
+            "name"_a, "maximum_execution_count"_a = 1)
         .def_rw("name", &ir::ManeuverGroup::name)
+        .def_rw("maximum_execution_count", &ir::ManeuverGroup::maximum_execution_count)
         .def(
             "add_actor",
             [](ir::ManeuverGroup& group, std::string entity_id) {

@@ -188,17 +188,7 @@ bool read_maneuver_group(ReadContext& ctx, const pugi::xml_node& node, ir::Maneu
     warn_unconsumed_children(ctx, node, kConsumed);
 
     bool ok = require_string(ctx, node, "name", out.name);
-    if (const pugi::xml_attribute count = node.attribute("maximumExecutionCount")) {
-        // The group's own execution count (§8.4.4) has no IR field yet; a
-        // document that asks for anything but a single execution is told the
-        // count is not honoured rather than silently executed once.
-        if (std::string_view(count.value()) != "1") {
-            ctx.report_at(node, Severity::Warning, Status::UnsupportedFeature,
-                          attribute_path(node, "maximumExecutionCount"),
-                          "ManeuverGroup maximumExecutionCount is not honoured yet; the group "
-                          "executes once");
-        }
-    }
+    ok = optional_int(ctx, node, "maximumExecutionCount", out.maximum_execution_count) && ok;
 
     const pugi::xml_node actors = require_child(ctx, node, "Actors");
     if (!actors) {

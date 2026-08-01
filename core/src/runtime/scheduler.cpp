@@ -191,6 +191,7 @@ Scheduler::Node Scheduler::build(const ir::Storyboard& storyboard) {
                 Node group_node;
                 group_node.kind = Node::Kind::Group;
                 group_node.name = group.name;
+                group_node.max_executions = group.maximum_execution_count;
                 for (const ir::Maneuver& maneuver : group.maneuvers) {
                     Node maneuver_node;
                     maneuver_node.kind = Node::Kind::Maneuver;
@@ -274,8 +275,25 @@ void Scheduler::mark_transition(Node& node, TransitionKind transition) {
 
 void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
                               const FireCallback& fire, const StopCallback& stop) {
+    if (node.kind == Node::Kind::Group && node.executions >= node.max_executions) {
+        // A group with no executions left never starts. maximumExecutionCount
+        // is schema-valid at 0, which means exactly that (§8.3.3.2); a group
+        // has no priority, so there is no skipTransition to take — it simply
+        // completes (§8.4.4).
+        node.state = ElementState::Complete;
+        mark_transition(node, TransitionKind::End);
+        return;
+    }
+
     node.state = ElementState::Running;
     mark_transition(node, TransitionKind::Start);
+
+    if (node.kind == Node::Kind::Group) {
+        // §8.4.4: "the number of executions of a ManeuverGroup corresponds to
+        // the number of startTransitions performed from the standbyState to
+        // the runningState".
+        ++node.executions;
+    }
 
     if (node.kind == Node::Kind::Event) {
         // This startTransition is one of the event's executions (§8.4.2.1).
@@ -340,8 +358,7 @@ void Scheduler::enter_running(Node& node, const ir::EvaluationContext& context,
     // completes instantly, §8.4.4). The storyboard itself never completes
     // this way (§8.4.7).
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
-        node.state = ElementState::Complete;
-        mark_transition(node, TransitionKind::End);
+        end_group_execution_or_complete(node);
     }
 }
 
@@ -508,11 +525,32 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
     }
 
     if (node.state == ElementState::Standby) {
-        if (!evaluate_trigger(node.start_trigger, context)) {
+        // A ManeuverGroup owns no start trigger: it "waits until the start
+        // trigger is executed. The start trigger is inherited from the
+        // enclosing Act" (§8.4.4). Reaching this line means the Act is running
+        // — update() only recurses into a running parent — so the inherited
+        // trigger has fired and the group starts. It starts on the evaluation
+        // after the one that re-armed it, which is what bounds a group whose
+        // maneuvers complete instantly to one execution per evaluation.
+        const bool inherited_start = node.kind == Node::Kind::Group;
+        if (!inherited_start && !evaluate_trigger(node.start_trigger, context)) {
+            return;
+        }
+        if (inherited_start && node.transition_evaluation == evaluation_) {
+            // The group already ended an execution in this evaluation — it was
+            // started by its parent's enter_running and re-armed before this
+            // walk reached it. One execution per evaluation, wherever in the
+            // tree the group sits.
             return;
         }
         enter_running(node, context, fire, stop);
-        if (node.state == ElementState::Complete) {
+        if (node.state != ElementState::Running) {
+            // The element completed inside its own start, or — for a
+            // ManeuverGroup whose maneuvers finished instantly — already
+            // re-armed. Either way it is done for this evaluation: falling
+            // through would advance it a second time, which would spend two
+            // executions in one evaluation and make the pacing depend on where
+            // in the tree the element happens to sit.
             return;
         }
     }
@@ -527,8 +565,50 @@ void Scheduler::update(Node& node, const ir::EvaluationContext& context, const F
         }
     }
     if (node.kind != Node::Kind::Storyboard && all_children_complete(node)) {
+        end_group_execution_or_complete(node);
+    }
+}
+
+void Scheduler::end_group_execution_or_complete(Node& node) {
+    // §8.4.4: a ManeuverGroup that ends regularly with executions left
+    // "transfers from runningState into standbyState and waits until the start
+    // trigger is executed", and only completes once the executions are
+    // exhausted. Every other element kind just completes.
+    if (node.kind != Node::Kind::Group || node.executions >= node.max_executions) {
         node.state = ElementState::Complete;
         mark_transition(node, TransitionKind::End);
+        return;
+    }
+    node.state = ElementState::Standby;
+    mark_transition(node, TransitionKind::End);
+    reset_subtree(node);
+}
+
+void Scheduler::reset_subtree(Node& node) {
+    // A re-armed group runs its subtree from the beginning: descendants return
+    // to standbyState with their execution tallies and their trigger histories
+    // cleared, so the second execution behaves exactly like the first
+    // (ADR-0026). Without the history reset a rising edge in execution 2 would
+    // depend on samples taken during execution 1, and the group's executions
+    // would not be independent.
+    for (Node& child : node.children) {
+        child.state = ElementState::Standby;
+        child.transition = TransitionKind::None;
+        child.transition_evaluation = 0;
+        child.executions = 0;
+        child.running_actions.clear();
+        child.has_ongoing = false;
+        reset_trigger(child.start_trigger);
+        reset_trigger(child.stop_trigger);
+        reset_subtree(child);
+    }
+}
+
+void Scheduler::reset_trigger(TriggerState& trigger) {
+    for (ConditionState& condition : trigger.conditions) {
+        condition.previous_raw = false;
+        condition.has_previous = false;
+        condition.history.clear();
     }
 }
 
