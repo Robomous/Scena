@@ -154,7 +154,7 @@ IR lands (p4-s4).
 
 | Element | Section | Status | Sprint | Tests | Notes |
 |---|---|---|---|---|---|
-| OpenScenario root / FileHeader (revMajor/revMinor 1.0–1.3) | class ref | In | p4-s1 | — planned (p4-s1) | 1.4 rejected with diagnostic |
+| OpenScenario root / FileHeader (revMajor/revMinor 1.0–1.3) | class ref | In | p4-s1 | `xml_infra_test.cpp` | Document layer landed (ADR-0020): binary-mode CRLF-safe reading, encoding detection (UTF-8 ±BOM, UTF-16), `std::from_chars`-only conversions, required FileHeader attributes, ISO 8601 date warning (`data_type.time_format`), `.xosc` extension warning (`general.file_ending`), OpenScenarioCategory kind detection, xpath-ish diagnostic paths with line/column. 1.4 and later 1.x rejected `UnsupportedFeature`, other majors `ValidationError`, both citing `xml.valid_schema` |
 | ScenarioDefinition (incl. RoadNetwork reference) | class ref | In | p4-s2 | — planned (p4-s2) | RoadNetwork logic file handed to road backend/host |
 | ParameterDeclaration + ValueConstraint(Group) | §9.1 | In | p4-s3 | — planned (p4-s3) |  |
 | Expressions `$param`, `${...}` | §9.2 | In | p4-s3 | — planned (p4-s3) | ≥1.1; full operator whitelist + typing rules; 1.4-only constant `pi` rejected |

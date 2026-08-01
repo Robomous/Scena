@@ -35,7 +35,8 @@ rules. This script (the p5-s6 exit criterion names it) checks three:
   3. **Every In row's Tests cell either names the test suites that prove it
      or carries a planned/deferred marker with an owner** (a sprint id or a
      `#issue` reference), and every test file named anywhere in a Tests
-     column exists under `core/tests/` or `python/tests/`. This is the rule
+     column exists in one of the tree's test directories (TEST_DIRS: the
+     kernel, Python, XML frontend and OpenDRIVE backend suites). This is the rule
      the P5 pillar exit criterion states ("a named test" per In row) and the
      one that keeps the Status column honest: "In" declares scope, the Tests
      cell shows whether the row has actually been delivered. Applies to
@@ -76,8 +77,14 @@ STATUSES = {"In", "Post", "Excl"}
 STATUS_HEADERS = {"status", "check", "exec"}
 SPRINT_HEADERS = {"sprint", "sprint(s)", "sprints"}
 TESTS_HEADERS = {"tests", "test", "test suites"}
-# Where a named test file must exist.
-TEST_DIRS = (Path("core") / "tests", Path("python") / "tests")
+# Where a named test file must exist — every suite directory in the tree, so
+# a row may name the suite that actually proves it wherever it lives.
+TEST_DIRS = (
+    Path("core") / "tests",
+    Path("python") / "tests",
+    Path("frontends") / "xml" / "tests",
+    Path("roads") / "opendrive" / "tests",
+)
 
 
 def roadmap_sprints() -> set[str]:
