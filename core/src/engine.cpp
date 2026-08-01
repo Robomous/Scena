@@ -75,6 +75,10 @@ constexpr const char* kRuleControllerActionReferences =
     "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_action_references";
 constexpr const char* kRuleControllerConditionReferences =
     "asam.net:xosc:1.0.0:reference_control.traffic_signal_controller_condition_references";
+constexpr const char* kRuleTargetSpeedMaxSpeed =
+    "asam.net:xosc:1.2.0:scenario_logic.targetspeed_maxspeed_general";
+constexpr const char* kRuleTargetSpeedMaxSpeedProfile =
+    "asam.net:xosc:1.2.0:scenario_logic.targetspeed_maxspeed_speedprofileaction";
 
 using NamedValueStore = std::map<std::string, std::string, std::less<>>;
 
@@ -261,13 +265,16 @@ void error(DiagnosticSink& sink, Status code, std::string message, std::string p
     sink.report(std::move(diagnostic));
 }
 
-/// Appends one Warning diagnostic to `sink` (no rule id).
-void warn(DiagnosticSink& sink, Status code, std::string message, std::string path) {
+/// Appends one Warning diagnostic to `sink`, citing a normative rule id when
+/// the standard defines one for the advice being given.
+void warn(DiagnosticSink& sink, Status code, std::string message, std::string path,
+          std::string rule_id = {}) {
     Diagnostic diagnostic;
     diagnostic.severity = Severity::Warning;
     diagnostic.code = code;
     diagnostic.message = std::move(message);
     diagnostic.path = std::move(path);
+    diagnostic.rule_id = std::move(rule_id);
     sink.report(std::move(diagnostic));
 }
 
@@ -839,6 +846,19 @@ std::size_t phase_index(const std::vector<double>& bounds, double value) {
 ///
 /// The global actions (§7.4.2) validate their own references here too — they
 /// have no actor entity, so the caller's target check does not apply to them.
+/// The actor's `Performance.maxSpeed`, when it has one that constrains. Only a
+/// Vehicle carries a Performance envelope (§Performance), and a non-positive
+/// maxSpeed is treated as "no limit" the same way the controllers treat it.
+template <typename Records>
+std::optional<double> actor_max_speed(const ir::Action& action, const Records& records) {
+    const auto it = records.find(action.entity_id());
+    if (it == records.end() || !it->second.performance.has_value() ||
+        !(it->second.performance->max_speed > 0.0)) {
+        return std::nullopt;
+    }
+    return it->second.performance->max_speed;
+}
+
 /// Validates a Position target (§6.3.8) at init: numeric fields must be finite,
 /// and a variant that references an entity must name a declared one. Variants
 /// that need a road, route, trajectory or geodetic backend are accepted here —
@@ -1089,6 +1109,17 @@ void validate_action_content(const ir::Action& action, const std::string& path,
                       "distance-dimensioned transition",
                       path);
             }
+        } else if (td.following_mode == ir::FollowingMode::Follow) {
+            // Rule targetspeed_maxspeed_general: with followingMode=follow the
+            // target "should not exceed the vehicle's maxSpeed". A "should" is
+            // advisory, so it warns; the controller clamps the target anyway.
+            const std::optional<double> max_speed = actor_max_speed(action, records);
+            if (max_speed.has_value() && speed->target_speed() > *max_speed) {
+                warn(sink, Status::ValidationError,
+                     "speed action target exceeds the actor's maxSpeed with followingMode=follow; "
+                     "the target is clamped to maxSpeed",
+                     path, kRuleTargetSpeedMaxSpeed);
+            }
         }
         return;
     }
@@ -1098,6 +1129,35 @@ void validate_action_content(const ir::Action& action, const std::string& path,
         if (profile->entries().empty()) {
             error(sink, Status::ValidationError, "speed profile action has no entries", path);
         }
+        // §SpeedProfileAction `entityRef`: the entity the entries are deltas on
+        // is a prerequisite, exactly like a RelativeTargetSpeed's reference.
+        if (profile->is_relative() && records.find(profile->entity_ref()) == records.end()) {
+            error(sink, Status::SemanticError,
+                  "speed profile action reference entity '" + profile->entity_ref() +
+                      "' is unknown",
+                  path);
+        }
+        if (profile->constraints().has_value()) {
+            const ir::DynamicConstraints& constraints = *profile->constraints();
+            const auto invalid = [](const std::optional<double>& value) {
+                return value.has_value() && !(*value >= 0.0 && std::isfinite(*value));
+            };
+            if (invalid(constraints.max_acceleration) || invalid(constraints.max_deceleration) ||
+                invalid(constraints.max_acceleration_rate) ||
+                invalid(constraints.max_deceleration_rate) || invalid(constraints.max_speed)) {
+                error(sink, Status::ValidationError,
+                      "speed profile action dynamic constraints must be finite and in range "
+                      "[0..inf[",
+                      path);
+            }
+        }
+        // Rule targetspeed_maxspeed_speedprofileaction: the maxSpeed advice
+        // applies only with followingMode=follow and no entityRef — a relative
+        // entry is a delta, not a speed.
+        const std::optional<double> max_speed =
+            profile->following_mode() == ir::FollowingMode::Follow && !profile->is_relative()
+                ? actor_max_speed(action, records)
+                : std::nullopt;
         std::size_t entry_index = 0;
         for (const ir::SpeedProfileEntry& entry : profile->entries()) {
             const std::string entry_path = path + "/entry[" + std::to_string(entry_index) + "]";
@@ -1109,6 +1169,12 @@ void validate_action_content(const ir::Action& action, const std::string& path,
             if (entry.time.has_value() && (!std::isfinite(*entry.time) || *entry.time < 0.0)) {
                 error(sink, Status::ValidationError,
                       "speed profile entry time must be finite and in range [0..inf[", entry_path);
+            }
+            if (max_speed.has_value() && entry.speed > *max_speed) {
+                warn(sink, Status::ValidationError,
+                     "speed profile entry exceeds the actor's maxSpeed with "
+                     "followingMode=follow; the target is clamped to maxSpeed",
+                     entry_path, kRuleTargetSpeedMaxSpeedProfile);
             }
         }
         return;
@@ -1677,6 +1743,24 @@ double effective_limit(const std::optional<double>& constraint,
         limit = std::fmin(limit, *envelope);
     }
     return limit;
+}
+
+/// The limit in force where a DynamicConstraints value overrides the
+/// Performance envelope rather than merely joining it: "these settings has
+/// precedence over any Performance settings" (§SpeedProfileAction). A present,
+/// positive `constraint` wins outright — including when it is the looser of the
+/// two — and only an absent or non-positive one falls back to the envelope.
+/// The distance-keeping actions keep the tighter-of-both reading of
+/// `effective_limit`: their §DynamicConstraints text states no precedence.
+double overriding_limit(const std::optional<double>& constraint,
+                        const std::optional<double>& envelope) {
+    if (constraint.has_value() && *constraint > 0.0) {
+        return *constraint;
+    }
+    if (envelope.has_value() && *envelope > 0.0) {
+        return *envelope;
+    }
+    return std::numeric_limits<double>::infinity();
 }
 
 /// Validates the traffic signal controllers of a scenario (§6.11) in document
@@ -2852,8 +2936,16 @@ runtime::ActionOutcome Engine::apply(const ir::Action& action) {
         // A relative speed target needs its reference entity to be in the
         // scenario (§7.5.2.2 prerequisites); a DeleteEntityAction on the
         // reference stops the action, one-shot and continuous alike.
+        const std::string* speed_reference = nullptr;
         if (speed_action != nullptr && speed_action->is_relative()) {
-            const std::string& reference = speed_action->relative_target()->entity_ref;
+            speed_reference = &speed_action->relative_target()->entity_ref;
+        } else if (profile_action != nullptr && profile_action->is_relative()) {
+            // An entity-relative speed profile has the same prerequisite: its
+            // entries mean nothing without the entity they are deltas on.
+            speed_reference = &profile_action->entity_ref();
+        }
+        if (speed_reference != nullptr) {
+            const std::string& reference = *speed_reference;
             const auto reference_it = entities_.find(reference);
             if (reference_it == entities_.end() || !reference_it->second.active) {
                 warn_once("entities/" + reference + "/speedReference", Status::UnknownEntity,
@@ -4073,9 +4165,36 @@ runtime::LongitudinalController Engine::build_speed_controller(const ir::SpeedAc
     }
     seg.to = target;
 
+    // followingMode=follow trades strict shape adherence for feasibility: the
+    // realised shape has zero acceleration at both endpoints, and the duration
+    // grows until the peak acceleration and the peak jerk both fit inside the
+    // Performance envelope (ADR-0024). Position mode keeps the authored shape
+    // and clamps acceleration only.
+    const bool follow = td.following_mode == ir::FollowingMode::Follow;
+    seg.shape = follow ? runtime::follow_shape(td.shape) : td.shape;
+
     if (td.dimension == ir::DynamicsDimension::Distance) {
         seg.by_distance = true;
         seg.span = td.value; // metres; <= 0 ⇒ instantaneous
+    } else if (follow) {
+        const double delta = seg.to - seg.from;
+        const bool accelerating = delta >= 0.0;
+        const std::optional<double> rate_limit =
+            perf.has_value()
+                ? (accelerating ? perf->max_acceleration_rate : perf->max_deceleration_rate)
+                : std::nullopt;
+        // A SpeedAction carries no DynamicConstraints of its own (§SpeedAction),
+        // so the Performance envelope is the whole constraint set here.
+        seg.span = runtime::constrained_duration(
+            seg.shape, delta,
+            perf.has_value() ? (accelerating ? perf->max_acceleration : perf->max_deceleration)
+                             : std::numeric_limits<double>::infinity(),
+            rate_limit.value_or(std::numeric_limits<double>::infinity()),
+            // The authored dynamics are a lower bound: constraints may only slow
+            // a transition down, never speed it up. A Step asks for zero.
+            runtime::transition_duration(
+                ir::TransitionDynamics{seg.shape, td.dimension, td.value, td.following_mode},
+                seg.from, seg.to));
     } else {
         double duration = runtime::transition_duration(td, seg.from, seg.to);
         // Performance acceleration clamp (time/rate dimensions): extend the
@@ -4284,31 +4403,89 @@ runtime::LongitudinalController
 Engine::build_profile_controller(const ir::SpeedProfileAction& action,
                                  const EntityRecord& record) const {
     const std::optional<ir::Performance>& perf = record.performance;
+    const std::optional<ir::DynamicConstraints>& constraints = action.constraints();
+
+    // An entity-relative profile reads every entry as a delta on the reference
+    // entity's speed (§SpeedProfileAction `entityRef`). It is resolved once, at
+    // install: the profile is a series of authored targets over time, not a
+    // tracking controller, so re-reading the reference each step would give the
+    // authored times a meaning the standard does not assign them. A reference
+    // that is gone contributes nothing, which apply() has already reported.
+    double reference_speed = 0.0;
+    if (action.is_relative()) {
+        const auto it = entities_.find(action.entity_ref()); // heterogeneous lookup
+        if (it != entities_.end() && it->second.active) {
+            reference_speed = it->second.state.speed;
+        }
+    }
+
+    // §DynamicConstraints on a SpeedProfileAction "has precedence over any
+    // Performance settings", so each limit is overridden rather than merged.
+    const auto envelope = [&perf](double ir::Performance::*member) -> std::optional<double> {
+        return perf.has_value() ? std::optional<double>(perf.value().*member) : std::nullopt;
+    };
+    const auto envelope_opt =
+        [&perf](std::optional<double> ir::Performance::*member) -> std::optional<double> {
+        return perf.has_value() ? perf.value().*member : std::nullopt;
+    };
+    const auto constraint =
+        [&constraints](
+            std::optional<double> ir::DynamicConstraints::*member) -> std::optional<double> {
+        return constraints.has_value() ? constraints.value().*member : std::nullopt;
+    };
+
+    const double acceleration_limit =
+        overriding_limit(constraint(&ir::DynamicConstraints::max_acceleration),
+                         envelope(&ir::Performance::max_acceleration));
+    const double deceleration_limit =
+        overriding_limit(constraint(&ir::DynamicConstraints::max_deceleration),
+                         envelope(&ir::Performance::max_deceleration));
+    const double acceleration_rate_limit =
+        overriding_limit(constraint(&ir::DynamicConstraints::max_acceleration_rate),
+                         envelope_opt(&ir::Performance::max_acceleration_rate));
+    const double deceleration_rate_limit =
+        overriding_limit(constraint(&ir::DynamicConstraints::max_deceleration_rate),
+                         envelope_opt(&ir::Performance::max_deceleration_rate));
+    const double speed_limit = overriding_limit(constraint(&ir::DynamicConstraints::max_speed),
+                                                envelope(&ir::Performance::max_speed));
+
+    // §SpeedProfileAction: position interpolates strictly linearly, follow
+    // produces a smoother curve whose "acceleration is zero at the start and
+    // end of the profile" — the Cubic shape (ADR-0024).
+    const bool follow = action.following_mode() == ir::FollowingMode::Follow;
+    const ir::DynamicsShape shape =
+        follow ? runtime::follow_shape(ir::DynamicsShape::Linear) : ir::DynamicsShape::Linear;
+
     runtime::LongitudinalController controller;
     double from = record.state.speed;
     for (const ir::SpeedProfileEntry& entry : action.entries()) {
-        double to = entry.speed;
-        if (perf.has_value() && perf->max_speed > 0.0 && to > perf->max_speed) {
-            to = perf->max_speed;
+        double to = action.is_relative() ? reference_speed + entry.speed : entry.speed;
+        if (std::isfinite(speed_limit) && to > speed_limit) {
+            to = speed_limit;
         }
         runtime::LongitudinalController::Segment seg;
         seg.from = from;
         seg.to = to;
-        // Position mode: strictly linear interpolation between targets
-        // (§SpeedProfileAction).
-        seg.shape = ir::DynamicsShape::Linear;
+        seg.shape = shape;
         seg.by_distance = false;
-        if (entry.time.has_value()) {
+        const bool accelerating = to >= from;
+        if (follow) {
+            // The authored time is the floor; the acceleration and jerk limits
+            // stretch the segment until the smooth curve fits inside them.
+            seg.span = runtime::constrained_duration(
+                shape, to - from, accelerating ? acceleration_limit : deceleration_limit,
+                accelerating ? acceleration_rate_limit : deceleration_rate_limit,
+                entry.time.value_or(0.0));
+        } else if (entry.time.has_value()) {
             // Authored duration is honoured exactly (strict linear); a zero
             // time is an instantaneous jump.
             seg.span = *entry.time;
         } else {
-            // No time: reach the target as soon as the Performance envelope
-            // allows. Without a Performance limit the jump is instantaneous.
+            // No time: reach the target as soon as the acceleration limit
+            // allows. Unconstrained, the jump is instantaneous.
             const double delta = std::fabs(to - from);
-            const double limit = to >= from ? (perf.has_value() ? perf->max_acceleration : 0.0)
-                                            : (perf.has_value() ? perf->max_deceleration : 0.0);
-            seg.span = limit > 0.0 && delta > 0.0 ? delta / limit : 0.0;
+            const double limit = accelerating ? acceleration_limit : deceleration_limit;
+            seg.span = std::isfinite(limit) && limit > 0.0 && delta > 0.0 ? delta / limit : 0.0;
         }
         controller.segments.push_back(seg);
         from = to;

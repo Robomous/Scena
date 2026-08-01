@@ -86,6 +86,61 @@ double shape_peak_gradient_factor(ir::DynamicsShape shape) noexcept {
     return 1.0; // unreachable
 }
 
+double shape_peak_jerk_factor(ir::DynamicsShape shape) noexcept {
+    switch (shape) {
+    case ir::DynamicsShape::Step:
+    case ir::DynamicsShape::Linear:
+        // Both hold the gradient constant across the span and drop it to zero
+        // instantaneously at the ends: the second derivative is unbounded, so no
+        // finite duration bounds the jerk.
+        return std::numeric_limits<double>::infinity();
+    case ir::DynamicsShape::Cubic:
+        // g''(p) = 6 - 12p for 3p^2 - 2p^3; |g''| peaks at 6 on both endpoints.
+        return 6.0;
+    case ir::DynamicsShape::Sinusoidal:
+        // g''(p) = (pi^2/2) * cosine of pi*p; |g''| peaks at pi^2/2 on both
+        // endpoints. Written as a product so the constant stays exact.
+        return kPi * kPi * 0.5;
+    }
+    return std::numeric_limits<double>::infinity(); // unreachable
+}
+
+ir::DynamicsShape follow_shape(ir::DynamicsShape shape) noexcept {
+    // Sinusoidal already has a zero gradient at both endpoints, so it survives
+    // follow mode unchanged; Linear, Step and Cubic all resolve to Cubic.
+    return shape == ir::DynamicsShape::Sinusoidal ? ir::DynamicsShape::Sinusoidal
+                                                  : ir::DynamicsShape::Cubic;
+}
+
+double constrained_duration(ir::DynamicsShape shape, double delta, double acceleration_limit,
+                            double jerk_limit, double authored) noexcept {
+    double duration = authored > 0.0 && std::isfinite(authored) ? authored : 0.0;
+    const double magnitude = std::fabs(delta);
+    if (!(magnitude > 0.0) || !std::isfinite(magnitude)) {
+        return duration; // nothing to acquire
+    }
+    if (acceleration_limit > 0.0 && std::isfinite(acceleration_limit)) {
+        // Peak |v'| = factor * |delta| / T <= a  =>  T >= factor * |delta| / a.
+        const double minimum = shape_peak_gradient_factor(shape) * magnitude / acceleration_limit;
+        if (minimum > duration) {
+            duration = minimum;
+        }
+    }
+    if (jerk_limit > 0.0 && std::isfinite(jerk_limit)) {
+        // Peak |v''| = factor * |delta| / T^2 <= j  =>  T >= sqrt(factor * |delta| / j).
+        // A shape with an unbounded second derivative gives an infinite factor;
+        // the caller keeps those out by realising follow mode with follow_shape.
+        const double factor = shape_peak_jerk_factor(shape);
+        if (std::isfinite(factor)) {
+            const double minimum = std::sqrt(factor * magnitude / jerk_limit);
+            if (minimum > duration) {
+                duration = minimum;
+            }
+        }
+    }
+    return duration;
+}
+
 double transition_duration(const ir::TransitionDynamics& td, double from, double to) noexcept {
     if (td.shape == ir::DynamicsShape::Step) {
         return 0.0;

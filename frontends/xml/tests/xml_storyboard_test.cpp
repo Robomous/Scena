@@ -543,6 +543,54 @@ TEST(Actions, LongitudinalFamilyLowers) {
     }
 }
 
+TEST(Actions, SpeedProfileActionLowersEntityRefAndDynamicConstraints) {
+    // #62: both were read and reported as out of scope before; they now lower.
+    DiagnosticSink sink;
+    Status status = Status::Ok;
+    const std::shared_ptr<scena::ir::Action> action = load_private_action(
+        R"(<LongitudinalAction><SpeedProfileAction followingMode="follow" entityRef="lead">
+             <DynamicConstraints maxAcceleration="3.0" maxAccelerationRate="1.5" maxSpeed="42.0"/>
+             <SpeedProfileEntry speed="-2.0" time="1.0"/><SpeedProfileEntry speed="0.0"/>
+           </SpeedProfileAction></LongitudinalAction>)",
+        sink, status);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(status, Status::Ok);
+    const auto* profile = dynamic_cast<const scena::ir::SpeedProfileAction*>(action.get());
+    ASSERT_NE(profile, nullptr);
+    EXPECT_EQ(profile->following_mode(), scena::ir::FollowingMode::Follow);
+    EXPECT_TRUE(profile->is_relative());
+    EXPECT_EQ(profile->entity_ref(), "lead");
+    ASSERT_TRUE(profile->constraints().has_value());
+    EXPECT_EQ(profile->constraints()->max_acceleration, 3.0);
+    EXPECT_EQ(profile->constraints()->max_acceleration_rate, 1.5);
+    EXPECT_EQ(profile->constraints()->max_speed, 42.0);
+    EXPECT_FALSE(profile->constraints()->max_deceleration.has_value());
+    ASSERT_EQ(profile->entries().size(), 2u);
+    EXPECT_EQ(profile->entries().at(0).speed, -2.0);
+    EXPECT_EQ(profile->entries().at(0).time, 1.0);
+    EXPECT_FALSE(profile->entries().at(1).time.has_value());
+    // Nothing about the action is reported as unsupported any more.
+    for (const Diagnostic& diagnostic : sink.diagnostics()) {
+        EXPECT_NE(diagnostic.code, Status::UnsupportedFeature) << diagnostic.message;
+    }
+}
+
+TEST(Actions, SpeedProfileActionWithoutEntityRefStaysAbsolute) {
+    DiagnosticSink sink;
+    Status status = Status::Ok;
+    const std::shared_ptr<scena::ir::Action> action = load_private_action(
+        R"(<LongitudinalAction><SpeedProfileAction followingMode="position">
+             <SpeedProfileEntry speed="10.0" time="1.0"/>
+           </SpeedProfileAction></LongitudinalAction>)",
+        sink, status);
+    ASSERT_NE(action, nullptr);
+    const auto* profile = dynamic_cast<const scena::ir::SpeedProfileAction*>(action.get());
+    ASSERT_NE(profile, nullptr);
+    EXPECT_FALSE(profile->is_relative());
+    EXPECT_TRUE(profile->entity_ref().empty());
+    EXPECT_FALSE(profile->constraints().has_value());
+}
+
 TEST(Actions, LateralAndRoutingFamiliesLower) {
     struct Case {
         std::string_view xml;

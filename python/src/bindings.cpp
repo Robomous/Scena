@@ -835,9 +835,18 @@ NB_MODULE(_scena, m) {
     nb::class_<ir::SpeedProfileAction, ir::Action>(m, "SpeedProfileAction")
         .def(nb::init<std::string, std::vector<ir::SpeedProfileEntry>, ir::FollowingMode>(),
              "entity_id"_a, "entries"_a, "following_mode"_a = ir::FollowingMode::Position)
+        .def(nb::init<std::string, std::vector<ir::SpeedProfileEntry>, ir::FollowingMode,
+                      std::string, std::optional<ir::DynamicConstraints>>(),
+             "entity_id"_a, "entries"_a, "following_mode"_a, "entity_ref"_a,
+             "constraints"_a = nb::none(),
+             "Entity-relative profile (entries are deltas on entity_ref's speed) with optional "
+             "DynamicConstraints, which take precedence over the actor's Performance envelope.")
         .def_prop_ro("entity_id", &ir::SpeedProfileAction::entity_id)
         .def_prop_ro("entries", &ir::SpeedProfileAction::entries)
-        .def_prop_ro("following_mode", &ir::SpeedProfileAction::following_mode);
+        .def_prop_ro("following_mode", &ir::SpeedProfileAction::following_mode)
+        .def_prop_ro("entity_ref", &ir::SpeedProfileAction::entity_ref)
+        .def_prop_ro("is_relative", &ir::SpeedProfileAction::is_relative)
+        .def_prop_ro("constraints", &ir::SpeedProfileAction::constraints);
     nb::class_<ir::TeleportAction, ir::Action>(m, "TeleportAction")
         .def(nb::init<std::string, ir::Position>(), "entity_id"_a, "position"_a)
         .def_prop_ro("entity_id", &ir::TeleportAction::entity_id)

@@ -475,6 +475,46 @@ scn_status scn_engine_add_speed_profile_action(scn_engine* engine, const char* e
     }
 }
 
+scn_status scn_engine_add_speed_profile_action_ex(
+    scn_engine* engine, const char* entity_id, const char* reference_entity_id,
+    const scn_speed_profile_entry* entries, size_t entry_count, scn_following_mode following_mode,
+    const scn_dynamic_constraints* constraints, double at_time, scn_event_priority priority,
+    int maximum_execution_count) {
+    scena::ir::EventPriority ir_priority = scena::ir::EventPriority::Parallel;
+    if (engine == nullptr || entity_id == nullptr || entries == nullptr || entry_count == 0 ||
+        maximum_execution_count < 0 || !to_ir_priority(priority, ir_priority) ||
+        static_cast<unsigned>(following_mode) > static_cast<unsigned>(SCN_FOLLOWING_MODE_FOLLOW)) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        std::vector<scena::ir::SpeedProfileEntry> ir_entries;
+        ir_entries.reserve(entry_count);
+        for (size_t i = 0; i < entry_count; ++i) {
+            scena::ir::SpeedProfileEntry entry;
+            entry.speed = entries[i].speed;
+            // A negative time means "unspecified" across the ABI.
+            if (entries[i].time >= 0.0) {
+                entry.time = entries[i].time;
+            }
+            ir_entries.push_back(entry);
+        }
+        std::optional<scena::ir::DynamicConstraints> ir_constraints;
+        if (constraints != nullptr) {
+            ir_constraints = from_c_constraints(*constraints);
+        }
+        append_storyboard_event(
+            engine, at_time, ir_priority, maximum_execution_count,
+            std::make_shared<scena::ir::SpeedProfileAction>(
+                entity_id, std::move(ir_entries),
+                static_cast<scena::ir::FollowingMode>(following_mode),
+                reference_entity_id != nullptr ? std::string(reference_entity_id) : std::string(),
+                std::move(ir_constraints)));
+        return SCN_OK;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
 scn_status scn_engine_add_relative_speed_action(
     scn_engine* engine, const char* entity_id, const char* reference_entity_id, double value,
     scn_speed_target_value_type value_type, int continuous, const scn_transition_dynamics* dynamics,
