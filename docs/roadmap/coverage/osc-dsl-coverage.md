@@ -28,8 +28,8 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |
 |---|---|---|---|---|---|
-| Lexical structure (indentation blocks, comments, continuation, escaped identifiers) | §7.2.1 | In | n/a | p7-s1 | Offside rule → INDENT/DEDENT |
-| Literals (int/uint/hex/float/bool/string/physical) | §7.2.1.5.2 | In | In | p7-s1, p8-s1 | Physical literal = number + mandatory unit |
+| Lexical structure (indentation blocks, comments, continuation, escaped identifiers) | §7.2.1 | In | n/a | p7-s1 | **Landed** (`dsl_lexer_test.cpp`): logical lines with explicit `\` and implicit bracket joining, CR/LF/CRLF, offside rule → INDENT/DEDENT with 8-column tab stops, `#` comments, both identifier forms. No `Keyword` token kind — §7.2.1.5.1 makes reserved words positional, so the parser decides (ADR-0027) |
+| Literals (int/uint/hex/float/bool/string/physical) | §7.2.1.5.2 | In | In | p7-s1, p8-s1 | **Lexing landed** (`dsl_lexer_test.cpp`): uint/int/hex with exact 64-bit values, every float form incl. `inf`/`nan`, short and long strings with escapes, physical literal = number joined to a unit name with no intervening whitespace. `std::from_chars`, never locale-dependent parsing |
 | Physical types + units, SI dimensions, conversion factors/offsets | §7.2.2.2.1, §7.3.4 | In | In | p7-s3, p8-s1 | Dimension checking; global unit namespace |
 | Enums (incl. `enum!member`, extension) | §7.3.3 | In | In | p7-s3, p8-s1 | |
 | Primitive types (bool, int, uint, float, string) | §7.3.2 | In | In | p7-s3 | IEEE 754 float; 64-bit int/uint |

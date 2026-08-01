@@ -83,6 +83,7 @@ TEST_DIRS = (
     Path("core") / "tests",
     Path("python") / "tests",
     Path("frontends") / "xml" / "tests",
+    Path("frontends") / "dsl" / "tests",
     Path("roads") / "opendrive" / "tests",
 )
 
