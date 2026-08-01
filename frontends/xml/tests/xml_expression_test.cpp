@@ -45,7 +45,12 @@ std::string document_with(std::string_view declarations, std::string_view x,
     return std::string(R"(<OpenSCENARIO><FileHeader revMajor="1" revMinor="2"
              date="2026-08-01T00:00:00" description="fixture" author="Scena"/>)") +
            std::string(declarations) +
-           R"(<Storyboard><Init><Actions><Private entityRef="ego"><PrivateAction>
+           R"(<Entities><ScenarioObject name="ego"><Vehicle name="v" vehicleCategory="car">
+             <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+             <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+             <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+           </Vehicle></ScenarioObject></Entities>
+           <Storyboard><Init><Actions><Private entityRef="ego"><PrivateAction>
              <TeleportAction><Position><WorldPosition x=")" +
            std::string(x) + R"(" y=")" + std::string(y) + R"("/></Position></TeleportAction>
            </PrivateAction></Private></Actions></Init></Storyboard></OpenSCENARIO>)";
@@ -97,7 +102,11 @@ TEST(Parameters, AReferenceSubstitutesTheDeclaredValue) {
     Status status = Status::Ok;
     EXPECT_DOUBLE_EQ(loaded_x(kSpeedDeclaration, "$speed", sink, status), 30.0);
     EXPECT_EQ(status, Status::Ok);
-    EXPECT_TRUE(sink.diagnostics().empty());
+    // The fixture declares more than it uses, which the validation pass
+    // warns about; what matters here is that nothing errored.
+    for (const Diagnostic& diagnostic : sink.diagnostics()) {
+        EXPECT_NE(diagnostic.severity, Severity::Error);
+    }
 }
 
 TEST(Parameters, AnUndeclaredReferenceIsASemanticError) {
@@ -141,6 +150,11 @@ TEST(Parameters, AnInnerDeclarationShadowsAnOuterOne) {
       <ParameterDeclarations>
         <ParameterDeclaration name="offset" parameterType="double" value="1.0"/>
       </ParameterDeclarations>
+      <Entities><ScenarioObject name="ego"><Vehicle name="v" vehicleCategory="car">
+        <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4" height="1.5"/></BoundingBox>
+        <Performance maxSpeed="60" maxAcceleration="5" maxDeceleration="9"/>
+        <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+      </Vehicle></ScenarioObject></Entities>
       <Storyboard>
         <Init><Actions><Private entityRef="ego"><PrivateAction><TeleportAction>
           <Position><WorldPosition x="$offset" y="0"/></Position>

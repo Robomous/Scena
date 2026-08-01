@@ -159,7 +159,11 @@ std::optional<std::string> resolve_attribute_text(ReadContext& ctx, const pugi::
         const std::string_view body = raw.substr(2, raw.size() - 3);
         ExpressionError error;
         const std::optional<Value> value = evaluate_expression(
-            body, [&ctx](std::string_view name) { return ctx.parameters().find(name); },
+            body,
+            [&ctx](std::string_view name) {
+                ctx.note_parameter_reference(std::string(name));
+                return ctx.parameters().find(name);
+            },
             // The `pi` constant is a 1.4 addition; a document in the targeted
             // 1.0-1.3 range does not have it.
             ctx.version_at_least(1, 4), error);
@@ -183,6 +187,7 @@ std::optional<std::string> resolve_attribute_text(ReadContext& ctx, const pugi::
                           kRuleParameterName);
             return std::nullopt;
         }
+        ctx.note_parameter_reference(std::string(name));
         const std::optional<Value> value = ctx.parameters().find(name);
         if (!value.has_value()) {
             ctx.report_at(node, Severity::Error, Status::SemanticError,

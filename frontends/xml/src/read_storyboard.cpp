@@ -121,6 +121,12 @@ bool read_event(ReadContext& ctx, const pugi::xml_node& node,
 
     bool ok = require_string(ctx, node, "name", out.name);
     ok = read_enum(ctx, node, "priority", kPriorities, out.priority) && ok;
+    if (const pugi::xml_attribute priority = node.attribute("priority");
+        priority && std::string_view(priority.value()) == "overwrite") {
+        // A lexical synonym of `override` whose normative description is
+        // word for word the same (ADR-0005); 1.3 renamed it.
+        warn_deprecated_since(ctx, node, 1, 3, "use priority 'override' (1.3)");
+    }
     ok = optional_int(ctx, node, "maximumExecutionCount", out.maximum_execution_count) && ok;
 
     if (const pugi::xml_node trigger = node.child("StartTrigger")) {

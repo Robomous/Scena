@@ -12,6 +12,10 @@ The user guide grows sprint by sprint along the
   constraints, `$references` and `${expressions}` with the operator whitelist
   and typing rules, why expression evaluation is deterministic, and how
   variables differ from parameters.
+- [OpenSCENARIO XML versions and validation](xml-versions.md) — which
+  revisions load, why the runtime does not branch on the minor version, the
+  migration table for every accepted deprecated construct, and what the
+  file-level validation pass checks (with the rule it cites).
 - [Catalogs, entity selections and controllers](catalogs.md) — cross-file
   reuse: catalog directories and their reproducible scan order, parameters
   in catalog entries and the isolation rule, entity selections and how they

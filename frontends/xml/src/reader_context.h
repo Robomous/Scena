@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -160,6 +161,17 @@ public:
     /// Records a selection's expanded members, in document order.
     void add_entity_selection(std::string name, std::vector<std::string> members);
 
+    /// The names of every declared EntitySelection, for the validation pass
+    /// (a selection is a legal target wherever an entity is).
+    [[nodiscard]] std::vector<std::string> entity_selection_names() const;
+
+    /// Records that an attribute referenced a parameter by name; the
+    /// validation pass uses it to find declarations nothing refers to.
+    void note_parameter_reference(std::string name);
+    [[nodiscard]] const std::set<std::string, std::less<>>& referenced_parameters() const noexcept {
+        return referenced_parameters_;
+    }
+
 private:
     void emit(Severity severity, Status code, std::string path, std::string message,
               std::string rule_id, LineColumn position);
@@ -170,6 +182,7 @@ private:
     // Ordered map: selections are walked when expanding actors, and the
     // resulting IR order must not depend on a hash seed.
     std::map<std::string, std::vector<std::string>, std::less<>> selections_;
+    std::set<std::string, std::less<>> referenced_parameters_;
     std::string_view source_;
     std::string file_;
     DocumentVersion version_;

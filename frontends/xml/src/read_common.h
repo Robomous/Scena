@@ -132,6 +132,17 @@ void warn_out_of_scope(ReadContext& ctx, const pugi::xml_node& node, std::string
 /// "executed, but the standard deprecated it").
 void warn_deprecated(ReadContext& ctx, const pugi::xml_node& node, std::string_view successor);
 
+/// Same, but only for a document that declares revision `major.minor` or
+/// later — the revision that deprecated the construct.
+///
+/// A construct is not deprecated in a document written before its successor
+/// existed: telling a 1.0 file to use a 1.2 element is noise, not guidance.
+/// Everything stays accepted and executed either way; the version decides
+/// only whether the author is told (§5 and the coverage matrix's
+/// "accepted, deprecated" rows).
+void warn_deprecated_since(ReadContext& ctx, const pugi::xml_node& node, int major, int minor,
+                           std::string_view successor);
+
 /// The single element child of `node` among `candidates` (a null-terminated
 /// array), i.e. an XSD choice. Reports a ValidationError and returns an empty
 /// node when there is none; reports and keeps the first when there are

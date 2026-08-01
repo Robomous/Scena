@@ -13,6 +13,7 @@ add_library(scena-frontend-xml STATIC
     src/read_geometry.cpp
     src/read_storyboard.cpp
     src/reader_context.cpp
+    src/validate.cpp
 )
 add_library(scena::frontend-xml ALIAS scena-frontend-xml)
 

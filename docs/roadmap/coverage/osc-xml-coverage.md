@@ -192,12 +192,19 @@ IR lands (p4-s4).
 
 ## Version-handling decisions
 
+Delivered by p4-s5 and proven by `xml_version_test.cpp` (the version matrix
+and every deprecated construct) and `xml_validate_test.cpp` (a red fixture
+per validation rule); the migration table is published in
+[`docs/user-guide/xml-versions.md`](../../user-guide/xml-versions.md).
+
 - **1.0–1.3 accepted; 1.4 rejected** at `FileHeader` (p4-s1).
 - **≥1.3 corrected position/orientation calculations applied uniformly**
   to all input versions, exactly as §5 prescribes; no per-version dual
   semantics.
 - Deprecated constructs (see rows marked "accepted, deprecated") load with
-  a warning diagnostic and map onto their successors; the strict
+  a warning diagnostic and map onto their successors — and the warning is
+  **version-gated**: a document written before the successor existed is
+  doing nothing wrong, so it is not told about one (p4-s5); the strict
   no-deprecated schema variants are not enforced by Scena.
 - Elements whose introduction version the local reference cannot confirm
   are marked *(verify)*; confirming them requires the per-version XSDs
