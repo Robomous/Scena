@@ -314,24 +314,25 @@ TEST(OpenDriveReaderTest, UnconsumedFeaturesAreWarnedNeverSilent) {
         "<header revMajor=\"1\" revMinor=\"8\"><geoReference><![CDATA[+proj=utm]]>"
         "</geoReference></header>"
         "<road id=\"1\" length=\"10\">"
-        "<link/><elevationProfile/><lateralProfile/><lanes/><objects/><signals/>"
+        "<elevationProfile/><lateralProfile/><objects/><signals/>"
         "<planView><geometry s=\"0\" x=\"0\" y=\"0\" hdg=\"0\" length=\"10\">"
         "<line/></geometry></planView>"
         "</road>"
-        "<junction id=\"j\"/>"
+        "<junction id=\"j\" type=\"virtual\"/>"
         "</OpenDRIVE>",
         map, sink);
     ASSERT_EQ(status, Status::Ok);
     ASSERT_EQ(map.roads.size(), 1U);
 
-    // geoReference + 6 road children + junction, each its own warning.
+    // geoReference + 4 road children + the non-default junction, each its
+    // own warning (link/lanes/junction are consumed since p3-s3).
     int unsupported = 0;
     for (const auto& d : sink.diagnostics()) {
         if (d.severity == Severity::Warning && d.code == Status::UnsupportedFeature) {
             ++unsupported;
         }
     }
-    EXPECT_EQ(unsupported, 8);
+    EXPECT_EQ(unsupported, 6);
 }
 
 TEST(OpenDriveReaderTest, MissingPlanViewIsAnError) {
