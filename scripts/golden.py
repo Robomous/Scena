@@ -239,9 +239,71 @@ SUITE: tuple[Scenario, ...] = (
             Checkpoint(t=19.0, entity="ego", field="speed", value=0.0),
         ),
     ),
+    # --- OpenSCENARIO DSL (p8-s4) -------------------------------------------
+    # Written in the other language, executed by the same runtime. GS-12 has an
+    # XML twin (gs12-xml-cruise.xosc) whose trace must be byte-identical; that
+    # pair is what turns "two frontends, one runtime" from a claim into a test.
+    Scenario(
+        name="gs12",
+        file="gs12-dsl-cruise.osc",
+        duration=12.0,
+        exercises="DSL frontend end to end: entry point, actor lowering, serial "
+        "composition with concrete durations, speed modifiers anchored at start and end",
+        checkpoints=(
+            # Phase 1 holds the speed the `at: start` modifier fixed.
+            Checkpoint(t=4.0, entity="ego", field="speed", value=10.0),
+            # Phase 2 ramps to 20 over its 4 s duration, and the scenario ends
+            # when its `do` directive does (t = 9), freezing the last value.
+            Checkpoint(t=11.0, entity="ego", field="speed", value=20.0, tolerance=0.03),
+            # Straight line throughout: nothing lateral was ever asked for.
+            Checkpoint(t=11.0, entity="ego", field="y", value=0.0),
+        ),
+    ),
+    Scenario(
+        name="gs13",
+        file="gs13-dsl-alternatives.osc",
+        duration=8.0,
+        exercises="DSL composition with no XML counterpart: a parallel nested in a serial, "
+        "a placement modifier, a relative-speed modifier, and a one_of alternative "
+        "chosen by input",
+        checkpoints=(
+            # The placement modifier put lead 30 m ahead of ego at t = 0.
+            Checkpoint(t=0.01, entity="lead", field="x", value=30.12),
+            Checkpoint(t=1.0, entity="ego", field="speed", value=10.0),
+            Checkpoint(t=1.0, entity="lead", field="speed", value=12.0),
+            # The default alternative is `follow`: 4 m/s slower than lead, from
+            # the moment the parallel phase ends at t = 2.
+            Checkpoint(t=5.0, entity="ego", field="speed", value=8.0),
+            Checkpoint(t=5.0, entity="lead", field="speed", value=12.0),
+        ),
+    ),
 )
 
 BY_NAME = {scenario.name: scenario for scenario in SUITE}
+
+
+@dataclass(frozen=True)
+class Pair:
+    """One scenario written in both languages, with the same trace expected.
+
+    The architecture's central claim is that the two frontends compile into one
+    IR and that the runtime is shared. A pair is that claim as a test: the same
+    scenario, authored once in OpenSCENARIO XML and once in OpenSCENARIO DSL,
+    must produce traces that are equal byte for byte — not close, equal.
+    """
+
+    name: str
+    dsl: str
+    xml: str
+    duration: float
+    dt: float = 0.01
+
+
+#: The declared pairs. `dsl` is a suite member, so its trace is already
+#: bit-identical across platforms; the twin is run alongside and compared.
+PAIRS: tuple[Pair, ...] = (
+    Pair(name="gs12", dsl="gs12-dsl-cruise.osc", xml="gs12-xml-cruise.xosc", duration=12.0),
+)
 
 
 def platform_key(explicit: str | None = None) -> str:
@@ -400,6 +462,69 @@ def cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_file(path: Path, duration: float, dt: float, out: Path) -> Path:
+    """Runs one scenario file — either language — and returns its trace."""
+    out.mkdir(parents=True, exist_ok=True)
+    trace = out / f"{path.stem}.csv"
+    result = subprocess.run(
+        [
+            str(scena_run_binary()),
+            str(path),
+            "--dt",
+            repr(dt),
+            "--duration",
+            repr(duration),
+            "--trace",
+            str(trace),
+            "--quiet",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"{path.name}: scena-run exited {result.returncode}\n{result.stderr}")
+    return trace
+
+
+def check_pair(pair: Pair, out_dir: Path) -> list[str]:
+    """Both languages, one runtime: the traces must be equal byte for byte."""
+    left = run_file(SCENARIOS / pair.dsl, pair.duration, pair.dt, out_dir)
+    right = run_file(SCENARIOS / pair.xml, pair.duration, pair.dt, out_dir)
+    left_bytes = left.read_bytes()
+    right_bytes = right.read_bytes()
+    if left_bytes == right_bytes:
+        return []
+    if len(left_bytes) != len(right_bytes):
+        return [
+            f"{pair.name}: {pair.dsl} is {len(left_bytes)} bytes, "
+            f"{pair.xml} is {len(right_bytes)}"
+        ]
+    for index, (a, b) in enumerate(zip(left_bytes, right_bytes)):
+        if a != b:
+            line = left_bytes[:index].count(b"\n") + 1
+            return [
+                f"{pair.name}: the two languages diverge at line {line}\n"
+                f"     {pair.dsl}: {left_bytes.splitlines()[line - 1].decode()}\n"
+                f"     {pair.xml}: {right_bytes.splitlines()[line - 1].decode()}"
+            ]
+    return []
+
+
+def cmd_compare_pair(args: argparse.Namespace) -> int:
+    pairs = [p for p in PAIRS if not args.pair or p.name == args.pair]
+    out_dir = REPO / "build" / "golden-out"
+    failures: list[str] = []
+    for pair in pairs:
+        pair_failures = check_pair(pair, out_dir)
+        failures.extend(pair_failures)
+        for failure in pair_failures:
+            print(f"FAIL {failure}", file=sys.stderr)
+        if not pair_failures:
+            print(f"ok   {pair.name} pair  ({pair.dsl} == {pair.xml}, byte for byte)")
+    return 1 if failures else 0
+
+
 def cmd_check_all(args: argparse.Namespace) -> int:
     platform = platform_key(args.platform)
     out_dir = REPO / "build" / "golden-out"
@@ -415,6 +540,16 @@ def cmd_check_all(args: argparse.Namespace) -> int:
                 print(f"     {failure}", file=sys.stderr)
         else:
             print(f"ok   {scenario.name}  ({len(scenario.checkpoints)} checkpoint(s))")
+
+    for pair in PAIRS:
+        pair_failures = check_pair(pair, out_dir)
+        if pair_failures:
+            failures.extend(pair_failures)
+            print(f"FAIL {pair.name} pair", file=sys.stderr)
+            for failure in pair_failures:
+                print(f"     {failure}", file=sys.stderr)
+        else:
+            print(f"ok   {pair.name} pair  ({pair.dsl} == {pair.xml}, byte for byte)")
     print(f"\n{len(SUITE)} scenarios, {len(failures)} failure(s)", file=sys.stderr)
     return 1 if failures else 0
 
@@ -441,6 +576,12 @@ def main() -> int:
     record_parser.add_argument("scenario", nargs="?", choices=sorted(BY_NAME), default=None)
     record_parser.add_argument("--platform", default=None)
     record_parser.set_defaults(func=cmd_record)
+
+    pair_parser = sub.add_parser(
+        "compare-pair", help="assert a declared XML/DSL pair traces identically"
+    )
+    pair_parser.add_argument("pair", nargs="?", default="")
+    pair_parser.set_defaults(func=cmd_compare_pair)
 
     check_parser = sub.add_parser("check-all", help="run and verify the whole suite")
     check_parser.add_argument("--platform", default=None)

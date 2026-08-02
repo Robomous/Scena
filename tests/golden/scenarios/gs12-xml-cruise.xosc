@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GS-12's XML twin. Authored from the ASAM OpenSCENARIO XML specification
+     text (ADR-0002), and deliberately shaped like gs12-dsl-cruise.osc rather
+     than like idiomatic XML: two events in one maneuver, the second gated on
+     simulation time, no Init actions. The two files say the same thing in two
+     languages, and the parity test asserts their traces are byte-identical. -->
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="3" date="2026-08-02T00:00:00"
+              description="GS-12 parity twin" author="Scena golden suite"/>
+  <Entities>
+    <ScenarioObject name="ego"><Vehicle name="ego_v" vehicleCategory="car">
+      <BoundingBox><Center x="0" y="0" z="0"/><Dimensions width="2" length="4.5" height="1.5"/></BoundingBox>
+      <Performance maxSpeed="0" maxAcceleration="0" maxDeceleration="0"/>
+      <Axles><RearAxle maxSteering="0" wheelDiameter="0.6" trackWidth="1.7" positionX="0" positionZ="0.3"/></Axles>
+    </Vehicle></ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init><Actions/></Init>
+    <Story name="cruise_baseline"><Act name="act">
+      <ManeuverGroup name="cruise" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="cruise">
+          <Event name="cruise" priority="parallel">
+            <Action name="cruise_action"><PrivateAction><LongitudinalAction><SpeedAction>
+              <SpeedActionDynamics dynamicsShape="step" dynamicsDimension="time" value="0"/>
+              <SpeedActionTarget><AbsoluteTargetSpeed value="10"/></SpeedActionTarget>
+            </SpeedAction></LongitudinalAction></PrivateAction></Action>
+          </Event>
+        </Maneuver>
+      </ManeuverGroup>
+      <ManeuverGroup name="accelerate" maximumExecutionCount="1">
+        <Actors selectTriggeringEntities="false"><EntityRef entityRef="ego"/></Actors>
+        <Maneuver name="accelerate">
+          <Event name="accelerate" priority="parallel">
+            <Action name="accelerate_action"><PrivateAction><LongitudinalAction><SpeedAction>
+              <SpeedActionDynamics dynamicsShape="linear" dynamicsDimension="time" value="4"/>
+              <SpeedActionTarget><AbsoluteTargetSpeed value="20"/></SpeedActionTarget>
+            </SpeedAction></LongitudinalAction></PrivateAction></Action>
+            <StartTrigger><ConditionGroup>
+              <Condition name="at5" delay="0" conditionEdge="none"><ByValueCondition>
+                <SimulationTimeCondition value="5" rule="greaterOrEqual"/>
+              </ByValueCondition></Condition>
+            </ConditionGroup></StartTrigger>
+          </Event>
+        </Maneuver>
+      </ManeuverGroup>
+    </Act></Story>
+    <!-- §7.6.2: a DSL scenario ends when its `do` directive does, and this one
+         is 5 s + 4 s long. The XML twin says it with the Storyboard stop
+         trigger, which is the only place XML can say it. -->
+    <StopTrigger><ConditionGroup>
+      <Condition name="done" delay="0" conditionEdge="none"><ByValueCondition>
+        <SimulationTimeCondition value="9" rule="greaterOrEqual"/>
+      </ByValueCondition></Condition>
+    </ConditionGroup></StopTrigger>
+  </Storyboard>
+</OpenSCENARIO>

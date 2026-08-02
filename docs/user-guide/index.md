@@ -58,6 +58,9 @@ The user guide grows sprint by sprint along the
 - [`scena-run`](scena-run.md) — the headless CLI: options and exit codes, the
   round-trip-exact trace format, replaying a host-controlled entity, running a
   `.osc` file through the DSL frontend, and the golden suite harness.
+- [One scenario, two languages](one-scenario-two-languages.md) — the XML/DSL
+  parity claim as a test, how each language reaches the same IR, and every place
+  the two standards genuinely differ.
 - [`scena-check`](scena-check.md) — the OpenSCENARIO DSL checker: options and
   exit codes, the diagnostic format, resolving imports and search paths,
   checking from C and Python, and what "checked clean" does and does not cover.

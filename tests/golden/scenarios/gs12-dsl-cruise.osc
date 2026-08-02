@@ -1,0 +1,23 @@
+# GS-12 — the DSL twin of GS-1.
+#
+# Authored from the ASAM OpenSCENARIO DSL specification text (ADR-0002). Its
+# XML counterpart, gs12-xml-cruise.xosc, says the same thing in the other
+# language and must produce a byte-identical trace: that is what
+# "two frontends, one runtime" means, asserted rather than asserted-to.
+#
+# `at` and `route_overlap_kind` both declare `start` and `end`, so the anchors
+# are written qualified (§7.3.3, see #110).
+
+import osc.standard.all
+
+namespace scena_golden use std, stdtypes
+
+scenario cruise_baseline:
+    ego: vehicle
+    keep(ego.vehicle_category == vehicle_category!car)
+
+    do serial:
+        cruise: ego.drive(duration: 5s) with:
+            speed(speed: 10mps, at: at!start)
+        accelerate: ego.drive(duration: 4s) with:
+            speed(speed: 20mps, at: at!end)
