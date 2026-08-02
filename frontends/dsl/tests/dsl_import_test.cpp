@@ -159,11 +159,14 @@ TEST(DslImportTest, EveryStandardModuleReferenceIsAccepted) {
 
 TEST(DslImportTest, ImportingTheStandardLibraryTwiceLoadsItOnce) {
     // §7.7.5.1: "a file that is referenced multiple times ... is only imported
-    // once". The implicit library counts as the first reference.
+    // once". The implicit types sub-module counts as the first reference, so
+    // naming it again costs nothing and `osc.standard.all` adds only the
+    // domain sub-module: two library files, however many references.
     DiagnosticSink sink;
     LoadResult loaded;
     Program program;
     ASSERT_EQ(scena::dsl::check_source("import osc.standard.types\nimport osc.standard.all\n"
+                                       "import osc.standard.domain\nimport osc.standard\n"
                                        "struct s:\n    v: speed = 1mps\n",
                                        "<test>", LoadOptions{}, loaded, program, sink),
               Status::Ok);
@@ -171,7 +174,7 @@ TEST(DslImportTest, ImportingTheStandardLibraryTwiceLoadsItOnce) {
     for (const scena::dsl::File* file : loaded.files()) {
         standard_files += file->is_standard_library ? 1U : 0U;
     }
-    EXPECT_EQ(standard_files, 1U);
+    EXPECT_EQ(standard_files, 2U);
 }
 
 TEST(DslImportTest, AnUnknownReservedModuleIsReported) {

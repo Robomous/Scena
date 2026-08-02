@@ -62,6 +62,14 @@ void check_library(Library& library) {
                                               library.program, library.sink);
 }
 
+/// The whole bundled library, types and domain, reached the way a scenario
+/// reaches it (§7.7.5.2.1).
+void check_full_library(Library& library) {
+    library.status =
+        scena::dsl::check_source("import osc.standard.all\n", "<library>", LoadOptions{},
+                                 library.loaded, library.program, library.sink);
+}
+
 // --- the gate ---------------------------------------------------------------
 
 TEST(DslStdlibTest, TheBundledLibraryChecksClean) {
@@ -320,13 +328,262 @@ TEST(DslStdlibTest, AWrongUnitAgainstALibraryTypeIsStillReported) {
     EXPECT_TRUE(sink.has_errors());
 }
 
+// --- §8.7 the domain sub-module ---------------------------------------------
+
+TEST(DslStdlibTest, TheDomainSubModuleChecksClean) {
+    // The other half of p7-s5's exit criterion, reached the way a scenario
+    // reaches the library: `import osc.standard.all` (§7.7.5.2.1).
+    Library library;
+    check_full_library(library);
+    for (const scena::Diagnostic& diagnostic : library.sink.diagnostics()) {
+        ADD_FAILURE() << diagnostic.location.file << ":" << diagnostic.location.line << ": "
+                      << diagnostic.message;
+    }
+    EXPECT_EQ(library.status, Status::Ok);
+    EXPECT_EQ(scena::dsl::standard_module_namespace(scena::dsl::kStandardDomainModule), "std");
+}
+
+TEST(DslStdlibTest, TheCompleteLibraryReferenceBringsBothSubModules) {
+    // §7.7.5.2.1: `osc.standard.all` imports "all the definitions of the
+    // standard library ... in their respective namespaces".
+    Library library;
+    check_full_library(library);
+    EXPECT_NE(library.program.find("stdtypes::speed"), nullptr);
+    EXPECT_NE(library.program.find("std::vehicle"), nullptr);
+}
+
+TEST(DslStdlibTest, TheActorHierarchyMatchesTheDomainModel) {
+    // §8.7.2–§8.7.10's Parents rows, as an inheritance chain.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* derived;
+        const char* base;
+    };
+    for (const Case& expected :
+         {Case{"std::physical_object", "std::osc_actor"},
+          Case{"std::stationary_object", "std::physical_object"},
+          Case{"std::movable_object", "std::physical_object"},
+          Case{"std::traffic_participant", "std::movable_object"},
+          Case{"std::vehicle", "std::traffic_participant"}, Case{"std::trailer", "std::vehicle"},
+          Case{"std::person", "std::traffic_participant"},
+          Case{"std::animal", "std::traffic_participant"},
+          // transitively, every participant is an actor
+          Case{"std::vehicle", "std::osc_actor"}}) {
+        const auto derived = library.program.types_by_name.find(expected.derived);
+        const auto base = library.program.types_by_name.find(expected.base);
+        ASSERT_NE(derived, library.program.types_by_name.end()) << expected.derived;
+        ASSERT_NE(base, library.program.types_by_name.end()) << expected.base;
+        EXPECT_EQ(library.program.types[derived->second].kind, TypeKind::Actor) << expected.derived;
+        EXPECT_TRUE(library.program.is_derived_from(derived->second, base->second))
+            << expected.derived << " inherits " << expected.base;
+    }
+}
+
+TEST(DslStdlibTest, ActorParametersAndStateVariablesAreDeclaredAndInherited) {
+    // §8.7.3/§8.7.5/§8.7.6/§8.7.7: a table row is a field, whether the standard
+    // calls it a parameter or a state variable — the language draws no
+    // declaration-level distinction.
+    Library library;
+    check_full_library(library);
+    const auto vehicle = library.program.types_by_name.find("std::vehicle");
+    ASSERT_NE(vehicle, library.program.types_by_name.end());
+    for (const char* field :
+         {"vehicle_category", "axles", "rear_overhang", "trailer_receiver",
+          // inherited from traffic_participant
+          "intended_infrastructure", "role",
+          // inherited from movable_object
+          "velocity", "acceleration", "speed",
+          // inherited from physical_object
+          "bounding_box", "color", "geometry_reference", "center_of_gravity", "pose"}) {
+        EXPECT_NE(library.program.find_field(vehicle->second, field), nullptr) << field;
+    }
+}
+
+TEST(DslStdlibTest, TheDomainStructsAreDeclaredWithTheirFields) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::vector<const char*> fields;
+    };
+    for (const Case& expected :
+         {Case{"std::bounding_box", {"center", "length", "width", "height"}},
+          Case{"std::axle",
+               {"max_steering", "wheel_diameter", "track_width", "position_x", "position_z",
+                "number_of_wheels"}},
+          Case{"std::hitch_receiver",
+               {"hitch_type", "position_x", "position_z", "max_rotation", "max_tilt", "is_towing"}},
+          Case{"std::hitch_coupler", {"hitch_type", "position_x", "position_z", "is_towed"}}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Struct) << expected.name;
+        for (const char* field : expected.fields) {
+            EXPECT_NE(library.program.find_field(id->second, field), nullptr)
+                << expected.name << "." << field;
+        }
+    }
+}
+
+TEST(DslStdlibTest, TheDomainEnumsCarryTheirValues) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::size_t values;
+        const char* sample;
+    };
+    for (const Case& expected :
+         {Case{"std::color", 20, "maroon"}, Case{"std::vehicle_category", 21, "heavy_truck"},
+          Case{"std::trailer_category", 3, "full_trailer"},
+          Case{"std::hitch_type", 5, "fifth_wheel"},
+          Case{"std::intended_infrastructure", 8, "biking"},
+          Case{"std::traffic_participant_role", 18, "ambulance"},
+          Case{"std::distance_direction", 4, "euclidean"},
+          Case{"std::road_distance_direction", 2, "lateral"},
+          Case{"std::distance_mode", 2, "bounding_boxes"},
+          Case{"std::on_route_type", 4, "on_lane_section"},
+          Case{"std::route_distance_enum", 2, "from_end"}}) {
+        const TypeInfo* type = library.program.find(expected.name);
+        ASSERT_NE(type, nullptr) << expected.name;
+        EXPECT_EQ(type->kind, TypeKind::Enum) << expected.name;
+        EXPECT_EQ(type->enum_members.size(), expected.values) << expected.name;
+        bool found = false;
+        for (const auto& member : type->enum_members) {
+            found = found || member.name == expected.sample;
+        }
+        EXPECT_TRUE(found) << expected.name << "!" << expected.sample;
+    }
+}
+
+TEST(DslStdlibTest, TheBackwardCompatibilitySpellingsShareTheirValue) {
+    // §8.7.16 and §8.7.20 keep the earlier releases' names "equal to" their
+    // replacements, which §7.2.2.2.2's `= other_member` form expresses exactly.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* type;
+        const char* legacy;
+        const char* current;
+    };
+    for (const Case& expected :
+         {Case{"std::vehicle_category", "truck", "heavy_truck"},
+          Case{"std::vehicle_category", "vru_vehicle", "micro_mobility_device"},
+          Case{"std::traffic_participant_role", "fire", "fire_brigade"},
+          Case{"std::traffic_participant_role", "road_assistance", "roadside_assistance"},
+          Case{"std::traffic_participant_role", "road_construction", "construction"}}) {
+        const TypeInfo* type = library.program.find(expected.type);
+        ASSERT_NE(type, nullptr) << expected.type;
+        bool matched = false;
+        for (const auto& legacy : type->enum_members) {
+            if (legacy.name != expected.legacy) {
+                continue;
+            }
+            for (const auto& current : type->enum_members) {
+                if (current.name == expected.current) {
+                    EXPECT_EQ(legacy.value, current.value)
+                        << expected.type << ": " << expected.legacy << " vs " << expected.current;
+                    matched = true;
+                }
+            }
+        }
+        EXPECT_TRUE(matched) << expected.type << "!" << expected.legacy;
+    }
+}
+
+TEST(DslStdlibTest, TheMeasurementMethodsAreDeclaredWithTheirSignatures) {
+    // §8.7.6.1 and §8.7.7: the prototypes the standard prints as `extend` blocks.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* type;
+        const char* method;
+        std::size_t parameters;
+        const char* returns;
+    };
+    for (const Case& expected :
+         {Case{"std::traffic_participant", "time_to_collision", 1, "stdtypes::time"},
+          Case{"std::traffic_participant", "time_gap", 2, "stdtypes::time"},
+          Case{"std::traffic_participant", "space_gap", 2, "stdtypes::length"},
+          Case{"std::vehicle", "time_headway", 1, "stdtypes::time"},
+          Case{"std::vehicle", "space_headway", 1, "stdtypes::length"}}) {
+        const auto id = library.program.types_by_name.find(expected.type);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.type;
+        const scena::dsl::MethodInfo* method =
+            library.program.find_method(id->second, expected.method);
+        ASSERT_NE(method, nullptr) << expected.type << "." << expected.method;
+        EXPECT_EQ(method->parameters.size(), expected.parameters) << expected.method;
+        ASSERT_NE(method->return_type, scena::dsl::kInvalidType) << expected.method;
+        EXPECT_EQ(library.program.types[method->return_type].name, expected.returns)
+            << expected.method;
+    }
+    // Inherited: a vehicle is a traffic_participant, so it measures gaps too.
+    const auto vehicle = library.program.types_by_name.find("std::vehicle");
+    ASSERT_NE(vehicle, library.program.types_by_name.end());
+    EXPECT_NE(library.program.find_method(vehicle->second, "time_to_collision"), nullptr);
+}
+
+TEST(DslStdlibTest, TheActorModifiersAreAssociatedWithTheirActor) {
+    // §8.7.4.1.1 and §8.7.7.1.1 write them `stationary_object.location()` and
+    // `vehicle.tow_trailer()` — the prefixed form of §7.2.2.2.9, not `of`,
+    // because §7.3.12.2's `of` names a scenario or an action.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        const char* actor;
+        const char* parameter;
+    };
+    for (const Case& expected :
+         {Case{"std::stationary_object.location", "std::stationary_object", "pose"},
+          Case{"std::vehicle.tow_trailer", "std::vehicle", "trailer"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        const TypeInfo& modifier = library.program.types[id->second];
+        EXPECT_EQ(modifier.kind, TypeKind::Modifier) << expected.name;
+        ASSERT_NE(modifier.actor_type, scena::dsl::kInvalidType) << expected.name;
+        EXPECT_EQ(library.program.types[modifier.actor_type].name, expected.actor) << expected.name;
+        EXPECT_NE(library.program.find_field(id->second, expected.parameter), nullptr)
+            << expected.name << "." << expected.parameter;
+    }
+}
+
+TEST(DslStdlibTest, AScenarioCanUseTheDomainModel) {
+    // The end-to-end shape a scenario author writes: import, use, declare.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario cut_in:\n"
+                                       "    ego: vehicle\n"
+                                       "    other: vehicle\n"
+                                       "    keep(ego.vehicle_category == car)\n"
+                                       "    keep(other.bounding_box.width == 1.95m)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+    EXPECT_FALSE(sink.has_errors());
+}
+
+TEST(DslStdlibTest, TheDomainModelNeedsAnImportOrAQualifiedName) {
+    // Only `stdtypes` is built in; `std` arrives with an import (ADR-0029).
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_EQ(scena::dsl::check_source("struct s:\n    v: vehicle\n", "<test>", LoadOptions{},
+                                       loaded, program, sink),
+              Status::ValidationError);
+    EXPECT_TRUE(sink.has_errors());
+}
+
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
     // Load time is inside the determinism contract: the same sources must give
     // the same program and the same diagnostics, in the same order.
     Library first;
     Library second;
-    check_library(first);
-    check_library(second);
+    check_full_library(first);
+    check_full_library(second);
     ASSERT_EQ(first.program.types_by_name.size(), second.program.types_by_name.size());
     EXPECT_TRUE(std::equal(first.program.types_by_name.begin(), first.program.types_by_name.end(),
                            second.program.types_by_name.begin()));

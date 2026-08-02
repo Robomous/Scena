@@ -160,6 +160,15 @@ expected. It also keeps the dependency list unchanged.
   reaches the search path: an unknown one is reported rather than looked up
   (§7.7.5.1.2). Everything else maps `a.b.c` to `a/b/c.osc` under the configured
   search paths.
+- **A table row is a field.** §8.7 onward prints the domain model as parameter
+  tables rather than as code. A row is declared as a field whether the standard
+  calls it a parameter or a state variable, and whether or not it is marked
+  mandatory: the language has no optional-field marker, and §7.3.11 already lets
+  a scenario leave a field unconstrained.
+- **An actor's modifier uses the prefixed form.** §8.7.4.1.1 writes
+  `stationary_object.location()`, which is `modifier stationary_object.location`
+  — not `modifier location of stationary_object`, because §7.3.12.2's `of`
+  names a scenario or an action.
 - **`check_source` / `check_file` are the entry points.** Loading and resolving
   in one call, with imports followed; the CLI and the bindings sit on them. The
   `LoadResult` owns the ASTs a `Program` points into, so it must outlive it.
