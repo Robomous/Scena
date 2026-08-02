@@ -1148,16 +1148,267 @@ action vehicle.disconnect_trailer inherits vehicle.action_for_vehicle
 action person.walk inherits person.action_for_person
 )OSC";
 
+// §8.9 the movement modifiers: the shape hierarchy §8.9.1.2 prints as DSL,
+// the seven enums of §8.9.19-§8.9.25, and the seventeen modifiers that tune a
+// movement action. Each modifier is printed as a usage signature plus a
+// parameter list rather than as a table, so the arities below are the
+// standard's own.
+// Translation worksheet: docs/dev/stdlib-worksheets/08-09-movement-modifiers.md
+constexpr std::string_view kDomainMovementModifiers = R"OSC(
+# --- §8.9.1.2 the shape hierarchy --------------------------------------------
+# One of the few places §8 prints DSL rather than tables, so this is a
+# transcription. A shape describes how a state variable moves as a function of
+# time within one modifier invocation; `duration()` gives its extent and
+# `compute()` the value at a time measured from the start of the phase.
+struct any_shape:
+    def duration() -> time is undefined
+
+struct any_acceleration_shape inherits any_shape:
+    def compute(time: time) -> acceleration is undefined
+
+struct any_speed_shape inherits any_shape:
+    def compute(time: time) -> speed is undefined
+
+struct any_position_shape inherits any_shape:
+    def compute(time: time) -> length is undefined
+
+struct any_lateral_shape inherits any_shape:
+    def compute(time: time) -> length is undefined
+
+# The built-in common shapes: a target for the state variable plus two
+# parameters for its first derivative.
+struct common_acceleration_shape inherits any_acceleration_shape:
+    rate_profile: dynamic_profile
+    rate_peak: jerk
+    target: acceleration
+
+struct common_speed_shape inherits any_speed_shape:
+    rate_profile: dynamic_profile
+    rate_peak: acceleration
+    target: speed
+
+struct common_position_shape inherits any_position_shape:
+    rate_profile: dynamic_profile
+    rate_peak: speed
+    target: length
+
+struct common_lateral_shape inherits any_lateral_shape:
+    rate_profile: dynamic_profile
+    rate_peak: speed
+    target: length
+
+# --- §8.9.19–§8.9.25 the movement enums --------------------------------------
+enum at: [start, end, all]
+
+enum movement_mode: [monotonous, other]
+
+enum track: [actual, projected]
+
+enum lat_measure_by: [
+    left_to_left, left_to_center, left_to_right, center_to_left,
+    center_to_center, center_to_right, right_to_left, right_to_center,
+    right_to_right, closest
+]
+
+enum yaw_measure_by: [
+    length_to_length, length_to_width, width_to_length, width_to_width,
+    relative_to_north, relative_to_road
+]
+
+enum orientation_measured_by: [absolute, relative_to_reference, relative_to_road]
+
+enum movement_options: [prefer_physical, prefer_non_physical, must_be_physical]
+
+# --- §8.9.2–§8.9.18 the movement modifiers -----------------------------------
+# These are ACTOR-ASSOCIATED. §7.3.12.3's own example is `modifier
+# vehicle.keep_lane()`, annotated "keep_lane() is defined in the domain model
+# (see §8.9.16)" — the language reference states outright how this chapter's
+# modifiers are declared. Each one goes on the most general actor that can run
+# the movement actions it tunes: `movable_object`, which owns `move()` and
+# parents both `vehicle` and `person`, or `vehicle` for the lane trio.
+#
+# THREE EXCEPTIONS take the unassociated form (§7.3.12.3's first association
+# type): `change_speed`, `keep_speed` and `change_lane`. §8.8 already declares
+# ACTIONS of exactly those names on exactly those actors, and a qualified
+# behavior name identifies one declaration — the language cannot hold both
+# `movable_object.change_speed` the action and `movable_object.change_speed`
+# the modifier. The collision is in the standard, not in the translation.
+#
+# Every one of them carries §8.9.1.1's four common parameters — "The following
+# parameters are common to all domain model movement modifiers": `at`,
+# `movement_mode`, `track` and `shape`. Five of the usage blocks below omit the
+# `<standard-movement-parameters>` placeholder; §8.9.1.1's general statement is
+# the normative one and accepting the parameter is the safer of the two
+# readings, so they are declared throughout.
+
+modifier movable_object.position:
+    distance: length
+    time: time
+    distance_range: range of length
+    time_range: range of time
+    ahead_of: physical_object
+    behind: physical_object
+    ahead_of_point: position_3d
+    behind_point: position_3d
+    at_point: position_3d
+    project_on_route: bool
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.keep_position:
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+# §8.9.1.4: `speed` fixes one value for the whole action; `speed_range` lets it
+# vary within the interval. At most one of the pair may be given.
+modifier movable_object.speed:
+    speed: speed
+    speed_range: range of speed
+    faster_than: physical_object
+    slower_than: physical_object
+    same_as: physical_object
+    factor: float
+    direction: lon_lat
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier change_speed:
+    speed: speed
+    speed_range: range of speed
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier keep_speed:
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.acceleration:
+    acceleration: acceleration
+    acceleration_range: range of acceleration
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.lateral:
+    distance: length
+    distance_range: range of length
+    side_of: vehicle
+    side: side_left_right
+    measure_by: lat_measure_by
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.yaw:
+    angle: angle
+    angle_range: range of angle
+    relative_to: physical_object
+    measure_by: yaw_measure_by
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.orientation:
+    yaw: angle
+    pitch: angle
+    roll: angle
+    relative_to: physical_object
+    measure_by: orientation_measured_by
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.along:
+    route: route
+    start_offset: length
+    end_offset: length
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.along_trajectory:
+    trajectory: trajectory
+    start_offset: length
+    end_offset: length
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.distance:
+    distance: length
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+# §8.9.14's `lane` counts lanes as a `uint`; §8.9.15's `change_lane` counts them
+# as an `int`. Both carried as printed.
+modifier vehicle.lane:
+    lane: uint
+    side_of: physical_object
+    side: side_left_right
+    same_as: physical_object
+    from: side_left_right
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier change_lane:
+    lane: int
+    side: side_left_right
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier vehicle.keep_lane:
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.physical_movement:
+    option: movement_options
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+
+modifier movable_object.avoid_collisions:
+    avoid: bool
+    at: at
+    movement_mode: movement_mode
+    track: track
+    shape: any_shape
+)OSC";
+
 const std::string& types_module() {
     static const std::string source = std::string(kTypesScalars) + std::string(kTypesCompound);
     return source;
 }
 
 const std::string& domain_module() {
-    static const std::string source = std::string(kDomainEntities) + std::string(kDomainRoads) +
-                                      std::string(kDomainEnvironment) +
-                                      std::string(kDomainTrafficLights) + std::string(kDomainMap) +
-                                      std::string(kDomainMovementActions);
+    static const std::string source =
+        std::string(kDomainEntities) + std::string(kDomainRoads) + std::string(kDomainEnvironment) +
+        std::string(kDomainTrafficLights) + std::string(kDomainMap) +
+        std::string(kDomainMovementActions) + std::string(kDomainMovementModifiers);
     return source;
 }
 
