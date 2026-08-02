@@ -39,10 +39,14 @@ expected. It also keeps the dependency list unchanged.
 | `include/scena/dsl/types.h` | the §7.3 type model and the resolved program |
 | `include/scena/dsl/resolve.h` | `resolve()` — AST to symbol table, and the prelude |
 | `src/types.cpp` | queries over a resolved program |
-| `src/resolve.cpp` | the three resolution passes and the §7.3 rules |
+| `src/resolve.cpp` | the resolution passes and the §7.3/§7.3.11/§7.5 rules |
+| `include/scena/dsl/expression.h` | expression typing and constant evaluation |
+| `src/expression.cpp` | the §7.4 operator rules and the constant folder |
 | `tests/dsl_lexer_test.cpp` | §7.2.1 token goldens |
 | `tests/dsl_parser_test.cpp` | §7.2.2 grammar, expression precedence, error recovery |
 | `tests/dsl_types_test.cpp` | §7.3 type rules, units, inheritance, namespaces |
+| `tests/dsl_expression_test.cpp` | §7.4 typing, conversion rules, constant folding |
+| `tests/dsl_constraint_test.cpp` | §7.3.11 constraints and §7.5 coverage |
 
 ## Lexing notes
 
@@ -106,3 +110,27 @@ expected. It also keeps the dependency list unchanged.
 - **The prelude is source, not a hand-built table.** It travels through the same
   lexer, parser and resolver as user code, so a bug in any of them shows up
   there first.
+
+## Expression and constraint notes
+
+- **Typing may create a type.** A list or range constructor names a structural
+  aggregate no declarator had to mention, so `type_of` takes the program by
+  reference and interns it — that is what makes `[c, c]` and a declared
+  `list of car` the same `TypeId`. As in resolution, nothing may hold a
+  `TypeInfo&`, a `FieldInfo*` or a `MethodInfo*` across a call that types a
+  subexpression.
+- **One mistake, one message.** An operand that failed to type makes its parent
+  untyped without a second complaint, so a misspelled name does not cascade into
+  a paragraph.
+- **A physical literal folds to its base unit.** `36kph` and `10mps` are the
+  same constant, which is what lets a constraint over two units of one type be
+  decided without a conversion step at every comparison.
+- **Constant folding is how satisfiability is decided.** A `keep` that folds to
+  `false` is an error when hard and a warning when `default` (§7.3.11.3). One
+  that does not fold is accepted only in the shapes v0.0.1 can resolve without
+  search — `f == const`, `f in <const>`, and conjunctions of those. Everything
+  else gets an `UnsupportedFeature` note rather than a wrong answer (ADR-0004).
+- **Checked-but-not-executed says so.** `cover`, `record`, `sample()` and
+  `every` are typed and then reported as unsupported, at Warning severity with
+  `Status::UnsupportedFeature` — the file is legal DSL, the engine just does not
+  run that part in v0.0.1.
