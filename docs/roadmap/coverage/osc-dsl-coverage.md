@@ -55,7 +55,8 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 | Global parameters | §7.3.14 | In | In | p7-s3 | **Checking landed**: typed, ordered, unique; `it` has no instance to bind to in one (§7.4.1.3) |
 | Type resolution order (declare-anywhere) | §7.3.15 | In | n/a | p7-s3 | **Landed**: three passes — declare, link, members (ADR-0028). Use may precede declaration for types, units and extensions alike |
 | Namespaces + `::`, export rules | §7.7.4 | In | n/a | p7-s3 | **Landed**: `namespace ... use`, explicit `ns::name`, export lists and wildcards, the current namespace shadowing the use list (§7.7.4.2), ambiguity across two used namespaces reported, `std`-prefixed namespaces warned, each file starting in the null namespace |
-| Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2 | **Parsing landed** (`dsl_parser_test.cpp`): both reference forms, and prelude-before-main enforced (§7.2.2.1.1). Dedup and resolution with the symbol table (p7-s3) |
+| Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2, p7-s5 | **Landed** (`dsl_import_test.cpp`): both reference forms resolved, `file` URIs (`file:///p`, `file:/p`, bare) with relative references anchored to the referencing file, module references mapped `a.b.c` → `a/b/c.osc` over configured search paths, import-once by canonical path so a diamond declares once and a cycle terminates (§7.7.5.1), referenced files ordered before the referencing file, `osc`-prefixed references reserved (§7.7.5.1.2) |
+| Standard-library access (built-in definitions; auto-use) | §7.7.5.2 | In | n/a | p7-s5 | **Landed** (`dsl_import_test.cpp`, `dsl_stdlib_test.cpp`): the types sub-module is provided as built-in definitions, the route §7.7.5.2 permits, with `stdtypes` auto-used in the null namespace (§7.7.5.2.3) so a physical literal types before any import; all four module references accepted; a namespace statement restores the ordinary §7.7.4 use-list rules (ADR-0029) |
 | Scenario entry-point selection | §7.7.2 | n/a | In | p8-s1 | Implementation-defined per spec: qualified name via API/CLI |
 
 ## Expressions (§7.4)
@@ -96,7 +97,20 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 ## Standard library (§8) — checking
 
 The entire §8 library (namespaces `stdtypes` + `std`) **type-checks** in
-v0.0.1 — that is the P7 pillar gate (p7-s5): all physical types and units
+v0.0.1 — that is the P7 pillar gate (p7-s5). The library is authored from the
+normative §8 *document* text, not from the `types.osc` / `domain.osc` /
+`standard.osc` files, which §8.16 itself declares non-normative (ADR-0002,
+ADR-0029). Its conversion factors are the ones §8.14.1 prints, rounded decimals
+included, so a conforming implementation and Scena agree.
+
+| Sub-module | Section | Check | Sprint | Notes |
+|---|---|---|---|---|
+| `stdtypes` — scalar physical types and units | §8.14.1 | In | p7-s5 | **Landed** (`dsl_stdlib_test.cpp`): all 16 scalar types with their SI dimensions and every printed unit spelling |
+| `stdtypes` — compound structs | §8.14.2 | In | p7-s5 | **Landed**: the position/orientation/velocity/acceleration compounds, `position` inheritance, `norm()` on the three translational compounds |
+| `stdtypes` — string methods | §8.13 | In | p7-s5 | **Landed**: declared on the `string` primitive. §8.13 heads them under the types sub-module and then names the `std` namespace; declared under the section they appear in, and nothing observable turns on it — a method on a primitive is reached through a value, never through a namespace |
+| `std` — the domain model | §8.3, §8.5, §8.7–§8.12, §8.15 | In | p7-s5 | Lands with the second half of #43; until then `osc.standard.all` and the legacy `osc.standard` resolve to the types sub-module alone |
+
+Coverage of the individual §8 declarations: all physical types and units
 (§8.14.1), compound structs (§8.14.2), string methods (§8.13), all actors
 (§8.7: osc_actor, physical_object, stationary_object, movable_object,
 traffic_participant, vehicle, trailer, person, animal, vehicle_group,

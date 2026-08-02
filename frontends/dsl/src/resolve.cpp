@@ -43,6 +43,9 @@ namespace {
 /// empty string, both followed by two colons, are valid prefixes."
 constexpr std::string_view kNullNamespace = "";
 
+/// The namespace the bundled types sub-module declares (§8.13, §8.14).
+constexpr std::string_view kStandardTypesNamespace = "stdtypes";
+
 [[nodiscard]] bool is_null_namespace(std::string_view name) {
     return name.empty() || name == "null";
 }
@@ -390,18 +393,29 @@ void Resolver::declare() {
 
     for (const File* file : files_) {
         // §7.7.4: "Each file processing starts in the implicit null namespace".
+        //
+        // The use list starts with `stdtypes` rather than empty. §7.7.5.2 lets
+        // an implementation provide the standard library "through any other
+        // means (for example, by providing access to built-in definitions)",
+        // and Scena provides its types sub-module that way — §8.14's physical
+        // types are what give a literal like `30kph` a type at all. This is the
+        // auto-use §7.7.5.2.3 describes for the legacy import form, applied to
+        // the types sub-module for every file. A namespace statement replaces
+        // the list, exactly as §7.7.4 says: from there the ordinary rules hold.
         Scope scope;
+        scope.uses.emplace_back(kStandardTypesNamespace);
         for (const Declaration& declaration : file->declarations) {
             switch (declaration.kind) {
             case Declaration::Kind::Import:
-                // Import resolution needs a file loader; p7-s5 wires it to the
-                // standard library. The reference is recorded by the parser.
+                // The loader in load.cpp follows imports and hands this pass
+                // the referenced files; by the time a program is resolved, an
+                // import has already contributed its declarations.
                 break;
             case Declaration::Kind::Namespace: {
                 scope.name_space = declaration.name_space.name;
                 scope.uses = declaration.name_space.uses;
                 if (!is_null_namespace(scope.name_space)) {
-                    if (scope.name_space.rfind("std", 0) == 0) {
+                    if (!file->is_standard_library && scope.name_space.rfind("std", 0) == 0) {
                         warn(declaration.range,
                              "namespace '" + scope.name_space +
                                  "' starts with 'std', which §7.7.4 reserves for the standard");
@@ -1600,50 +1614,6 @@ Status resolve(const std::vector<const File*>& files, Program& out, DiagnosticSi
 Status resolve(const File& file, Program& out, DiagnosticSink& sink) {
     const std::vector<const File*> files{&file};
     return resolve(files, out, sink);
-}
-
-std::string_view builtin_prelude() {
-    // §7.3.4's basic physical types with their SI base units, plus the derived
-    // types and units the movement domain is written in. Kept as source so it
-    // travels through the same lexer, parser and resolver as user code.
-    return R"(type mass is SI(kg: 1)
-type length is SI(m: 1)
-type time is SI(s: 1)
-type electrical_current is SI(A: 1)
-type temperature is SI(K: 1)
-type amount_of_substance is SI(mol: 1)
-type luminous_intensity is SI(cd: 1)
-type angle is SI(rad: 1)
-
-type speed is SI(m: 1, s: -1)
-type acceleration is SI(m: 1, s: -2)
-type jerk is SI(m: 1, s: -3)
-type angular_rate is SI(rad: 1, s: -1)
-
-unit kg of mass is SI(kg: 1)
-unit g of mass is SI(kg: 1, factor: 0.001)
-unit m of length is SI(m: 1)
-unit km of length is SI(m: 1, factor: 1000.0)
-unit cm of length is SI(m: 1, factor: 0.01)
-unit mm of length is SI(m: 1, factor: 0.001)
-unit foot of length is SI(m: 1, factor: 0.3048)
-unit s of time is SI(s: 1)
-unit ms of time is SI(s: 1, factor: 0.001)
-unit min of time is SI(s: 1, factor: 60.0)
-unit hour of time is SI(s: 1, factor: 3600.0)
-unit A of electrical_current is SI(A: 1)
-unit K of temperature is SI(K: 1)
-unit celsius of temperature is SI(K: 1, factor: 1.0, offset: 273.15)
-unit mol of amount_of_substance is SI(mol: 1)
-unit cd of luminous_intensity is SI(cd: 1)
-unit rad of angle is SI(rad: 1)
-unit deg of angle is SI(rad: 1, factor: 0.0174532925199433)
-unit mps of speed is SI(m: 1, s: -1)
-unit kph of speed is SI(m: 1, s: -1, factor: 0.2777777777777778)
-unit mpss of acceleration is SI(m: 1, s: -2)
-unit mpsss of jerk is SI(m: 1, s: -3)
-unit radps of angular_rate is SI(rad: 1, s: -1)
-)";
 }
 
 } // namespace scena::dsl

@@ -61,13 +61,4 @@ namespace scena::dsl {
 /// Convenience overload for a single file.
 [[nodiscard]] Status resolve(const File& file, Program& out, DiagnosticSink& sink);
 
-/// The built-in prelude: the §7.3.4 basic physical types and their base units,
-/// plus the units the domain model's movement types are written in.
-///
-/// Returned as DSL source rather than as hand-built `TypeInfo`s on purpose —
-/// the prelude then goes through the same lexer, parser and resolver as user
-/// code, so a bug in any of them shows up here first. p7-s5 grows this into the
-/// full `osc.standard` library.
-[[nodiscard]] std::string_view builtin_prelude();
-
 } // namespace scena::dsl

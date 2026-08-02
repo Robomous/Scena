@@ -32,6 +32,7 @@
 #include "scena/dsl/expression.h"
 #include "scena/dsl/parser.h"
 #include "scena/dsl/resolve.h"
+#include "scena/dsl/stdlib.h"
 #include "scena/dsl/types.h"
 #include "scena/status.h"
 
@@ -40,7 +41,6 @@ namespace {
 using scena::DiagnosticSink;
 using scena::Severity;
 using scena::Status;
-using scena::dsl::builtin_prelude;
 using scena::dsl::ExpressionContext;
 using scena::dsl::File;
 using scena::dsl::kInvalidType;
@@ -48,11 +48,32 @@ using scena::dsl::Program;
 using scena::dsl::TypeId;
 using scena::dsl::Value;
 
-/// A program with the prelude and a `host` scenario carrying `members`.
+/// The bundled types sub-module, parsed once, as a file of its own. The
+/// standard library is a separate translation unit (§7.7.5.2), never text
+/// pasted in front of the source under test.
+const File& standard_types() {
+    static const File parsed = [] {
+        File file;
+        DiagnosticSink sink;
+        (void)scena::dsl::parse_source(
+            scena::dsl::standard_module_source(scena::dsl::kStandardTypesModule),
+            std::string(scena::dsl::kStandardTypesModule), file, sink);
+        file.is_standard_library = true;
+        return file;
+    }();
+    return parsed;
+}
+
+/// Resolves `file` together with the bundled types sub-module.
+Status resolve_with_std(const File& file, Program& program, DiagnosticSink& sink) {
+    const std::vector<const File*> files{&standard_types(), &file};
+    return scena::dsl::resolve(files, program, sink);
+}
+
+/// A program with the standard types and a `host` scenario carrying `members`.
 /// Everything an expression needs is reachable from `host`.
 Program host_program(std::string_view members, bool expect_ok = true) {
-    const std::string source = std::string(builtin_prelude()) +
-                               "enum side: [left, right]\n"
+    const std::string source = "enum side: [left, right]\n"
                                "struct point:\n"
                                "    x: float\n"
                                "actor vehicle:\n"
@@ -65,7 +86,7 @@ Program host_program(std::string_view members, bool expect_ok = true) {
     File file;
     (void)scena::dsl::parse_source(source, file, sink);
     Program program;
-    const Status status = scena::dsl::resolve(file, program, sink);
+    const Status status = resolve_with_std(file, program, sink);
     if (expect_ok) {
         for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
             EXPECT_NE(diagnostic.severity, Severity::Error) << diagnostic.message;
@@ -77,8 +98,7 @@ Program host_program(std::string_view members, bool expect_ok = true) {
 
 /// The diagnostics of resolving a `host` scenario with `members`.
 std::vector<scena::Diagnostic> host_diagnostics(std::string_view members) {
-    const std::string source = std::string(builtin_prelude()) +
-                               "enum side: [left, right]\n"
+    const std::string source = "enum side: [left, right]\n"
                                "struct point:\n"
                                "    x: float\n"
                                "actor vehicle:\n"
@@ -91,7 +111,7 @@ std::vector<scena::Diagnostic> host_diagnostics(std::string_view members) {
     File file;
     (void)scena::dsl::parse_source(source, file, sink);
     Program program;
-    (void)scena::dsl::resolve(file, program, sink);
+    (void)resolve_with_std(file, program, sink);
     return sink.diagnostics();
 }
 
@@ -154,7 +174,7 @@ TEST(DslExpressionTest, LiteralsTakeTheirSpecifiedTypes) {
     EXPECT_EQ(type_name_of(program, "-42"), "int");
     EXPECT_EQ(type_name_of(program, "1.5"), "float");
     EXPECT_EQ(type_name_of(program, "\"text\""), "string");
-    EXPECT_EQ(type_name_of(program, "30.0kph"), "::speed");
+    EXPECT_EQ(type_name_of(program, "30.0kph"), "stdtypes::speed");
 }
 
 TEST(DslExpressionTest, AnIdentifierTakesTheTypeOfWhatItNames) {
@@ -188,14 +208,13 @@ TEST(DslExpressionTest, AnEnumMemberIsALiteralOfItsType) {
 TEST(DslExpressionTest, AnOverloadedEnumLiteralNeedsItsEnumName) {
     // §7.3.3: "If this ambiguity cannot be resolved uniquely ... an error is
     // signaled."
-    const std::string source = std::string(builtin_prelude()) +
-                               "enum a: [shared]\nenum b: [shared]\n"
+    const std::string source = "enum a: [shared]\nenum b: [shared]\n"
                                "scenario host:\n    keep(shared == shared)\n";
     DiagnosticSink sink;
     File file;
     (void)scena::dsl::parse_source(source, file, sink);
     Program program;
-    EXPECT_EQ(scena::dsl::resolve(file, program, sink), Status::ValidationError);
+    EXPECT_EQ(resolve_with_std(file, program, sink), Status::ValidationError);
     EXPECT_TRUE(mentions(sink.diagnostics(), "more than one enum"));
 }
 
@@ -239,8 +258,8 @@ TEST(DslExpressionTest, UnaryMinusOnAUintYieldsAnInt) {
 TEST(DslExpressionTest, PhysicalTypesAreNeverConverted) {
     // §7.4.2.3.1, first rule.
     Program program = host_program("    v: speed\n    d: length\n    f: float\n");
-    EXPECT_EQ(type_name_of(program, "v + v"), "::speed");
-    EXPECT_EQ(type_name_of(program, "v * f"), "::speed"); // scaling keeps the type
+    EXPECT_EQ(type_name_of(program, "v + v"), "stdtypes::speed");
+    EXPECT_EQ(type_name_of(program, "v * f"), "stdtypes::speed"); // scaling keeps the type
     DiagnosticSink sink;
     EXPECT_EQ(type_of_expression(program, "v + d", sink), kInvalidType);
     EXPECT_TRUE(mentions(sink.diagnostics(), "§7.4.2.3.1"));
@@ -485,7 +504,11 @@ TEST(DslExpressionTest, PhysicalLiteralsFoldToTheirBaseUnit) {
     Value in_mps;
     ASSERT_TRUE(fold(program, "36.0kph", in_kph));
     ASSERT_TRUE(fold(program, "10.0mps", in_mps));
-    EXPECT_NEAR(in_kph.number, in_mps.number, 1e-9);
+    // Approximately, not exactly: §8.14.1.3 prints the kph factor as the
+    // rounded decimal 0.277777778, so 36kph folds to 10.000000008 m/s. The
+    // standard's printed factor is what the library carries (see
+    // DslStdlibTest.TheRoundedFactorsOfTheStandardAreCarriedVerbatim).
+    EXPECT_NEAR(in_kph.number, in_mps.number, 1e-6);
     Value comparison;
     ASSERT_TRUE(fold(program, "36.0kph > 5.0mps", comparison));
     EXPECT_TRUE(comparison.boolean);

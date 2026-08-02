@@ -435,6 +435,10 @@ struct Declaration {
 struct File {
     std::string path;
     std::vector<Declaration> declarations;
+    /// True for a file the implementation bundles as the §8.16 standard
+    /// library. §7.7.4 reserves the `std`-prefixed namespaces for the standard,
+    /// so only such a file may declare one without being warned about it.
+    bool is_standard_library = false;
 };
 
 } // namespace scena::dsl

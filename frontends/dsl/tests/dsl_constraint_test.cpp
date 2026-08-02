@@ -32,6 +32,7 @@
 #include "scena/diagnostic.h"
 #include "scena/dsl/parser.h"
 #include "scena/dsl/resolve.h"
+#include "scena/dsl/stdlib.h"
 #include "scena/dsl/types.h"
 #include "scena/status.h"
 
@@ -40,9 +41,30 @@ namespace {
 using scena::DiagnosticSink;
 using scena::Severity;
 using scena::Status;
-using scena::dsl::builtin_prelude;
 using scena::dsl::File;
 using scena::dsl::Program;
+
+/// The bundled types sub-module, parsed once, as a file of its own. The
+/// standard library is a separate translation unit (§7.7.5.2), never text
+/// pasted in front of the source under test.
+const File& standard_types() {
+    static const File parsed = [] {
+        File file;
+        DiagnosticSink sink;
+        (void)scena::dsl::parse_source(
+            scena::dsl::standard_module_source(scena::dsl::kStandardTypesModule),
+            std::string(scena::dsl::kStandardTypesModule), file, sink);
+        file.is_standard_library = true;
+        return file;
+    }();
+    return parsed;
+}
+
+/// Resolves `file` together with the bundled types sub-module.
+Status resolve_with_std(const File& file, Program& program, DiagnosticSink& sink) {
+    const std::vector<const File*> files{&standard_types(), &file};
+    return scena::dsl::resolve(files, program, sink);
+}
 
 constexpr std::string_view kPreamble = "enum side: [left, right]\n"
                                        "actor vehicle:\n"
@@ -53,13 +75,12 @@ constexpr std::string_view kPreamble = "enum side: [left, right]\n"
 /// Resolves a `host` scenario carrying `members` and returns everything
 /// reported.
 std::vector<scena::Diagnostic> check(std::string_view members) {
-    const std::string source =
-        std::string(builtin_prelude()) + std::string(kPreamble) + std::string(members);
+    const std::string source = std::string(kPreamble) + std::string(members);
     DiagnosticSink sink;
     File file;
     (void)scena::dsl::parse_source(source, file, sink);
     Program program;
-    (void)scena::dsl::resolve(file, program, sink);
+    (void)resolve_with_std(file, program, sink);
     return sink.diagnostics();
 }
 
@@ -164,7 +185,7 @@ TEST(DslConstraintTest, AFalseDefaultConstraintIsOnlyAWarning) {
 
 TEST(DslConstraintTest, AConstantTrueConstraintIsAccepted) {
     const std::vector<scena::Diagnostic> diagnostics =
-        check("    keep(2 > 1)\n    keep(36.0kph == 10.0mps)\n");
+        check("    keep(2 > 1)\n    keep(36.0kph > 5.0mps)\n");
     EXPECT_FALSE(has_error(diagnostics));
     EXPECT_FALSE(notes_unsupported(diagnostics));
 }
