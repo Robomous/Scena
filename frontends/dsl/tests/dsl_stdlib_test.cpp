@@ -867,6 +867,339 @@ TEST(DslStdlibTest, AnActionAndAStructMayShareASimpleName) {
     EXPECT_EQ(action->kind, TypeKind::Action);
 }
 
+// --- §8.15 traffic lights ---------------------------------------------------
+
+TEST(DslStdlibTest, TheTrafficLightEnumsCarryTheirValues) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::size_t values;
+        const char* sample;
+    };
+    for (const Case& expected :
+         {Case{"std::bulb_icon", 45, "arrow_u_turn_left"}, Case{"std::bulb_color", 6, "yellow"},
+          Case{"std::bulb_state", 4, "is_flashing"},
+          Case{"std::semantic_traffic_light_state", 8, "go_exclusive"},
+          Case{"std::stop_line_marking", 3, "broken"}}) {
+        const TypeInfo* type = library.program.find(expected.name);
+        ASSERT_NE(type, nullptr) << expected.name;
+        EXPECT_EQ(type->kind, TypeKind::Enum) << expected.name;
+        EXPECT_EQ(type->enum_members.size(), expected.values) << expected.name;
+        bool found = false;
+        for (const auto& member : type->enum_members) {
+            found = found || member.name == expected.sample;
+        }
+        EXPECT_TRUE(found) << expected.name << "!" << expected.sample;
+    }
+}
+
+TEST(DslStdlibTest, TheTrafficLightStructsAreDeclaredWithTheirFields) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::traffic_light_bulb", "icon"},
+          // Table 308 calls the first four parameters and Table 309 calls
+          // `state` a state variable; both are fields here.
+          Case{"std::traffic_light_bulb", "state"},
+          Case{"std::traffic_light_bulb", "icon_positive"}, Case{"std::traffic_light", "bulbs"},
+          Case{"std::traffic_light", "pose"}, Case{"std::traffic_light", "group"},
+          Case{"std::traffic_light_group", "traffic_lights"},
+          Case{"std::traffic_light_group", "cycle"},
+          Case{"std::traffic_light_stop_line", "rightmost_lane"},
+          Case{"std::traffic_light_stop_line", "secondary_stop_offset"},
+          Case{"std::traffic_light_stop_line", "primary_stop_line_marking"},
+          Case{"std::traffic_light_phase", "bulbs_state"},
+          Case{"std::traffic_light_phase", "duration"}, Case{"std::traffic_light_cycle", "phases"},
+          Case{"std::traffic_light_cycle", "synchronization_group_id"},
+          Case{"std::traffic_light_cycle", "start_offset"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+            << expected.name << "." << expected.field;
+    }
+}
+
+TEST(DslStdlibTest, AFieldMayShareItsNameWithItsType) {
+    // §8.15.5.2's stop line has a field `traffic_light_group` of type
+    // `traffic_light_group`, and §8.12.2's map has `driving_rule: driving_rule`.
+    // Members and types are separate lookup spaces, so this is legal — it is
+    // pinned because it reads like a collision and the standard does it often.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* owner;
+        const char* member;
+        const char* type;
+    };
+    for (const Case& expected :
+         {Case{"std::traffic_light_stop_line", "traffic_light_group", "std::traffic_light_group"},
+          Case{"std::traffic_light_stop_line", "route", "std::route"},
+          Case{"std::map", "driving_rule", "std::driving_rule"}}) {
+        const auto id = library.program.types_by_name.find(expected.owner);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.owner;
+        const scena::dsl::FieldInfo* field =
+            library.program.find_field(id->second, expected.member);
+        ASSERT_NE(field, nullptr) << expected.owner << "." << expected.member;
+        ASSERT_NE(field->type, scena::dsl::kInvalidType) << expected.member;
+        EXPECT_EQ(library.program.types[field->type].name, expected.type) << expected.member;
+        EXPECT_NE(library.program.find(expected.type), nullptr) << expected.type;
+    }
+}
+
+TEST(DslStdlibTest, TheStopLineIsARouteElement) {
+    // Table 322 gives `traffic_light_stop_line` the parent `route_element`, so
+    // a stop line is something a movable object can be located on — which is
+    // what lets §8.15.10's examples measure distance to it along a route.
+    Library library;
+    check_full_library(library);
+    const auto stop_line = library.program.types_by_name.find("std::traffic_light_stop_line");
+    const auto element = library.program.types_by_name.find("std::route_element");
+    ASSERT_NE(stop_line, library.program.types_by_name.end());
+    ASSERT_NE(element, library.program.types_by_name.end());
+    EXPECT_TRUE(library.program.is_derived_from(stop_line->second, element->second));
+}
+
+TEST(DslStdlibTest, TheTrafficLightMethodsAreDeclaredWithTheirSignatures) {
+    // §8.15.4.2.1's prototype prints `extend traffic_light:` for the GROUP's
+    // `state_equal`; its heading, its prose and Table 319 all say the method
+    // belongs to the group, so the lone printed receiver loses.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* type;
+        const char* method;
+        std::size_t parameters;
+        const char* returns;
+    };
+    for (const Case& expected : {Case{"std::traffic_light", "state_equal", 1, "bool"},
+                                 Case{"std::traffic_light", "state_to_semantic_state", 1,
+                                      "std::semantic_traffic_light_state"},
+                                 Case{"std::traffic_light_group", "state_equal", 1, "bool"}}) {
+        const auto id = library.program.types_by_name.find(expected.type);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.type;
+        const scena::dsl::MethodInfo* method =
+            library.program.find_method(id->second, expected.method);
+        ASSERT_NE(method, nullptr) << expected.type << "." << expected.method;
+        EXPECT_EQ(method->parameters.size(), expected.parameters) << expected.method;
+        ASSERT_NE(method->return_type, scena::dsl::kInvalidType) << expected.method;
+        EXPECT_EQ(library.program.types[method->return_type].name, expected.returns)
+            << expected.method;
+    }
+    // `semantic_state_to_state` returns a list, so its return type is the
+    // structural aggregate the type table interns rather than a declared name.
+    const auto light = library.program.types_by_name.find("std::traffic_light");
+    ASSERT_NE(light, library.program.types_by_name.end());
+    const scena::dsl::MethodInfo* to_state =
+        library.program.find_method(light->second, "semantic_state_to_state");
+    ASSERT_NE(to_state, nullptr);
+    ASSERT_NE(to_state->return_type, scena::dsl::kInvalidType);
+    EXPECT_EQ(library.program.types[to_state->return_type].kind, TypeKind::List);
+}
+
+TEST(DslStdlibTest, TheTrafficLightActionsAreDeclaredOnTheController) {
+    // §8.15.8 gives traffic lights their own actor; §8.15.9's seven actions
+    // hang off it. §8.8.1 declares only `action_for_environment` and
+    // `action_for_movable_object` as intermediate bases, so these inherit
+    // `osc_action` directly rather than invent a third.
+    Library library;
+    check_full_library(library);
+    const auto controller = library.program.types_by_name.find("std::traffic_light_controller");
+    const auto osc_actor = library.program.types_by_name.find("std::osc_actor");
+    const auto osc_action = library.program.types_by_name.find("std::osc_actor.osc_action");
+    ASSERT_NE(controller, library.program.types_by_name.end());
+    ASSERT_NE(osc_actor, library.program.types_by_name.end());
+    ASSERT_NE(osc_action, library.program.types_by_name.end());
+    EXPECT_EQ(library.program.types[controller->second].kind, TypeKind::Actor);
+    EXPECT_TRUE(library.program.is_derived_from(controller->second, osc_actor->second));
+
+    struct Case {
+        const char* name;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::traffic_light_controller.set_bulb_state", "bulb_kind"},
+          Case{"std::traffic_light_controller.set_state", "state"},
+          Case{"std::traffic_light_controller.set_semantic_state", "sync"},
+          // Table 337 names this one's first parameter `traffic_light` of type
+          // `traffic_light` though its description says "group"; the parameter
+          // table is what a conforming scenario is written against.
+          Case{"std::traffic_light_controller.set_group_bulb_state", "traffic_light"},
+          Case{"std::traffic_light_controller.set_group_state", "group"},
+          Case{"std::traffic_light_controller.set_group_semantic_state", "traffic_light_group"},
+          Case{"std::traffic_light_controller.play_cycles", "cycles"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Action) << expected.name;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, osc_action->second))
+            << expected.name;
+        EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+            << expected.name << "." << expected.field;
+    }
+}
+
+// --- §8.12.2 the map actor --------------------------------------------------
+
+TEST(DslStdlibTest, TheMapActorHoldsTheRoadNetwork) {
+    // Table 187, plus the two fields §8.15.7 prints as a separate `extend map:`
+    // block. §7.3.15 makes a type the union of its declarations, so declaring
+    // them together is the same program.
+    Library library;
+    check_full_library(library);
+    const auto map = library.program.types_by_name.find("std::map");
+    const auto osc_actor = library.program.types_by_name.find("std::osc_actor");
+    ASSERT_NE(map, library.program.types_by_name.end());
+    ASSERT_NE(osc_actor, library.program.types_by_name.end());
+    EXPECT_EQ(library.program.types[map->second].kind, TypeKind::Actor);
+    EXPECT_TRUE(library.program.is_derived_from(map->second, osc_actor->second));
+    for (const char* field : {"map_file", "routes", "junctions", "driving_rule",
+                              "traffic_light_groups", "traffic_light_control"}) {
+        EXPECT_NE(library.program.find_field(map->second, field), nullptr) << field;
+    }
+}
+
+TEST(DslStdlibTest, TheMapMethodsAreDeclaredWithTheirSignatures) {
+    // §8.12.2.1's eighteen prototypes. Unusually for §8 they are printed as
+    // `extend map:` code rather than as tables, so this is a transcription and
+    // the arities are the standard's own.
+    Library library;
+    check_full_library(library);
+    const auto map = library.program.types_by_name.find("std::map");
+    ASSERT_NE(map, library.program.types_by_name.end());
+    struct Case {
+        const char* method;
+        std::size_t parameters;
+        const char* returns;
+    };
+    for (const Case& expected :
+         {Case{"odr_to_route_point", 4, "std::route_point"},
+          Case{"xyz_to_route_point", 3, "std::route_point"},
+          Case{"route_point_to_xyz", 1, "std::xyz_point"},
+          Case{"outer_side", 0, "std::side_left_right"},
+          Case{"inner_side", 0, "std::side_left_right"},
+          Case{"create_route", 3, "std::compound_route"},
+          Case{"create_route_point", 3, "std::route_point"},
+          Case{"create_xyz_point", 3, "std::xyz_point"},
+          Case{"create_odr_point", 4, "std::odr_point"}, Case{"create_path", 2, "std::path"},
+          Case{"create_path_odr_points", 3, "std::path"},
+          Case{"create_path_route_points", 3, "std::path"},
+          Case{"create_trajectory", 3, "std::trajectory"},
+          Case{"create_trajectory_odr_points", 4, "std::trajectory"},
+          Case{"create_trajectory_route_points", 4, "std::trajectory"},
+          Case{"resolve_relative_path", 3, "std::path"},
+          Case{"resolve_relative_trajectory", 3, "std::trajectory"},
+          Case{"get_map_file", 0, "string"}}) {
+        const scena::dsl::MethodInfo* method =
+            library.program.find_method(map->second, expected.method);
+        ASSERT_NE(method, nullptr) << expected.method;
+        EXPECT_EQ(method->parameters.size(), expected.parameters) << expected.method;
+        ASSERT_NE(method->return_type, scena::dsl::kInvalidType) << expected.method;
+        EXPECT_EQ(library.program.types[method->return_type].name, expected.returns)
+            << expected.method;
+    }
+}
+
+TEST(DslStdlibTest, TheMapModifiersAreAssociatedWithTheMap) {
+    // §8.12.2.2's twelve search-space modifiers, in the §7.2.2.2.9 prefixed
+    // form. Applying one is issue #100 (the actor prefix stays in the declared
+    // name, so the application site cannot find it); the declarations
+    // themselves are well-formed, which is what this pins.
+    Library library;
+    check_full_library(library);
+    const auto map = library.program.types_by_name.find("std::map");
+    ASSERT_NE(map, library.program.types_by_name.end());
+    struct Case {
+        const char* name;
+        std::size_t parameters;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::map.number_of_lanes", 5, "num_of_lanes"},
+          Case{"std::map.routes_are_in_sequence", 3, "succeeding"},
+          Case{"std::map.roads_follow_in_junction", 10, "clockwise_count"},
+          Case{"std::map.routes_overlap", 3, "overlap_kind"},
+          Case{"std::map.lane_side", 5, "count"}, Case{"std::map.compound_lane_side", 5, "lane1"},
+          Case{"std::map.end_lane", 1, "lane"}, Case{"std::map.start_lane", 1, "lane"},
+          Case{"std::map.crossing_connects", 5, "start_s_coord"},
+          Case{"std::map.routes_are_opposite", 4, "lateral_overlap"},
+          Case{"std::map.set_map_file", 1, "file"},
+          Case{"std::map.set_traffic_lights_control_file", 1, "file"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        const TypeInfo& modifier = library.program.types[id->second];
+        EXPECT_EQ(modifier.kind, TypeKind::Modifier) << expected.name;
+        EXPECT_EQ(modifier.actor_type, map->second) << expected.name;
+        EXPECT_EQ(modifier.field_order.size(), expected.parameters) << expected.name;
+        EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+            << expected.name << "." << expected.field;
+    }
+}
+
+TEST(DslStdlibTest, AScenarioCanUseTheMapAndItsTrafficLights) {
+    // The end-to-end shape §8.15.10's examples are written in, minus the
+    // behaviour: declare the map and the lights, then constrain them.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario crossing_light:\n"
+                                       "    my_map: map\n"
+                                       "    light: traffic_light\n"
+                                       "    group: traffic_light_group\n"
+                                       "    stop_line: traffic_light_stop_line\n"
+                                       "    control: traffic_light_controller\n"
+                                       "    keep(light.group == group)\n"
+                                       "    keep(stop_line.traffic_light_group == group)\n"
+                                       "    keep(stop_line.primary_stop_line_marking == solid)\n"
+                                       "    keep(my_map.driving_rule == right_hand_traffic)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+    EXPECT_FALSE(sink.has_errors());
+}
+
+TEST(DslStdlibTest, ASideLiteralNeedsItsEnumName) {
+    // `left` is a member of both `side_left_right` (§8.12.14) and
+    // `junction_direction` (§8.12.22). Adding the map made this reachable from
+    // ordinary scenario text, so §7.3.3's qualification is required — the same
+    // rule `lane_type!driving` already illustrates, on a word an author is far
+    // more likely to reach for.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario turn:\n"
+                                       "    where: side_left_right\n"
+                                       "    keep(where == left)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::ValidationError);
+    bool explained = false;
+    for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
+        explained = explained || diagnostic.message.find("more than one enum") != std::string::npos;
+    }
+    EXPECT_TRUE(explained);
+
+    DiagnosticSink qualified;
+    LoadResult qualified_loaded;
+    Program qualified_program;
+    EXPECT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario turn:\n"
+                                       "    where: side_left_right\n"
+                                       "    keep(where == side_left_right!left)\n",
+                                       "<test>", LoadOptions{}, qualified_loaded, qualified_program,
+                                       qualified),
+              Status::Ok)
+        << (qualified.diagnostics().empty() ? std::string()
+                                            : qualified.diagnostics().front().message);
+}
+
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
     // Load time is inside the determinism contract: the same sources must give
     // the same program and the same diagnostics, in the same order.

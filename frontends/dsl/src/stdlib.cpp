@@ -698,14 +698,282 @@ action environment.assign_celestial_position inherits environment.action_for_env
     elevation: angle
 )OSC";
 
+// §8.15 the traffic lights: the bulb enums and struct, the semantic-state enum,
+// the traffic-light and group structs with their methods, the stop line, the
+// phase and cycle structs, the controller actor and its seven actions.
+// Transcribed from the parameter tables of §8.15.2–§8.15.9; the four method
+// prototypes are the chapter's only printed code.
+// Translation worksheet: docs/dev/stdlib-worksheets/08-15-traffic-lights.md
+constexpr std::string_view kDomainTrafficLights = R"OSC(
+# --- §8.15.2.1 enum bulb_icon ------------------------------------------------
+# Table 302 pairs each icon with the OpenDRIVE signal type that draws it; that
+# mapping is documentation and is not part of the declaration.
+enum bulb_icon: [
+    unknown, circle, pedestrian_walking, pedestrian_standing, tram, bus,
+    bicycle, horse_rider, person_bicycle, bicycle_left, bicycle_right,
+    arrow_left, arrow_right, arrow_straight, arrow_left_straight,
+    arrow_right_straight, arrow_diagonal_left, arrow_diagonal_right,
+    arrow_u_turn_left, arrow_u_turn_right, arrow_left_right, lane_arrow_down,
+    lane_arrow_down_right, lane_arrow_down_left, lane_cross, txt_walk,
+    txt_dont_walk, countdown, pt_horizontal_bar, pt_vertical_bar, pt_slash_bar,
+    pt_backslash_bar, pt_small_circle, pt_triangle, switch_x, switch_v_flipped,
+    switch_v_left, switch_v_right, switch_t, switch_a, switch_bar_v,
+    switch_bar_v_flipped, switch_bar_v_right, switch_bar_v_left,
+    switch_dotted_circle
+]
+
+# --- §8.15.2.2 enum bulb_color -----------------------------------------------
+# Every member also names a member of `color` (§8.7.15), so §7.3.3 makes a
+# scenario write `bulb_color!red` wherever both are in scope.
+enum bulb_color: [unknown, red, yellow, green, blue, white]
+
+# --- §8.15.2.3 enum bulb_state -----------------------------------------------
+enum bulb_state: [unknown, is_off, is_on, is_flashing]
+
+# --- §8.15.2.4 struct traffic_light_bulb -------------------------------------
+# Table 308 calls the first four parameters and Table 309 calls `state` a state
+# variable; the language has one kind of member, so both become fields.
+struct traffic_light_bulb:
+    map_id: string
+    icon: bulb_icon
+    color: bulb_color
+    icon_positive: bool
+    state: bulb_state
+
+# --- §8.15.3.1 enum semantic_traffic_light_state -----------------------------
+enum semantic_traffic_light_state: [
+    off, stop, attention, caution, stop_attention, go, go_exclusive,
+    non_functional
+]
+
+# --- §8.15.4.1 struct traffic_light ------------------------------------------
+# A traffic light has no state member of its own: its state IS the state of its
+# bulbs, which is what the three methods below read and convert.
+struct traffic_light:
+    map_id: string
+    bulbs: list of traffic_light_bulb
+    pose: pose_3d
+    height: length
+    width: length
+    group: traffic_light_group
+    def state_equal(bulbs: list of traffic_light_bulb) -> bool is undefined
+    def semantic_state_to_state(state: semantic_traffic_light_state) -> list of traffic_light_bulb is undefined
+    def state_to_semantic_state(bulbs: list of traffic_light_bulb) -> semantic_traffic_light_state is undefined
+
+# --- §8.15.4.2 struct traffic_light_group ------------------------------------
+# §8.15.4.2.1's prototype prints `extend traffic_light:`, but its heading, its
+# prose and Table 319 all place `state_equal` on the GROUP; the lone printed
+# receiver is a slip and the method is declared here.
+struct traffic_light_group:
+    map_id: string
+    bulbs: list of traffic_light_bulb
+    traffic_lights: list of traffic_light
+    cycle: traffic_light_cycle
+    def state_equal(bulbs: list of traffic_light_bulb) -> bool is undefined
+
+# --- §8.15.5.1 enum stop_line_marking ----------------------------------------
+enum stop_line_marking: [none, solid, broken]
+
+# --- §8.15.5.2 struct traffic_light_stop_line --------------------------------
+struct traffic_light_stop_line inherits route_element:
+    traffic_light_group: traffic_light_group
+    route: route
+    rightmost_lane: uint
+    leftmost_lane: uint
+    offset: length
+    secondary_stop_offset: length
+    primary_stop_line_marking: stop_line_marking
+    secondary_stop_line_marking: stop_line_marking
+
+# --- §8.15.6.1 struct traffic_light_phase ------------------------------------
+struct traffic_light_phase:
+    group: traffic_light_group
+    bulbs_state: list of traffic_light_bulb
+    duration: time
+
+# --- §8.15.6.2 struct traffic_light_cycle ------------------------------------
+struct traffic_light_cycle:
+    phases: list of traffic_light_phase
+    synchronization_group_id: uint
+    start_offset: time
+
+# --- §8.15.8.1 actor traffic_light_controller --------------------------------
+actor traffic_light_controller inherits osc_actor
+
+# --- §8.15.9 actions for controlling traffic lights --------------------------
+# §8.8.1 declares only `action_for_environment` and `action_for_movable_object`
+# as intermediate bases, so these inherit `osc_action` directly rather than
+# invent a third one. Every action but `play_cycles` is instantaneous; action
+# ending is runtime semantics and has no place in a declaration.
+action traffic_light_controller.set_bulb_state inherits osc_actor.osc_action:
+    traffic_light: traffic_light
+    bulb_color: bulb_color
+    bulb_kind: bulb_icon
+    bulb_state: bulb_state
+    sync: bool
+
+action traffic_light_controller.set_state inherits osc_actor.osc_action:
+    traffic_light: traffic_light
+    state: list of bulb_state
+    sync: bool
+
+action traffic_light_controller.set_semantic_state inherits osc_actor.osc_action:
+    traffic_light: traffic_light
+    state: semantic_traffic_light_state
+    sync: bool
+
+# Table 337 names this action's first parameter `traffic_light` of type
+# `traffic_light` while its description says "the traffic light GROUP affected".
+# The parameter table is the surface a conforming scenario is written against,
+# so the printed name and type are carried verbatim — the same rule that keeps
+# §8.14.1.3's rounded conversion factors (ADR-0029).
+action traffic_light_controller.set_group_bulb_state inherits osc_actor.osc_action:
+    traffic_light: traffic_light
+    bulb_color: bulb_color
+    bulb_kind: bulb_icon
+    bulb_state: bulb_state
+    sync: bool
+
+action traffic_light_controller.set_group_state inherits osc_actor.osc_action:
+    group: traffic_light_group
+    state: list of bulb_state
+    sync: bool
+
+action traffic_light_controller.set_group_semantic_state inherits osc_actor.osc_action:
+    traffic_light_group: traffic_light_group
+    state: semantic_traffic_light_state
+    sync: bool
+
+action traffic_light_controller.play_cycles inherits osc_actor.osc_action:
+    cycles: list of traffic_light_cycle
+)OSC";
+
+// §8.12.2 the `map` actor: the top-level holder of the abstract road network,
+// its 18 query methods and its 12 search-space modifiers. The methods are the
+// chapter's printed `extend map:` prototypes; the fields and the modifiers come
+// from the parameter tables of §8.12.2 and §8.12.2.2.
+// Translation worksheet: docs/dev/stdlib-worksheets/08-12-02-map.md
+constexpr std::string_view kDomainMap = R"OSC(
+# --- §8.12.2 actor map -------------------------------------------------------
+# §8.15.7 prints `traffic_light_groups` and `traffic_light_control` as a
+# separate `extend map:` block. §7.3.15 makes a type the union of its
+# declarations, so declaring them inline here is the same program.
+actor map inherits osc_actor:
+    map_file: string
+    routes: list of route
+    junctions: list of junction
+    driving_rule: driving_rule
+    traffic_light_groups: list of traffic_light_group
+    traffic_light_control: list of traffic_light_cycle
+
+    # §8.12.2.1 methods. Each is a query a runtime answers; the library only
+    # has to give it a signature to check calls against.
+    def odr_to_route_point(road_id: string, lane_id: string, s: length, t: length) -> route_point is undefined
+    def xyz_to_route_point(x: length, y: length, z: length) -> route_point is undefined
+    def route_point_to_xyz(route_point: route_point) -> xyz_point is undefined
+    def outer_side() -> side_left_right is undefined
+    def inner_side() -> side_left_right is undefined
+    def create_route(routes: list of route, connect_points_by: connect_route_points, legal_route: bool) -> compound_route is undefined
+    def create_route_point(route: route, s: length, t: length) -> route_point is undefined
+    def create_xyz_point(x: length, y: length, z: length) -> xyz_point is undefined
+    def create_odr_point(road_id: string, lane_id: string, s: length, t: length) -> odr_point is undefined
+    def create_path(points: list of pose_3d, interpolation: path_interpolation) -> path is undefined
+    def create_path_odr_points(points: list of odr_point, interpolation: path_interpolation, on_road_network: bool) -> path is undefined
+    def create_path_route_points(points: list of route_point, interpolation: path_interpolation, on_road_network: bool) -> path is undefined
+    def create_trajectory(points: list of pose_3d, time_stamps: list of time, interpolation: path_interpolation) -> trajectory is undefined
+    def create_trajectory_odr_points(points: list of odr_point, time_stamps: list of time, interpolation: path_interpolation, on_road_network: bool) -> trajectory is undefined
+    def create_trajectory_route_points(points: list of route_point, time_stamps: list of time, interpolation: path_interpolation, on_road_network: bool) -> trajectory is undefined
+    def resolve_relative_path(relative_path: relative_path, reference: physical_object, transform: relative_transform) -> path is undefined
+    def resolve_relative_trajectory(relative_trajectory: relative_trajectory, reference: physical_object, transform: relative_transform) -> trajectory is undefined
+    def get_map_file() -> string is undefined
+
+# --- §8.12.2.2 modifiers -----------------------------------------------------
+# An actor's modifier takes the §7.2.2.2.9 PREFIXED form: §7.3.12.2's `of`
+# names a scenario or an action, never an actor.
+#
+# Many of the field names below are also type names in this namespace
+# (`route`, `road`, `lane`, `lane_section`, `crossing`, `junction`,
+# `lane_type`, `lane_use`, `directionality`). Members and types are separate
+# lookup spaces, so this checks cleanly; it is pinned by test because it reads
+# like a collision.
+modifier map.number_of_lanes:
+    route: route
+    num_of_lanes: uint
+    lane_type: lane_type
+    lane_use: lane_use
+    directionality: directionality
+
+modifier map.routes_are_in_sequence:
+    preceding: route
+    succeeding: route
+    road: road
+
+modifier map.roads_follow_in_junction:
+    junction: junction
+    in_road: road
+    out_road: road
+    direction: junction_direction
+    clockwise_count: uint
+    number_of_roads: uint
+    in_lane: lane
+    out_lane: lane
+    junction_route: route
+    resulting_route: route
+
+modifier map.routes_overlap:
+    route1: route
+    route2: route
+    overlap_kind: route_overlap_kind
+
+modifier map.lane_side:
+    lane1: lane
+    side: side_left_right
+    lane2: lane
+    count: uint
+    lane_section: lane_section
+
+modifier map.compound_lane_side:
+    lane1: compound_lane
+    side: side_left_right
+    lane2: compound_lane
+    count: uint
+    route: route
+
+modifier map.end_lane:
+    lane: lane
+
+modifier map.start_lane:
+    lane: lane
+
+modifier map.crossing_connects:
+    crossing: crossing
+    start_lane: lane
+    end_lane: lane
+    start_s_coord: length
+    start_angle: angle
+
+modifier map.routes_are_opposite:
+    route1: route
+    route2: route
+    containing_road: road
+    lateral_overlap: lateral_overlap_kind
+
+modifier map.set_map_file:
+    file: string
+
+modifier map.set_traffic_lights_control_file:
+    file: string
+)OSC";
+
 const std::string& types_module() {
     static const std::string source = std::string(kTypesScalars) + std::string(kTypesCompound);
     return source;
 }
 
 const std::string& domain_module() {
-    static const std::string source =
-        std::string(kDomainEntities) + std::string(kDomainRoads) + std::string(kDomainEnvironment);
+    static const std::string source = std::string(kDomainEntities) + std::string(kDomainRoads) +
+                                      std::string(kDomainEnvironment) +
+                                      std::string(kDomainTrafficLights) + std::string(kDomainMap);
     return source;
 }
 
