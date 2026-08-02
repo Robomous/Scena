@@ -398,10 +398,10 @@ Status lower(const Program& program, const LoadResult& loaded, const LowerOption
                             if (member.value != value.enum_value) {
                                 continue;
                             }
-                            if (const std::optional<ir::VehicleCategory> mapped =
+                            if (const std::optional<ir::VehicleCategory> inherited =
                                     vehicle_category_of(member.name);
-                                mapped.has_value()) {
-                                vehicle.category = *mapped;
+                                inherited.has_value()) {
+                                vehicle.category = *inherited;
                             }
                             break;
                         }
