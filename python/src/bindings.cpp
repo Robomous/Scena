@@ -35,6 +35,8 @@
 #include <vector>
 
 #include "scena/diagnostic.h"
+#include "scena/dsl/load.h"
+#include "scena/dsl/types.h"
 #include "scena/engine.h"
 #include "scena/entity_visibility.h"
 #include "scena/gateway/simulator_gateway.h"
@@ -67,6 +69,41 @@ using namespace nb::literals;
 namespace ir = scena::ir;
 
 namespace {
+
+/// What `check_dsl_file` / `check_dsl_string` hand back.
+///
+/// A plain value, not a handle: the `Program` and the ASTs it points into stay
+/// inside the check, so nothing here can outlive its own storage. Python gets
+/// the findings and the two counts, which is everything the checker knows that
+/// is meaningful without a lowering pass (that is P8).
+struct DslCheck {
+    scena::Status status = scena::Status::Ok;
+    std::vector<scena::Diagnostic> diagnostics;
+    size_t type_count = 0;
+    size_t file_count = 0;
+};
+
+/// Runs one check. `source` present means check it in memory, absent means read
+/// `origin` from disk — the two entry points differ only there.
+DslCheck run_dsl_check(std::optional<std::string_view> source, const std::filesystem::path& origin,
+                       const std::vector<std::filesystem::path>& search_paths,
+                       bool implicit_standard_library) {
+    scena::dsl::LoadOptions options;
+    options.search_paths = search_paths;
+    options.implicit_standard_library = implicit_standard_library;
+
+    scena::dsl::LoadResult loaded;
+    scena::dsl::Program program;
+    scena::DiagnosticSink sink;
+    DslCheck result;
+    result.status = source.has_value()
+                        ? scena::dsl::check_source(*source, origin, options, loaded, program, sink)
+                        : scena::dsl::check_file(origin, options, loaded, program, sink);
+    result.diagnostics = sink.take();
+    result.type_count = program.types.size();
+    result.file_count = loaded.files().size();
+    return result;
+}
 
 /// nanobind trampoline for ISimulatorGateway: a Python class deriving from
 /// scena.SimulatorGateway overrides whichever methods it cares about, and the
@@ -2026,4 +2063,53 @@ NB_MODULE(_scena, m) {
             return std::make_tuple(status, std::move(document.scenario), sink.take());
         },
         "xml"_a, "As load_string, additionally returning the list of findings.");
+
+    // --- Checking OpenSCENARIO DSL ----------------------------------------
+
+    // The XML loaders return (status, scenario) because the scenario is the
+    // payload and the findings are secondary. A check has no payload — the
+    // findings ARE the result, alongside how much the checker got through — so
+    // it returns one named object instead of a four-tuple.
+    nb::class_<DslCheck>(m, "DslCheck",
+                         "The result of checking an OpenSCENARIO DSL source: what the checker "
+                         "found, and how far it got.")
+        .def_ro("status", &DslCheck::status, "Ok when nothing was reported as an error.")
+        .def_ro("diagnostics", &DslCheck::diagnostics,
+                "Every finding, in the order it was reported. DSL diagnostics cite a "
+                "specification section in their message and leave rule_id empty, because the "
+                "DSL standard defines no asam.net rule ids.")
+        .def_ro("type_count", &DslCheck::type_count,
+                "Types resolved: everything the source declares plus everything it reached "
+                "through an import, the standard library included.")
+        .def_ro("file_count", &DslCheck::file_count,
+                "Source files covered: the file itself plus its transitive imports.")
+        .def("__bool__", [](const DslCheck& check) { return check.status == scena::Status::Ok; })
+        .def("__repr__", [](const DslCheck& check) {
+            return nb::str("DslCheck(status={}, diagnostics={}, type_count={}, file_count={})")
+                .format(nb::cast(check.status), check.diagnostics.size(), check.type_count,
+                        check.file_count);
+        });
+
+    m.def(
+        "check_dsl_file",
+        [](const std::filesystem::path& path,
+           const std::vector<std::filesystem::path>& search_paths, bool implicit_standard_library) {
+            return run_dsl_check(std::nullopt, path, search_paths, implicit_standard_library);
+        },
+        "path"_a, "search_paths"_a = std::vector<std::filesystem::path>{},
+        "implicit_standard_library"_a = true,
+        "Checks an OpenSCENARIO DSL file and everything it imports (§7.7.5). Checking is "
+        "not running: DSL execution is P8, so a file that checks clean is one the frontend "
+        "understood.");
+    m.def(
+        "check_dsl_string",
+        [](std::string_view source, const std::filesystem::path& origin,
+           const std::vector<std::filesystem::path>& search_paths, bool implicit_standard_library) {
+            return run_dsl_check(source, origin, search_paths, implicit_standard_library);
+        },
+        "source"_a, "origin"_a = std::filesystem::path("<string>"),
+        "search_paths"_a = std::vector<std::filesystem::path>{},
+        "implicit_standard_library"_a = true,
+        "As check_dsl_file, from a source in memory. `origin` names it in diagnostics and "
+        "anchors its relative imports; it need not exist on disk.");
 }

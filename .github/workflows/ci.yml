@@ -48,6 +48,7 @@ jobs:
           python python/examples/load_and_run.py
           python python/examples/host_controlled.py
           python python/examples/storyboard_events.py
+          python python/examples/check_dsl.py
 
       - name: Parity audit (C++ / C / Python)
         run: python scripts/parity_audit.py
