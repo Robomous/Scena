@@ -8,10 +8,10 @@ add_library(scena::capi ALIAS scena-capi)
 target_include_directories(scena-capi PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-# The C ABI exposes scenario loading (scn_engine_load_xml_*), so it links the
-# XML frontend as well. Both are PRIVATE: no frontend or kernel type appears in
-# capi.h, which stays C-clean.
-target_link_libraries(scena-capi PRIVATE scena::core scena::frontend-xml)
+# The C ABI exposes scenario loading (scn_engine_load_xml_*) and DSL checking
+# (scn_check_dsl_*), so it links both frontends as well. All PRIVATE: no
+# frontend or kernel type appears in capi.h, which stays C-clean.
+target_link_libraries(scena-capi PRIVATE scena::core scena::frontend-xml scena::frontend-dsl)
 target_compile_definitions(scena-capi PRIVATE SCN_CAPI_EXPORTS)
 target_compile_features(scena-capi PRIVATE cxx_std_20)
 set_target_properties(scena-capi PROPERTIES

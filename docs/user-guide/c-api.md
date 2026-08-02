@@ -132,6 +132,17 @@ Signal ids are free-form road-network references, so any name is accepted. A
 controller phase naming the same signal overwrites it on its next transition,
 exactly as it overwrites an action's write.
 
+## Checking OpenSCENARIO DSL
+
+`scn_check_dsl_file` and `scn_check_dsl_string` check a DSL source and its
+imports without constructing an engine — checking is a frontend service, which
+is why the result is its own `scn_dsl_check` handle rather than an engine's
+diagnostic list. Release it with `scn_dsl_check_destroy`, whatever the status: a
+failing check still produces one. See
+[`scena-check`](scena-check.md#checking-from-c-and-python) for the worked
+example, and note that a zero-initialized `scn_dsl_check_options` turns the
+standard library *off* — pass `NULL` to get the defaults instead.
+
 ## What is not in C
 
 The C ABI carries data, not C++ objects. A `Controller`'s property list, an

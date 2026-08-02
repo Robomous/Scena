@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Audits the C++ / C / Python parity of the engine surface.
+"""Audits the C++ / C / Python parity of the engine and frontend surfaces.
 
 Scena ships three ways to drive the same engine, and the pillar's exit criterion
 is that none of them silently lags the others. This script extracts the public
@@ -24,10 +24,16 @@ is that none of them silently lags the others. This script extracts the public
 - the Python bindings, by looking for its `.def(...)` / `.def_prop_ro(...)` in
   `python/src/bindings.cpp`.
 
-A method that is absent from a binding must appear in `EXCLUSIONS` below with a
-reason. Anything else is a **gap** and the script exits non-zero — that is what
-makes the audit a test rather than a report (`python/tests/test_parity.py` runs
-it).
+It then does the same for the **frontend entry points** — the free functions a
+host calls to get a scenario in, from `scena::xml` and `scena::dsl`. They are
+not `Engine` methods, but they are just as much part of the surface a binding
+can silently lag: p7-s5 added DSL checking to all three, and nothing would have
+noticed if it had reached only two.
+
+A method or entry point that is absent from a binding must appear in the
+matching exclusion table below with a reason. Anything else is a **gap** and the
+script exits non-zero — that is what makes the audit a test rather than a report
+(`python/tests/test_parity.py` runs it).
 
 The extraction is deliberately textual. A real one would need a C++ parser and a
 build of the bindings; the point here is to notice when someone adds a method and
@@ -50,6 +56,8 @@ REPO = Path(__file__).resolve().parent.parent
 ENGINE_HEADER = REPO / "core" / "include" / "scena" / "engine.h"
 CAPI_HEADER = REPO / "capi" / "include" / "scena" / "capi.h"
 BINDINGS = REPO / "python" / "src" / "bindings.cpp"
+XML_LOADER_HEADER = REPO / "frontends" / "xml" / "include" / "scena" / "xml" / "loader.h"
+DSL_LOAD_HEADER = REPO / "frontends" / "dsl" / "include" / "scena" / "dsl" / "load.h"
 
 #: C++ Engine methods that deliberately do not reach one or both bindings, with
 #: the reason. Keeping the reason here rather than in a comment is what lets the
@@ -96,6 +104,43 @@ PY_ALIASES: dict[str, str] = {
     "default_lane_width": "default_lane_width",
 }
 
+#: The frontend headers whose namespace-scope entry points are audited, and the
+#: namespace each one lives in (used only to name the row).
+FRONTEND_HEADERS: dict[str, Path] = {
+    "xml": XML_LOADER_HEADER,
+    "dsl": DSL_LOAD_HEADER,
+}
+
+#: `<namespace>::<function>` -> the C entry point that implements it. The names
+#: differ more than the engine's do, because C has to say which frontend.
+FRONTEND_C_ALIASES: dict[str, str] = {
+    "xml::load_file": "scn_engine_load_xml_file",
+    "xml::load_string": "scn_engine_load_xml_string",
+    "dsl::check_file": "scn_check_dsl_file",
+    "dsl::check_source": "scn_check_dsl_string",
+}
+
+#: `<namespace>::<function>` -> the Python name.
+FRONTEND_PY_ALIASES: dict[str, str] = {
+    "xml::load_file": "load_file",
+    "xml::load_string": "load_string",
+    "dsl::check_file": "check_dsl_file",
+    "dsl::check_source": "check_dsl_string",
+}
+
+#: Frontend entry points that deliberately do not reach one or both bindings.
+FRONTEND_EXCLUSIONS: dict[str, str] = {
+    # Validation without a scenario is a C++ diagnostic-only path; the bindings
+    # expose loading, which validates on the way through.
+    "xml::validate_file": "loading validates; a validate-only pass has no binding consumer",
+    "xml::validate_string": "loading validates; a validate-only pass has no binding consumer",
+    # load_* stops after parsing and import resolution and hands back ASTs that
+    # only C++ can walk. check_* is the same work plus resolution, and is what
+    # a host actually wants.
+    "dsl::load_file": "the lower half of check_file; its result is an AST no binding can carry",
+    "dsl::load_source": "the lower half of check_source; same reason",
+}
+
 
 @dataclass
 class Row:
@@ -129,6 +174,21 @@ def public_engine_methods(text: str) -> list[str]:
     return names
 
 
+def frontend_entry_points(text: str) -> list[str]:
+    """Namespace-scope `Status <name>(` declarations in a frontend header.
+
+    Same deliberately textual extraction as the engine side: a member function
+    is indented, so anchoring at column 0 is what separates an entry point from
+    a method on a class the header also declares.
+    """
+    names: list[str] = []
+    for match in re.finditer(r"^(?:\[\[nodiscard\]\]\s+)?Status\s+(\w+)\s*\(", text, re.M):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--markdown", action="store_true", help="emit the table as Markdown")
@@ -151,10 +211,24 @@ def main() -> int:
             )
         )
 
+    for name_space, header in FRONTEND_HEADERS.items():
+        for function in frontend_entry_points(header.read_text(encoding="utf-8")):
+            qualified = f"{name_space}::{function}"
+            c_symbol = FRONTEND_C_ALIASES.get(qualified, "")
+            py_name = FRONTEND_PY_ALIASES.get(qualified, "")
+            rows.append(
+                Row(
+                    method=qualified,
+                    in_c=bool(c_symbol) and c_symbol in capi_text,
+                    in_python=bool(py_name) and f'"{py_name}"' in bindings_text,
+                    excluded=FRONTEND_EXCLUSIONS.get(qualified),
+                )
+            )
+
     gaps = [row for row in rows if not row.ok]
 
     if args.markdown:
-        print("| `scena::Engine` method | C ABI | Python | note |")
+        print("| `scena::Engine` method or frontend entry point | C ABI | Python | note |")
         print("|---|---|---|---|")
         for row in rows:
             note = row.excluded or ""
@@ -172,10 +246,12 @@ def main() -> int:
                 f"C:{'y' if row.in_c else 'n'}  Py:{'y' if row.in_python else 'n'}{note}"
             )
 
-    print(f"\n{len(rows)} methods, {len(gaps)} gap(s)", file=sys.stderr)
+    print(f"\n{len(rows)} entry points, {len(gaps)} gap(s)", file=sys.stderr)
     for row in gaps:
+        # A frontend row already carries its namespace; an Engine method does not.
+        qualified = row.method if "::" in row.method else f"Engine::{row.method}"
         print(
-            f"GAP: Engine::{row.method} is missing from "
+            f"GAP: {qualified} is missing from "
             f"{'the C ABI' if not row.in_c else ''}"
             f"{' and ' if not row.in_c and not row.in_python else ''}"
             f"{'the Python bindings' if not row.in_python else ''}"

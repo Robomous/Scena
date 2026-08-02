@@ -3,9 +3,10 @@
 # Python bindings: nanobind extension module `scena._scena`.
 
 nanobind_add_module(_scena src/bindings.cpp)
-# The bindings expose scenario loading, so they link the XML frontend too —
-# the same reason capi/ does (p6-s1). Both PRIVATE: nothing leaks into a header.
-target_link_libraries(_scena PRIVATE scena::core scena::frontend-xml)
+# The bindings expose scenario loading and DSL checking, so they link both
+# frontends too — the same reason capi/ does (p6-s1). All PRIVATE: nothing
+# leaks into a header.
+target_link_libraries(_scena PRIVATE scena::core scena::frontend-xml scena::frontend-dsl)
 
 # Stage an importable package under <build>/python so examples and tests can
 # run against the build tree: PYTHONPATH=<build>/python.

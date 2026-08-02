@@ -17,6 +17,8 @@
 #include "scena/capi.h"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -1839,6 +1841,162 @@ TEST(CApiTest, EveryNewEntryPointRejectsNullArguments) {
     EXPECT_EQ(scn_engine_initialized(engine, nullptr), SCN_ERROR_INVALID_ARGUMENT);
 
     scn_engine_destroy(engine);
+}
+
+// --- p7-s5: checking OpenSCENARIO DSL through the C ABI ---------------------
+
+namespace {
+
+// `length` comes from the bundled standard library, so a clean check here also
+// proves the implicit import reached it (§7.7.5.2).
+constexpr const char* kDslSource = "struct marker:\n    x: length\n";
+constexpr const char* kBadDslSource = "struct marker:\n    x: no_such_type\n";
+
+} // namespace
+
+TEST(CApiTest, DslCheckReportsWhatItCovered) {
+    scn_dsl_check_options options{};
+    options.implicit_standard_library = 1;
+
+    scn_dsl_check* check = nullptr;
+    ASSERT_EQ(scn_check_dsl_string(kDslSource, "marker.osc", &options, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+
+    size_t count = 1;
+    EXPECT_EQ(scn_dsl_check_diagnostic_count(check, &count), SCN_OK);
+    EXPECT_EQ(count, 0U);
+    size_t types = 0;
+    EXPECT_EQ(scn_dsl_check_type_count(check, &types), SCN_OK);
+    EXPECT_GT(types, 0U);
+    // The source itself plus the standard library it was given implicitly.
+    size_t files = 0;
+    EXPECT_EQ(scn_dsl_check_file_count(check, &files), SCN_OK);
+    EXPECT_GT(files, 1U);
+
+    scn_dsl_check_destroy(check);
+}
+
+TEST(CApiTest, DslCheckWithoutTheStandardLibraryStandsAlone) {
+    // The zero struct turns the library off, which is the documented meaning of
+    // a zero-initialized options struct — and why NULL means the defaults
+    // instead.
+    const scn_dsl_check_options options{};
+    scn_dsl_check* check = nullptr;
+    EXPECT_NE(scn_check_dsl_string(kDslSource, "marker.osc", &options, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+    size_t files = 0;
+    EXPECT_EQ(scn_dsl_check_file_count(check, &files), SCN_OK);
+    EXPECT_EQ(files, 1U);
+    scn_dsl_check_destroy(check);
+}
+
+TEST(CApiTest, AFailingDslCheckStillHandsBackItsDiagnostics) {
+    scn_dsl_check* check = nullptr;
+    // NULL options means the defaults, standard library included.
+    EXPECT_NE(scn_check_dsl_string(kBadDslSource, "marker.osc", nullptr, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+
+    size_t count = 0;
+    ASSERT_EQ(scn_dsl_check_diagnostic_count(check, &count), SCN_OK);
+    ASSERT_GT(count, 0U);
+
+    scn_diagnostic diagnostic{};
+    ASSERT_EQ(scn_dsl_check_diagnostic_at(check, 0, &diagnostic), SCN_OK);
+    EXPECT_EQ(diagnostic.severity, SCN_SEVERITY_ERROR);
+    // A Program spans every file its root imported, so a diagnostic names the
+    // file it came from and not just a line.
+    EXPECT_STREQ(diagnostic.file, "marker.osc");
+    EXPECT_GT(diagnostic.line, 0);
+    // The DSL standard defines no `asam.net:` rule ids; the citation is in the
+    // message.
+    EXPECT_STREQ(diagnostic.rule_id, "");
+    EXPECT_NE(std::string(diagnostic.message).find("no_such_type"), std::string::npos);
+
+    // Out of range leaves the caller's struct alone.
+    EXPECT_EQ(scn_dsl_check_diagnostic_at(check, count, &diagnostic), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_STREQ(diagnostic.file, "marker.osc");
+
+    scn_dsl_check_destroy(check);
+}
+
+TEST(CApiTest, DslCheckResolvesImportsThroughSearchPaths) {
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "scena_capi_dsl_check";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "shapes");
+    {
+        std::ofstream out(root / "shapes" / "basic.osc");
+        out << kDslSource;
+    }
+    const std::filesystem::path top = root / "top.osc";
+    {
+        std::ofstream out(top);
+        out << "import shapes.basic\n\nstruct pair:\n    a: marker\n";
+    }
+
+    const std::string directory = root.string();
+    const char* search_paths[] = {directory.c_str()};
+    scn_dsl_check_options options{};
+    options.implicit_standard_library = 1;
+    options.search_paths = search_paths;
+    options.search_path_count = 1;
+
+    const std::string path = top.string();
+    scn_dsl_check* check = nullptr;
+    EXPECT_EQ(scn_check_dsl_file(path.c_str(), &options, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+    scn_dsl_check_destroy(check);
+
+    // Without the search path the import is unresolvable, and the check says so
+    // rather than silently declaring nothing.
+    options.search_paths = nullptr;
+    options.search_path_count = 0;
+    check = nullptr;
+    EXPECT_NE(scn_check_dsl_file(path.c_str(), &options, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+    scn_dsl_check_destroy(check);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(CApiTest, AnUnreadableDslPathIsHostMisuseAndStillProducesAHandle) {
+    scn_dsl_check* check = nullptr;
+    EXPECT_EQ(scn_check_dsl_file("no/such/file.osc", nullptr, &check), SCN_ERROR_INVALID_ARGUMENT);
+    ASSERT_NE(check, nullptr);
+    size_t count = 0;
+    EXPECT_EQ(scn_dsl_check_diagnostic_count(check, &count), SCN_OK);
+    EXPECT_GT(count, 0U);
+    scn_dsl_check_destroy(check);
+}
+
+TEST(CApiTest, EveryDslCheckEntryPointRejectsNullArguments) {
+    // Same sweep the engine's entry points get. A null argument is rejected
+    // WITHOUT producing a handle, which is what lets a caller tell it apart
+    // from an unreadable path (both answer SCN_ERROR_INVALID_ARGUMENT).
+    scn_dsl_check* check = nullptr;
+    size_t count = 0;
+    scn_diagnostic diagnostic{};
+
+    EXPECT_EQ(scn_check_dsl_file(nullptr, nullptr, &check), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(check, nullptr);
+    EXPECT_EQ(scn_check_dsl_file("x.osc", nullptr, nullptr), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_check_dsl_string(nullptr, nullptr, nullptr, &check), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(check, nullptr);
+    EXPECT_EQ(scn_check_dsl_string(kDslSource, nullptr, nullptr, nullptr),
+              SCN_ERROR_INVALID_ARGUMENT);
+
+    EXPECT_EQ(scn_dsl_check_diagnostic_count(nullptr, &count), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_dsl_check_diagnostic_at(nullptr, 0, &diagnostic), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_dsl_check_type_count(nullptr, &count), SCN_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(scn_dsl_check_file_count(nullptr, &count), SCN_ERROR_INVALID_ARGUMENT);
+
+    // Destroying NULL is a no-op, so a cleanup path needs no guard.
+    scn_dsl_check_destroy(nullptr);
+
+    // A NULL origin names the source "<string>" rather than leaving it blank.
+    ASSERT_EQ(scn_check_dsl_string(kDslSource, nullptr, nullptr, &check), SCN_OK);
+    ASSERT_NE(check, nullptr);
+    scn_dsl_check_destroy(check);
 }
 
 // --- p6-s2: gateway callbacks through the C ABI ----------------------------

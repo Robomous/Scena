@@ -24,6 +24,19 @@ distribution *selection*, `keep()` constraints requiring search (anything
 but fixed-value resolution), coverage-driven generation, and external
 methods. All of these still **Check** cleanly; execution diagnoses them.
 
+## Checking surfaces
+
+Everything below is reachable from all three of Scena's surfaces. Checking
+needs no engine — it is a frontend service, so none of these entry points
+construct one.
+
+| Surface | Check | Sprint(s) | Notes |
+|---|---|---|---|
+| C++ — `scena::dsl::check_file` / `check_source` | In | p7-s5 | Load and resolve in one call; the `LoadResult` owns the ASTs the `Program` points into (`dsl_import_test.cpp`, `dsl_stdlib_test.cpp`) |
+| CLI — `scena-check <file.osc>` | In | p7-s5 | `-I` search paths, `--no-standard-library`, `--strict`, `--quiet`; exit codes 0 ok / 2 usage / 3 the source did not check / 4 the input could not be read (`scena_check_test.cpp`) |
+| C ABI — `scn_check_dsl_file` / `scn_check_dsl_string` | In | p7-s5 | Opaque `scn_dsl_check` handle carrying the diagnostics and the two counts; a failing check still produces one, because that is the case whose findings you want (`c_consumer.c`) |
+| Python — `scena.check_dsl_file` / `check_dsl_string` | In | p7-s5 | Returns a `DslCheck` — status, diagnostics, `type_count`, `file_count` (`test_dsl_check.py`, `python/examples/check_dsl.py`) |
+
 ## Language core (§7.2, §7.3)
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |

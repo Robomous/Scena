@@ -59,12 +59,12 @@ The user guide grows sprint by sprint along the
   round-trip-exact trace format, replaying a host-controlled entity, and the
   golden suite harness.
 - [`scena-check`](scena-check.md) — the OpenSCENARIO DSL checker: options and
-  exit codes, the diagnostic format, resolving imports and search paths, and
-  what "checked clean" does and does not cover.
+  exit codes, the diagnostic format, resolving imports and search paths,
+  checking from C and Python, and what "checked clean" does and does not cover.
 - [Python quickstart](python.md) — installing, loading and running a scenario,
   building one in memory, observing a run, driving entities from the host with a
-  `SimulatorGateway` subclass, the GIL and reentrancy policy, and the parity
-  audit.
+  `SimulatorGateway` subclass, the GIL and reentrancy policy, checking a DSL
+  file, and the parity audit.
 - [Embedding Scena](embedding.md) — the step contract and its phase order,
   control ownership, the gateway (batching brackets, storyboard observation,
   controller/visibility/custom-command hooks), the three host-clock patterns
@@ -72,7 +72,8 @@ The user guide grows sprint by sprint along the
   contract.
 - [The C API](c-api.md) — the stable ABI: versioning and the major check,
   loading a scenario in one call, entity enumeration, storyboard-element state
-  by path, host-side signal publication, and the borrowed-string lifetime.
+  by path, host-side signal publication, checking a DSL source, and the
+  borrowed-string lifetime.
 - [Error handling](error-handling.md) — status codes, structured
   diagnostics, the severity/status invariant, the path grammar, and the
   C-ABI borrowed-string lifetime.

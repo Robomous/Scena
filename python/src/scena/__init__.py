@@ -20,10 +20,13 @@ query / close.
 """
 
 from ._scena import (
+    check_dsl_file,
+    check_dsl_string,
     load_file,
     load_file_with_diagnostics,
     load_string,
     load_string_with_diagnostics,
+    DslCheck,
     AbsoluteTargetLane,
     AbsoluteTargetLaneOffset,
     AccelerationCondition,
@@ -272,6 +275,9 @@ __all__ = [
     "SimulatorGateway",
     "SpeedProfileAction",
     "SpeedProfileEntry",
+    "check_dsl_file",
+    "check_dsl_string",
+    "DslCheck",
     "load_file",
     "load_file_with_diagnostics",
     "load_string",

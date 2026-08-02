@@ -14,10 +14,11 @@
 
 """The C++ / C / Python parity audit, as a test (p6-s3).
 
-`scripts/parity_audit.py` exits non-zero when a public `scena::Engine` method is
-missing from the C ABI or the Python bindings without a recorded reason. Running
-it here is what turns the pillar's "parity audit gap-free" exit criterion into
-something CI enforces rather than something a human remembers to check.
+`scripts/parity_audit.py` exits non-zero when a public `scena::Engine` method or
+a frontend entry point is missing from the C ABI or the Python bindings without
+a recorded reason. Running it here is what turns the pillar's "parity audit
+gap-free" exit criterion into something CI enforces rather than something a
+human remembers to check.
 """
 
 import subprocess
@@ -50,10 +51,14 @@ def test_the_audit_emits_a_markdown_table() -> None:
     )
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert lines[0].startswith("| `scena::Engine` method |")
+    assert lines[0].startswith("| `scena::Engine` method or frontend entry point |")
     assert lines[1].startswith("|---|")
     assert any("`init`" in line for line in lines)
     assert any("`step`" in line for line in lines)
+    # The frontend entry points share the table: p7-s5's DSL check is bound in
+    # all three surfaces, and this is where that stays visible.
+    assert any("`dsl::check_file`" in line for line in lines)
+    assert any("`xml::load_file`" in line for line in lines)
 
 
 def test_the_audit_notices_an_unbound_method(tmp_path) -> None:
@@ -66,12 +71,25 @@ def test_the_audit_notices_an_unbound_method(tmp_path) -> None:
     import shutil
 
     sandbox = tmp_path / "repo"
-    for part in ("core/include/scena", "capi/include/scena", "python/src", "scripts"):
+    for part in (
+        "core/include/scena",
+        "capi/include/scena",
+        "python/src",
+        "scripts",
+        "frontends/xml/include/scena/xml",
+        "frontends/dsl/include/scena/dsl",
+    ):
         (sandbox / part).mkdir(parents=True, exist_ok=True)
     shutil.copy(REPO / "scripts" / "parity_audit.py", sandbox / "scripts" / "parity_audit.py")
     shutil.copy(REPO / "capi" / "include" / "scena" / "capi.h",
                 sandbox / "capi/include/scena/capi.h")
     shutil.copy(REPO / "python" / "src" / "bindings.cpp", sandbox / "python/src/bindings.cpp")
+    # The audit reads the frontend headers too; without them it would fail on a
+    # missing file and this test would pass for the wrong reason.
+    shutil.copy(REPO / "frontends/xml/include/scena/xml/loader.h",
+                sandbox / "frontends/xml/include/scena/xml/loader.h")
+    shutil.copy(REPO / "frontends/dsl/include/scena/dsl/load.h",
+                sandbox / "frontends/dsl/include/scena/dsl/load.h")
 
     header = (REPO / "core" / "include" / "scena" / "engine.h").read_text(encoding="utf-8")
     doctored = header.replace(

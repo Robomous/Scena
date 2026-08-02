@@ -22,7 +22,15 @@ target_include_directories(scena-frontend-dsl PUBLIC
 )
 target_link_libraries(scena-frontend-dsl PUBLIC scena::core)
 target_compile_features(scena-frontend-dsl PUBLIC cxx_std_20)
-set_target_properties(scena-frontend-dsl PROPERTIES CXX_EXTENSIONS OFF)
+# POSITION_INDEPENDENT_CODE because this static library is linked into the
+# shared scena-capi and into the Python extension module. Without it GNU ld
+# rejects the link outright ("relocation ... can not be used when making a
+# shared object"); the XML frontend and the core carry the same property for
+# the same reason.
+set_target_properties(scena-frontend-dsl PROPERTIES
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
 
 scn_set_warnings(scena-frontend-dsl)
 scn_set_fp_strictness(scena-frontend-dsl)

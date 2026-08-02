@@ -1233,6 +1233,89 @@ SCN_API scn_status scn_engine_get_time(scn_engine* engine, double* out);
 /* Writes 1 into *out between a successful init and close, else 0. */
 SCN_API scn_status scn_engine_initialized(scn_engine* engine, int* out);
 
+/* --- Checking OpenSCENARIO DSL (p7-s5) ------------------------------------ */
+
+/* The result of checking one OpenSCENARIO DSL source: its findings and what the
+ * checker made of it. Opaque; create with scn_check_dsl_file or
+ * scn_check_dsl_string and release with scn_dsl_check_destroy.
+ *
+ * Checking is not loading. A DSL source that checks clean is one the frontend
+ * understood — executing it is P8, and no engine is involved here, which is why
+ * this surface has its own handle rather than hanging off scn_engine. */
+typedef struct scn_dsl_check scn_dsl_check;
+
+/* How a check resolves imports (§7.7.5).
+ *
+ * Zero-initialize it (`scn_dsl_check_options options = {0};`) and then set what
+ * you need, so fields added by a later ABI minor stay zero. Note that a
+ * zero-initialized struct turns the standard library OFF; pass 1 to get the
+ * behavior scena-check has by default.
+ *
+ * Transparent struct: the layout is frozen ABI. Append fields only. */
+typedef struct scn_dsl_check_options {
+    /* Directories a module reference is resolved against, in order; a
+     * reference `a.b.c` is looked up as <dir>/a/b/c.osc. NULL when there are
+     * none. The array and the strings are borrowed for the duration of the
+     * call only. */
+    const char* const* search_paths;
+    size_t search_path_count;
+    /* Non-zero makes the bundled osc.standard library available without an
+     * import, which is what gives a literal like `30kph` a type (§7.7.5.2). */
+    int implicit_standard_library;
+} scn_dsl_check_options;
+
+/* Checks the OpenSCENARIO DSL source at `path`, following its imports.
+ *
+ * `options` may be NULL, which means default options WITH the standard library
+ * — the same defaults the C++ LoadOptions carries, not the zero struct.
+ *
+ * On any return other than SCN_ERROR_INVALID_ARGUMENT, *out_check holds a
+ * handle the caller must release with scn_dsl_check_destroy, whatever the
+ * status: a failing check is exactly the case whose diagnostics you want. A
+ * NULL path or out_check is rejected with SCN_ERROR_INVALID_ARGUMENT and
+ * *out_check is left untouched.
+ *
+ * The return value is the check's own outcome: SCN_OK when nothing was reported
+ * as an error, SCN_ERROR_INVALID_ARGUMENT when the file could not be read at
+ * all (host misuse — and the only case where a handle is still produced, so
+ * test out_check rather than the status to tell the two apart), and otherwise
+ * the first error's status. */
+SCN_API scn_status scn_check_dsl_file(const char* path, const scn_dsl_check_options* options,
+                                      scn_dsl_check** out_check);
+
+/* As scn_check_dsl_file, from a NUL-terminated source in memory.
+ *
+ * `origin` names the source in diagnostics and anchors its relative imports; it
+ * need not exist on disk. NULL means "<string>". */
+SCN_API scn_status scn_check_dsl_string(const char* source, const char* origin,
+                                        const scn_dsl_check_options* options,
+                                        scn_dsl_check** out_check);
+
+/* Writes the number of diagnostics the check reported into *out_count. */
+SCN_API scn_status scn_dsl_check_diagnostic_count(scn_dsl_check* check, size_t* out_count);
+
+/* Writes the diagnostic at `index` into *out. An index >= the count returns
+ * SCN_ERROR_INVALID_ARGUMENT with *out left untouched.
+ *
+ * The borrowed strings stay valid until scn_dsl_check_destroy — a check result
+ * is immutable, so unlike the engine's diagnostics nothing else invalidates
+ * them. DSL diagnostics cite a specification section in their message and leave
+ * rule_id empty, because the DSL standard defines no `asam.net:` rule ids. */
+SCN_API scn_status scn_dsl_check_diagnostic_at(scn_dsl_check* check, size_t index,
+                                               scn_diagnostic* out);
+
+/* Writes the number of types the check resolved into *out_count — every type
+ * the source declares plus every one it reached through an import, the standard
+ * library included. */
+SCN_API scn_status scn_dsl_check_type_count(scn_dsl_check* check, size_t* out_count);
+
+/* Writes the number of source files the check covered into *out_count: the file
+ * itself plus everything it imported, transitively. */
+SCN_API scn_status scn_dsl_check_file_count(scn_dsl_check* check, size_t* out_count);
+
+/* Releases a check result. NULL is accepted and does nothing. */
+SCN_API void scn_dsl_check_destroy(scn_dsl_check* check);
+
 #ifdef __cplusplus
 }
 #endif
