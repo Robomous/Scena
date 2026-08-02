@@ -58,6 +58,9 @@ The user guide grows sprint by sprint along the
 - [`scena-run`](scena-run.md) — the headless CLI: options and exit codes, the
   round-trip-exact trace format, replaying a host-controlled entity, and the
   golden suite harness.
+- [`scena-check`](scena-check.md) — the OpenSCENARIO DSL checker: options and
+  exit codes, the diagnostic format, resolving imports and search paths, and
+  what "checked clean" does and does not cover.
 - [Python quickstart](python.md) — installing, loading and running a scenario,
   building one in memory, observing a run, driving entities from the host with a
   `SimulatorGateway` subclass, the GIL and reentrancy policy, and the parity

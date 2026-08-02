@@ -147,6 +147,9 @@ constexpr std::array<Primitive, 5> kPrimitives = {
 struct Scope {
     std::string name_space;
     std::vector<std::string> uses;
+    /// The file the declaration was written in. A `Program` spans every file
+    /// the root imported, so a line number alone does not locate anything.
+    std::string file;
 };
 
 struct PendingUnit {
@@ -236,6 +239,9 @@ private:
     void reject_it(const ExprPtr& expression, std::string_view where);
 
     const std::vector<const File*>& files_;
+    /// The file whose declarations the current pass is walking, so a
+    /// diagnostic can name it. Set from the pending record's scope.
+    std::string current_file_;
     Program& out_;
     DiagnosticSink& sink_;
     bool failed_ = false;
@@ -256,6 +262,7 @@ void Resolver::error(const SourceRange& at, std::string message) {
     diagnostic.severity = Severity::Error;
     diagnostic.code = Status::ValidationError;
     diagnostic.message = std::move(message);
+    diagnostic.location.file = current_file_;
     diagnostic.location.line = at.line;
     diagnostic.location.column = at.column;
     sink_.report(std::move(diagnostic));
@@ -267,6 +274,7 @@ void Resolver::warn(const SourceRange& at, std::string message) {
     diagnostic.severity = Severity::Warning;
     diagnostic.code = Status::Ok;
     diagnostic.message = std::move(message);
+    diagnostic.location.file = current_file_;
     diagnostic.location.line = at.line;
     diagnostic.location.column = at.column;
     sink_.report(std::move(diagnostic));
@@ -404,6 +412,8 @@ void Resolver::declare() {
         // the list, exactly as §7.7.4 says: from there the ordinary rules hold.
         Scope scope;
         scope.uses.emplace_back(kStandardTypesNamespace);
+        scope.file = file->path;
+        current_file_ = file->path;
         for (const Declaration& declaration : file->declarations) {
             switch (declaration.kind) {
             case Declaration::Kind::Import:
@@ -414,6 +424,7 @@ void Resolver::declare() {
             case Declaration::Kind::Namespace: {
                 scope.name_space = declaration.name_space.name;
                 scope.uses = declaration.name_space.uses;
+                scope.file = file->path;
                 if (!is_null_namespace(scope.name_space)) {
                     if (!file->is_standard_library && scope.name_space.rfind("std", 0) == 0) {
                         warn(declaration.range,
@@ -796,12 +807,14 @@ void Resolver::check_inheritance_cycles() {
 
 void Resolver::link() {
     for (const PendingUnit& unit : units_) {
+        current_file_ = unit.scope.file;
         link_unit(unit);
     }
     for (const auto& [id, declarations] : enum_declarations_) {
         link_enum_values(out_.types[id], declarations);
     }
     for (PendingStructured& pending : structured_) {
+        current_file_ = pending.scope.file;
         link_structured(pending);
     }
     check_inheritance_cycles();
@@ -1151,6 +1164,7 @@ void Resolver::add_members(const PendingStructured& pending) {
 
 void Resolver::check_members() {
     for (const PendingStructured& pending : structured_) {
+        current_file_ = pending.scope.file;
         add_members(pending);
     }
 
@@ -1297,6 +1311,7 @@ void Resolver::note_unsupported(const SourceRange& at, std::string message) {
     diagnostic.severity = Severity::Warning;
     diagnostic.code = Status::UnsupportedFeature;
     diagnostic.message = std::move(message);
+    diagnostic.location.file = current_file_;
     diagnostic.location.line = at.line;
     diagnostic.location.column = at.column;
     sink_.report(std::move(diagnostic));
@@ -1475,10 +1490,12 @@ void Resolver::check_coverage(const CoverageDecl& coverage, const ExpressionCont
 
 void Resolver::check_expressions() {
     for (const PendingStructured& pending : structured_) {
+        current_file_ = pending.scope.file;
         ExpressionContext context;
         context.self = pending.id;
         context.name_space = pending.scope.name_space;
         context.uses = pending.scope.uses;
+        context.file = pending.scope.file;
         for (const Member& member : pending.decl->members) {
             switch (member.kind) {
             case Member::Kind::Field: {
@@ -1584,8 +1601,10 @@ void Resolver::check_expressions() {
             field.default_value->kind == ExprKind::PhysicalLiteral) {
             continue;
         }
+        current_file_ = pending.scope.file;
         ExpressionContext context;
         context.name_space = pending.scope.name_space;
+        context.file = pending.scope.file;
         context.uses = pending.scope.uses;
         const std::string qualified = qualify(pending.scope.name_space, field.names.front());
         const auto global = out_.globals.find(qualified);

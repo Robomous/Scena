@@ -35,6 +35,10 @@ struct ExpressionContext {
     /// The namespace the expression was written in, for resolving type names in
     /// `is()`, `as()` and enum references.
     std::string name_space;
+    /// The source file the expression was written in. A `Program` spans every
+    /// file its root imported, so a line number alone does not locate a
+    /// diagnostic — `scena-check` needs the file to point at.
+    std::string file;
     /// The namespaces the enclosing `namespace ... use` clause makes visible.
     std::vector<std::string> uses;
     /// Names bound by the construct the expression sits in rather than by the

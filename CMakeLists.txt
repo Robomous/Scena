@@ -32,6 +32,7 @@ add_subdirectory(frontends/xml)
 add_subdirectory(frontends/dsl)
 add_subdirectory(roads/opendrive)
 add_subdirectory(tools/scena-run)
+add_subdirectory(tools/scena-check)
 
 if(SCN_BUILD_CAPI)
     add_subdirectory(capi)
