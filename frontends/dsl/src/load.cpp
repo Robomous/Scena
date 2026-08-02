@@ -40,6 +40,21 @@ void report(DiagnosticSink& sink, Severity severity, Status code, const std::str
     sink.report(std::move(diagnostic));
 }
 
+/// Drops the slash a `file` URI puts in front of a drive letter.
+///
+/// §7.7.5.1.1's own examples spell a Windows path `file:///c:/Users/...`,
+/// `file:/c:/Users/...` and `/c:/Users/...`: the leading slash belongs to the
+/// URI syntax, not to the path. Leaving it in place would make the reference
+/// relative to the root of the current drive instead of absolute.
+void unslash_drive_letter(std::string& path) {
+    const bool has_drive =
+        path.size() >= 3 && path[0] == '/' && path[2] == ':' &&
+        ((path[1] >= 'A' && path[1] <= 'Z') || (path[1] >= 'a' && path[1] <= 'z'));
+    if (has_drive) {
+        path.erase(0, 1);
+    }
+}
+
 /// Strips the `file` URI scheme from a string-literal import (§7.7.5.1.1).
 ///
 /// Only `file` is supported. `file:///x/y` and `file:/x/y` both denote the path
@@ -48,16 +63,24 @@ void report(DiagnosticSink& sink, Severity severity, Status code, const std::str
 [[nodiscard]] bool strip_file_scheme(std::string& reference) {
     constexpr std::string_view kScheme = "file:";
     if (reference.rfind(kScheme, 0) != 0) {
-        return true; // not a URI with a scheme; a bare relative or absolute path
+        // Not a URI with a scheme: a bare relative or absolute path, which
+        // §7.7.5.1.1 also spells with the drive-letter slash.
+        unslash_drive_letter(reference);
+        return true;
     }
     reference.erase(0, kScheme.size());
     if (reference.rfind("//", 0) != 0) {
-        return true; // file:/path
+        unslash_drive_letter(reference); // file:/path
+        return true;
     }
     reference.erase(0, 2);
     // What is left starts with the authority. An empty authority (the
     // `file:///path` form) leaves a leading '/' — anything else is a host.
-    return !reference.empty() && reference.front() == '/';
+    if (reference.empty() || reference.front() != '/') {
+        return false;
+    }
+    unslash_drive_letter(reference);
+    return true;
 }
 
 /// `a.b.c` → `a/b/c.osc`, the implementation-specific mapping §7.7.5.1.2 leaves

@@ -159,11 +159,14 @@ TEST(DslImportTest, EveryStandardModuleReferenceIsAccepted) {
 
 TEST(DslImportTest, ImportingTheStandardLibraryTwiceLoadsItOnce) {
     // §7.7.5.1: "a file that is referenced multiple times ... is only imported
-    // once". The implicit library counts as the first reference.
+    // once". The implicit types sub-module counts as the first reference, so
+    // naming it again costs nothing and `osc.standard.all` adds only the
+    // domain sub-module: two library files, however many references.
     DiagnosticSink sink;
     LoadResult loaded;
     Program program;
     ASSERT_EQ(scena::dsl::check_source("import osc.standard.types\nimport osc.standard.all\n"
+                                       "import osc.standard.domain\nimport osc.standard\n"
                                        "struct s:\n    v: speed = 1mps\n",
                                        "<test>", LoadOptions{}, loaded, program, sink),
               Status::Ok);
@@ -171,7 +174,7 @@ TEST(DslImportTest, ImportingTheStandardLibraryTwiceLoadsItOnce) {
     for (const scena::dsl::File* file : loaded.files()) {
         standard_files += file->is_standard_library ? 1U : 0U;
     }
-    EXPECT_EQ(standard_files, 1U);
+    EXPECT_EQ(standard_files, 2U);
 }
 
 TEST(DslImportTest, AnUnknownReservedModuleIsReported) {
@@ -232,17 +235,45 @@ TEST(DslImportTest, AReferencedFilePrecedesTheReferencingFile) {
     EXPECT_EQ(loaded.root(), loaded.files().back());
 }
 
+/// `p` as the path part of a `file` URI. §7.7.5.1.1 spells a Windows path
+/// `/c:/Users/...`, so the drive letter is preceded by a slash; a POSIX path
+/// already starts with one.
+std::string uri_path(const std::filesystem::path& p) {
+    const std::string text = p.generic_string();
+    return text.empty() || text.front() == '/' ? text : "/" + text;
+}
+
 TEST(DslImportTest, AFileUriImportIsAccepted) {
+    // §7.7.5.1.1 lists `file:///p`, `file:/p` and a bare `/p` as three
+    // spellings of the same local path; all three must reach the same file.
     const Tree tree;
     const std::filesystem::path base = tree.write("uri-base.osc", "struct uri_base\n");
+    const std::string path = uri_path(base);
+    for (const std::string& reference : {"file://" + path, "file:" + path, path}) {
+        const std::filesystem::path root =
+            tree.write("uri-top.osc", "import \"" + reference + "\"\nstruct t\n");
+        DiagnosticSink sink;
+        LoadResult loaded;
+        Program program;
+        ASSERT_EQ(scena::dsl::check_file(root, LoadOptions{}, loaded, program, sink), Status::Ok)
+            << reference << ": "
+            << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+        EXPECT_NE(program.find("::uri_base"), nullptr) << reference;
+    }
+}
+
+TEST(DslImportTest, AUriNamingAHostIsRejected) {
+    // §7.7.5.1.1 requires only the `file` scheme, and a `file` URI with a
+    // non-empty authority does not name a local path.
+    const Tree tree;
     const std::filesystem::path root =
-        tree.write("uri-top.osc", "import \"file://" + base.generic_string() + "\"\nstruct t\n");
+        tree.write("host.osc", "import \"file://example.invalid/shared.osc\"\nstruct t\n");
     DiagnosticSink sink;
     LoadResult loaded;
     Program program;
-    ASSERT_EQ(scena::dsl::check_file(root, LoadOptions{}, loaded, program, sink), Status::Ok)
-        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
-    EXPECT_NE(program.find("::uri_base"), nullptr);
+    EXPECT_EQ(scena::dsl::check_file(root, LoadOptions{}, loaded, program, sink),
+              Status::ValidationError);
+    EXPECT_TRUE(mentions(sink.diagnostics(), "names a host"));
 }
 
 TEST(DslImportTest, ADiamondImportsTheSharedFileOnce) {
