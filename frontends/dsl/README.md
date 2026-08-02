@@ -47,6 +47,12 @@ expected. It also keeps the dependency list unchanged.
 | `tests/dsl_types_test.cpp` | §7.3 type rules, units, inheritance, namespaces |
 | `tests/dsl_expression_test.cpp` | §7.4 typing, conversion rules, constant folding |
 | `tests/dsl_constraint_test.cpp` | §7.3.11 constraints and §7.5 coverage |
+| `include/scena/dsl/load.h` | `load_*` / `check_*` — imports (§7.7.5) and the one-call check |
+| `src/load.cpp` | import resolution, both reference forms, import-once |
+| `include/scena/dsl/stdlib.h` | the bundled `osc.standard` library (ADR-0029) |
+| `src/stdlib.cpp` | its source, as chunked raw literals |
+| `tests/dsl_import_test.cpp` | §7.7.5 imports, search paths, diagnostics carrying their file |
+| `tests/dsl_stdlib_test.cpp` | the §8 library, pinned declaration by declaration |
 
 ## Lexing notes
 
@@ -195,3 +201,11 @@ expected. It also keeps the dependency list unchanged.
 - **`check_source` / `check_file` are the entry points.** Loading and resolving
   in one call, with imports followed; the CLI and the bindings sit on them. The
   `LoadResult` owns the ASTs a `Program` points into, so it must outlive it.
+- **All three surfaces reach them.** `scena-check`, the C ABI
+  (`scn_check_dsl_file` / `scn_check_dsl_string`, results in an opaque
+  `scn_dsl_check`) and Python (`scena.check_dsl_file` / `check_dsl_string`,
+  returning a `DslCheck`). None of them constructs an engine — checking is a
+  frontend service, and that is why the C result is its own handle rather than
+  an engine's diagnostic list. `scripts/parity_audit.py` now audits these entry
+  points alongside the `Engine` methods, so a frontend function added to one
+  surface and forgotten in the others is a CI failure.

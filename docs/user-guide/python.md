@@ -144,17 +144,34 @@ One thing deliberately does not reach Python: **`road_query()`**. `IRoadQuery` i
 queried per entity per step, and routing it through the interpreter would put
 Python on the runtime's hot path. Implement the C++ interface for that.
 
+## Check an OpenSCENARIO DSL file
+
+```python
+result = scn.check_dsl_file("overtake.osc", search_paths=["lib"])
+print(result.status, result.type_count, result.file_count)
+for diagnostic in result.diagnostics:
+    print(diagnostic.location.file, diagnostic.location.line, diagnostic.message)
+```
+
+Checking is not running: DSL execution is P8, so a file that checks clean is one
+the frontend understood. `check_dsl_string(source, origin)` does the same for a
+source in memory. Both return a `DslCheck`, which is falsy unless the status is
+`Ok`. `python/examples/check_dsl.py` is the runnable version, and
+[`scena-check`](scena-check.md) documents the options and what "checked clean"
+covers.
+
 ## Parity with C++ and C
 
-`scripts/parity_audit.py` extracts the public `scena::Engine` methods and checks
-each against the C ABI and the Python bindings. A method missing from either
-must be listed in the script's `EXCLUSIONS` with a reason; anything else is a
-gap and the script exits non-zero. `python/tests/test_parity.py` runs it, and CI
-runs it again on every platform — including a test that doctors a header to
-prove the audit still detects a real gap.
+`scripts/parity_audit.py` extracts the public `scena::Engine` methods and the
+frontend entry points (`scena::xml`, `scena::dsl`) and checks each against the C
+ABI and the Python bindings. Anything missing from either must be listed in the
+script's exclusion tables with a reason; anything else is a gap and the script
+exits non-zero. `python/tests/test_parity.py` runs it, and CI runs it again on
+every platform — including a test that doctors a header to prove the audit still
+detects a real gap.
 
 ```sh
-python scripts/parity_audit.py              # ok/GAP per method
+python scripts/parity_audit.py              # ok/GAP per entry point
 python scripts/parity_audit.py --markdown   # the table, for docs or release notes
 ```
 

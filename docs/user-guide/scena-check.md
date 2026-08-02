@@ -111,6 +111,60 @@ scenario overtake:
 `--no-standard-library` turns even the implicit part off, which is useful when
 checking a file that is meant to stand alone.
 
+## Checking from C and Python
+
+The CLI is a thin consumer of the same entry point the bindings expose, so an
+editor plugin or a build script can have the findings as objects instead of
+parsing text. Checking needs no engine — it is a frontend service.
+
+In Python, one call returns a `DslCheck`:
+
+```python
+import scena as scn
+
+result = scn.check_dsl_file("overtake.osc", search_paths=["lib"])
+if not result:
+    for diagnostic in result.diagnostics:
+        where = diagnostic.location
+        print(f"{where.file}:{where.line}:{where.column}: {diagnostic.message}")
+else:
+    print(f"ok, {result.type_count} types across {result.file_count} files")
+```
+
+`DslCheck` carries `status`, `diagnostics`, `type_count` and `file_count`, and
+is falsy unless the status is `Ok`. `check_dsl_string(source, origin)` checks a
+source in memory; `origin` names it in diagnostics and anchors its relative
+imports, and need not exist on disk. Both take `search_paths` and
+`implicit_standard_library`, the two `LoadOptions` fields. The XML loaders
+return `(status, scenario)` because the scenario is the payload; a check has no
+payload — the findings are the result — so it returns one named object.
+
+In C, the result is an opaque handle you destroy when done:
+
+```c
+scn_dsl_check_options options = {0};
+options.implicit_standard_library = 1;   /* the zero struct turns it OFF */
+
+scn_dsl_check* check = NULL;
+scn_status status = scn_check_dsl_file("overtake.osc", &options, &check);
+
+size_t count = 0;
+scn_dsl_check_diagnostic_count(check, &count);
+for (size_t i = 0; i < count; ++i) {
+    scn_diagnostic diagnostic;
+    scn_dsl_check_diagnostic_at(check, i, &diagnostic);
+    fprintf(stderr, "%s:%d:%d: %s\n", diagnostic.file, diagnostic.line,
+            diagnostic.column, diagnostic.message);
+}
+scn_dsl_check_destroy(check);
+```
+
+A failing check still produces a handle — that is exactly the case whose
+diagnostics you want — so destroy it whatever the status. The strings a
+diagnostic borrows stay valid until `scn_dsl_check_destroy`; unlike the engine's
+diagnostics, nothing else invalidates them, because a check result never
+changes. Only a NULL argument returns without a handle.
+
 ## What "checked clean" covers
 
 The checker resolves names, types every expression, and validates constraints
