@@ -25,6 +25,8 @@
 #include <vector>
 
 #include "scena/diagnostic.h"
+#include "scena/dsl/load.h"
+#include "scena/dsl/types.h"
 #include "scena/engine.h"
 #include "scena/entity_visibility.h"
 #include "scena/gateway/simulator_gateway.h"
@@ -152,6 +154,21 @@ private:
 
     scn_callbacks callbacks_{};
     bool installed_ = false;
+};
+
+/// One completed DSL check: the diagnostics it reported and the two counts a
+/// caller can ask about.
+///
+/// The `LoadResult` owns the ASTs a `Program` points into, so it has to outlive
+/// the `Program` — declaration order here is the guarantee. Nothing mutates
+/// after scn_check_dsl_* returns, which is why the borrowed diagnostic strings
+/// stay valid for the whole life of the handle.
+struct scn_dsl_check {
+    scena::dsl::LoadResult loaded;
+    scena::dsl::Program program;
+    std::vector<scena::Diagnostic> diagnostics;
+    size_t type_count = 0;
+    size_t file_count = 0;
 };
 
 struct scn_engine {
@@ -2141,4 +2158,131 @@ scn_status scn_engine_set_callbacks(scn_engine* engine, const scn_callbacks* cal
     engine->engine.set_gateway(&engine->callbacks);
     engine->callbacks.mark_installed(true);
     return SCN_OK;
+}
+
+// --- Checking OpenSCENARIO DSL ---------------------------------------------
+
+namespace {
+
+/// Translates the C options struct, or supplies the C++ defaults for NULL.
+///
+/// A NULL `options` is not the zero struct: the zero struct turns the standard
+/// library off, and the documented meaning of NULL is "the defaults", which
+/// include it (see capi.h).
+scena::dsl::LoadOptions to_load_options(const scn_dsl_check_options* options) {
+    scena::dsl::LoadOptions load_options;
+    if (options == nullptr) {
+        return load_options;
+    }
+    load_options.implicit_standard_library = options->implicit_standard_library != 0;
+    if (options->search_paths != nullptr) {
+        for (size_t index = 0; index < options->search_path_count; ++index) {
+            const char* directory = options->search_paths[index];
+            if (directory != nullptr) {
+                load_options.search_paths.emplace_back(directory);
+            }
+        }
+    }
+    return load_options;
+}
+
+/// Records what the check found, so the handle answers every query without
+/// touching the resolver again.
+void finish_check(scn_dsl_check& check, scena::DiagnosticSink& sink) {
+    check.diagnostics = sink.take();
+    check.type_count = check.program.types.size();
+    check.file_count = check.loaded.files().size();
+}
+
+} // namespace
+
+scn_status scn_check_dsl_file(const char* path, const scn_dsl_check_options* options,
+                              scn_dsl_check** out_check) {
+    if (path == nullptr || out_check == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto check = std::make_unique<scn_dsl_check>();
+        scena::DiagnosticSink sink;
+        const scena::Status status =
+            scena::dsl::check_file(std::filesystem::path(path), to_load_options(options),
+                                   check->loaded, check->program, sink);
+        finish_check(*check, sink);
+        *out_check = check.release();
+        return to_c_status(status);
+    } catch (const std::bad_alloc&) {
+        return SCN_ERROR_INTERNAL;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_check_dsl_string(const char* source, const char* origin,
+                                const scn_dsl_check_options* options, scn_dsl_check** out_check) {
+    if (source == nullptr || out_check == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto check = std::make_unique<scn_dsl_check>();
+        scena::DiagnosticSink sink;
+        const std::filesystem::path where(origin == nullptr ? "<string>" : origin);
+        const scena::Status status = scena::dsl::check_source(
+            source, where, to_load_options(options), check->loaded, check->program, sink);
+        finish_check(*check, sink);
+        *out_check = check.release();
+        return to_c_status(status);
+    } catch (const std::bad_alloc&) {
+        return SCN_ERROR_INTERNAL;
+    } catch (...) {
+        return SCN_ERROR_INTERNAL;
+    }
+}
+
+scn_status scn_dsl_check_diagnostic_count(scn_dsl_check* check, size_t* out_count) {
+    if (check == nullptr || out_count == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out_count = check->diagnostics.size();
+    return SCN_OK;
+}
+
+scn_status scn_dsl_check_diagnostic_at(scn_dsl_check* check, size_t index, scn_diagnostic* out) {
+    if (check == nullptr || out == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    if (index >= check->diagnostics.size()) {
+        return SCN_ERROR_INVALID_ARGUMENT; // out left untouched
+    }
+    const scena::Diagnostic& diagnostic = check->diagnostics[index];
+    // Strings borrow from the diagnostic's std::strings, which the handle owns
+    // and never mutates — valid until scn_dsl_check_destroy (see capi.h).
+    out->severity = to_c_severity(diagnostic.severity);
+    out->code = to_c_status(diagnostic.code);
+    out->message = diagnostic.message.c_str();
+    out->path = diagnostic.path.c_str();
+    out->file = diagnostic.location.file.c_str();
+    out->line = diagnostic.location.line;
+    out->column = diagnostic.location.column;
+    out->rule_id = diagnostic.rule_id.c_str();
+    return SCN_OK;
+}
+
+scn_status scn_dsl_check_type_count(scn_dsl_check* check, size_t* out_count) {
+    if (check == nullptr || out_count == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out_count = check->type_count;
+    return SCN_OK;
+}
+
+scn_status scn_dsl_check_file_count(scn_dsl_check* check, size_t* out_count) {
+    if (check == nullptr || out_count == nullptr) {
+        return SCN_ERROR_INVALID_ARGUMENT;
+    }
+    *out_count = check->file_count;
+    return SCN_OK;
+}
+
+void scn_dsl_check_destroy(scn_dsl_check* check) {
+    delete check;
 }

@@ -77,6 +77,79 @@ static const char* const kScenario =
     "  </Storyboard>"
     "</OpenSCENARIO>";
 
+/* OpenSCENARIO DSL, checked through scn_check_dsl_string. `length` comes from
+ * the bundled standard library, so this source also proves the implicit import
+ * reached the check. */
+static const char* const kDslSource = "struct marker:\n"
+                                      "    x: length\n"
+                                      "    y: length\n";
+
+/* The same source with a type nothing declares — one error, one diagnostic. */
+static const char* const kBadDslSource = "struct marker:\n"
+                                         "    x: no_such_type\n";
+
+static int check_dsl_surface(void) {
+    scn_dsl_check_options options;
+    scn_dsl_check* check = NULL;
+    size_t diagnostic_count = 1;
+    size_t type_count = 0;
+    size_t file_count = 0;
+    scn_diagnostic diagnostic;
+
+    memset(&options, 0, sizeof(options));
+    options.implicit_standard_library = 1;
+
+    CHECK(scn_check_dsl_string(kDslSource, "marker.osc", &options, &check) == SCN_OK);
+    CHECK(check != NULL);
+    CHECK(scn_dsl_check_diagnostic_count(check, &diagnostic_count) == SCN_OK);
+    CHECK(diagnostic_count == 0);
+    CHECK(scn_dsl_check_type_count(check, &type_count) == SCN_OK);
+    CHECK(type_count > 0);
+    /* The source itself plus the standard library's two sub-modules. */
+    CHECK(scn_dsl_check_file_count(check, &file_count) == SCN_OK);
+    CHECK(file_count > 1);
+    scn_dsl_check_destroy(check);
+
+    /* A failing check still produces a handle: the diagnostics are the point. */
+    check = NULL;
+    CHECK(scn_check_dsl_string(kBadDslSource, "marker.osc", NULL, &check) != SCN_OK);
+    CHECK(check != NULL);
+    CHECK(scn_dsl_check_diagnostic_count(check, &diagnostic_count) == SCN_OK);
+    CHECK(diagnostic_count > 0);
+    memset(&diagnostic, 0, sizeof(diagnostic));
+    CHECK(scn_dsl_check_diagnostic_at(check, 0, &diagnostic) == SCN_OK);
+    CHECK(diagnostic.severity == SCN_SEVERITY_ERROR);
+    CHECK(strcmp(diagnostic.file, "marker.osc") == 0);
+    CHECK(diagnostic.line > 0);
+    /* The DSL standard defines no rule ids; the citation is in the message. */
+    CHECK(strcmp(diagnostic.rule_id, "") == 0);
+    CHECK(scn_dsl_check_diagnostic_at(check, diagnostic_count, &diagnostic) ==
+          SCN_ERROR_INVALID_ARGUMENT);
+    scn_dsl_check_destroy(check);
+
+    /* A path that cannot be read is host misuse, and still hands back the
+     * handle carrying the diagnostic that says so. */
+    check = NULL;
+    CHECK(scn_check_dsl_file("no/such/file.osc", NULL, &check) == SCN_ERROR_INVALID_ARGUMENT);
+    CHECK(check != NULL);
+    CHECK(scn_dsl_check_diagnostic_count(check, &diagnostic_count) == SCN_OK);
+    CHECK(diagnostic_count > 0);
+    scn_dsl_check_destroy(check);
+
+    /* Null arguments are rejected without producing a handle. */
+    check = NULL;
+    CHECK(scn_check_dsl_string(NULL, NULL, NULL, &check) == SCN_ERROR_INVALID_ARGUMENT);
+    CHECK(check == NULL);
+    CHECK(scn_check_dsl_file(NULL, NULL, &check) == SCN_ERROR_INVALID_ARGUMENT);
+    CHECK(check == NULL);
+    CHECK(scn_check_dsl_string(kDslSource, NULL, NULL, NULL) == SCN_ERROR_INVALID_ARGUMENT);
+    CHECK(scn_dsl_check_diagnostic_count(NULL, &diagnostic_count) == SCN_ERROR_INVALID_ARGUMENT);
+    /* Destroying NULL is a no-op, so a cleanup path needs no guard. */
+    scn_dsl_check_destroy(NULL);
+
+    return 0;
+}
+
 int main(void) {
     /* An embedder that dlopen()s the library checks the ABI major first. */
     CHECK(scn_abi_version() / 10000u == SCN_ABI_VERSION / 10000u);
@@ -149,6 +222,9 @@ int main(void) {
 
     CHECK(scn_engine_close(engine) == SCN_OK);
     scn_engine_destroy(engine);
+
+    /* Checking DSL needs no engine at all — it is a frontend service. */
+    CHECK(check_dsl_surface() == 0);
 
     printf("pure-C consumer: OK\n");
     return 0;
