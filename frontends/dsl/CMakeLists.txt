@@ -12,6 +12,8 @@ add_library(scena-frontend-dsl STATIC
     src/expression.cpp
     src/resolve.cpp
     src/types.cpp
+    src/stdlib.cpp
+    src/load.cpp
 )
 add_library(scena::frontend-dsl ALIAS scena-frontend-dsl)
 

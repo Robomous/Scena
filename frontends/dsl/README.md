@@ -107,9 +107,9 @@ expected. It also keeps the dependency list unchanged.
 - **Physical types are compared by dimension.** A unit must carry its type's
   SI exponents exactly (§7.3.4), which is what makes
   `base = value * factor + offset` a legal direct conversion.
-- **The prelude is source, not a hand-built table.** It travels through the same
-  lexer, parser and resolver as user code, so a bug in any of them shows up
-  there first.
+- **The standard library is source, not a hand-built table.** It travels
+  through the same lexer, parser and resolver as user code, so a bug in any of
+  them shows up there first (ADR-0029).
 
 ## Expression and constraint notes
 
@@ -134,3 +134,32 @@ expected. It also keeps the dependency list unchanged.
   `every` are typed and then reported as unsupported, at Warning severity with
   `Status::UnsupportedFeature` — the file is legal DSL, the engine just does not
   run that part in v0.0.1.
+
+## Standard library and import notes
+
+- **The library is the §8 document text, not the shipped files.** §8.16 says
+  `types.osc` / `domain.osc` / `standard.osc` are non-normative and the document
+  is the normative part, so every declaration is transcribed from §8 with the
+  subsection cited beside it (ADR-0002, ADR-0029).
+- **It is embedded, not installed.** `src/stdlib.cpp` carries the DSL text as
+  raw literals, split into chunks because MSVC caps one literal at 16380 bytes.
+  Nothing depends on an install prefix, so the CLI, the C ABI and the Python
+  wheel all get the same library.
+- **The types sub-module is built in and auto-used.** `stdtypes` is loaded for
+  every check and starts on the use list of the null namespace — the
+  "built-in definitions" route §7.7.5.2 offers, and what makes `30kph` typeable
+  in a file that has not imported anything. A `namespace` statement replaces the
+  use list, and from there the ordinary §7.7.4 rules hold.
+- **Conversion factors are the printed ones.** §8.14.1 prints kph as
+  `0.277777778`, so `36kph` is 10.000000008 m/s and `36kph == 10mps` is false.
+  Matching a conforming implementation beats matching arithmetic.
+- **Import-once makes cycles a non-event.** §7.7.5.1 imports a file at the
+  first place a depth-first traversal reaches it; a second reference does
+  nothing, so a cycle terminates and a diamond declares its shared types once.
+- **`osc` is reserved.** A module reference whose first component is `osc` never
+  reaches the search path: an unknown one is reported rather than looked up
+  (§7.7.5.1.2). Everything else maps `a.b.c` to `a/b/c.osc` under the configured
+  search paths.
+- **`check_source` / `check_file` are the entry points.** Loading and resolving
+  in one call, with imports followed; the CLI and the bindings sit on them. The
+  `LoadResult` owns the ASTs a `Program` points into, so it must outlive it.

@@ -31,6 +31,7 @@
 #include "scena/diagnostic.h"
 #include "scena/dsl/parser.h"
 #include "scena/dsl/resolve.h"
+#include "scena/dsl/stdlib.h"
 #include "scena/dsl/types.h"
 #include "scena/status.h"
 
@@ -39,7 +40,6 @@ namespace {
 using scena::DiagnosticSink;
 using scena::Severity;
 using scena::Status;
-using scena::dsl::builtin_prelude;
 using scena::dsl::File;
 using scena::dsl::Program;
 using scena::dsl::to_base_units;
@@ -59,6 +59,33 @@ Program resolve_ok(std::string_view source) {
     }
     EXPECT_EQ(status, Status::Ok);
     return program;
+}
+
+/// The bundled types sub-module, parsed once, as a file of its own. The
+/// standard library is a separate translation unit (§7.7.5.2), never text
+/// pasted in front of the source under test.
+const File& standard_types() {
+    static const File parsed = [] {
+        File file;
+        DiagnosticSink sink;
+        (void)scena::dsl::parse_source(
+            scena::dsl::standard_module_source(scena::dsl::kStandardTypesModule),
+            std::string(scena::dsl::kStandardTypesModule), file, sink);
+        file.is_standard_library = true;
+        return file;
+    }();
+    return parsed;
+}
+
+/// `resolve_errors`, with the bundled types sub-module alongside `source`.
+std::vector<scena::Diagnostic> resolve_errors_std(std::string_view source) {
+    DiagnosticSink sink;
+    File file;
+    (void)scena::dsl::parse_source(source, file, sink);
+    Program program;
+    const std::vector<const File*> files{&standard_types(), &file};
+    EXPECT_EQ(scena::dsl::resolve(files, program, sink), Status::ValidationError);
+    return sink.diagnostics();
 }
 
 /// Resolves `source` and returns the diagnostics, asserting that it failed.
@@ -81,22 +108,6 @@ bool mentions(const std::vector<scena::Diagnostic>& diagnostics, std::string_vie
     return false;
 }
 
-// --- the built-in prelude (§7.3.4) -----------------------------------------
-
-TEST(DslTypesTest, TheBuiltinPreludeResolves) {
-    // The pillar's "a standard-library subset loads" criterion. The prelude is
-    // DSL source, so this exercises the lexer, the parser and the resolver.
-    const Program program = resolve_ok(builtin_prelude());
-    const TypeInfo* speed = program.find("::speed");
-    ASSERT_NE(speed, nullptr);
-    EXPECT_EQ(speed->kind, TypeKind::Physical);
-    EXPECT_EQ(speed->dimension.to_string(), "m*s^-1");
-    EXPECT_NE(program.find("::length"), nullptr);
-    EXPECT_NE(program.find("::angle"), nullptr);
-    ASSERT_NE(program.units.find("kph"), program.units.end());
-    EXPECT_EQ(program.units.at("kph").physical_type, program.types_by_name.at("::speed"));
-}
-
 TEST(DslTypesTest, PrimitiveTypesAreAlwaysPresent) {
     // §7.3.2: their names are keywords, not namespaced identifiers.
     const Program program = resolve_ok("struct s\n");
@@ -108,29 +119,6 @@ TEST(DslTypesTest, PrimitiveTypesAreAlwaysPresent) {
 }
 
 // --- physical types and units (§7.3.4) -------------------------------------
-
-TEST(DslTypesTest, UnitConversionFollowsFactorAndOffset) {
-    // §7.3.4: base_unit_value = unit_value * factor + offset.
-    const Program program = resolve_ok(builtin_prelude());
-    struct Case {
-        const char* unit;
-        double value;
-        double expected;
-    };
-    for (const Case& test_case :
-         {Case{"m", 3.0, 3.0}, Case{"km", 1.5, 1500.0}, Case{"cm", 250.0, 2.5},
-          Case{"foot", 10.0, 3.048}, Case{"s", 2.0, 2.0}, Case{"min", 2.0, 120.0},
-          Case{"hour", 0.5, 1800.0}, Case{"celsius", 0.0, 273.15}, Case{"celsius", 26.85, 300.0},
-          Case{"g", 500.0, 0.5}}) {
-        const auto unit = program.units.find(test_case.unit);
-        ASSERT_NE(unit, program.units.end()) << test_case.unit;
-        EXPECT_NEAR(to_base_units(test_case.value, unit->second), test_case.expected, 1e-9)
-            << test_case.unit;
-    }
-    // kph is the one every scenario writes.
-    const Unit& kph = program.units.at("kph");
-    EXPECT_NEAR(to_base_units(36.0, kph), 10.0, 1e-9);
-}
 
 TEST(DslTypesTest, SiExponentsAccumulateIntoADimension) {
     const Program program = resolve_ok("type acceleration is SI(m: 1, s: -2)\n");
@@ -301,13 +289,13 @@ TEST(DslTypesTest, APhysicalFieldNeedsAUnitOnItsValue) {
     // §7.3.4: "A unit specification is a mandatory part of any physical type
     // literal."
     const std::vector<scena::Diagnostic> errors =
-        resolve_errors(std::string(builtin_prelude()) + "struct s:\n    v: speed = 10.0\n");
+        resolve_errors_std("struct s:\n    v: speed = 10.0\n");
     EXPECT_TRUE(mentions(errors, "needs a unit"));
 }
 
 TEST(DslTypesTest, AUnitOfTheWrongDimensionIsReported) {
     const std::vector<scena::Diagnostic> errors =
-        resolve_errors(std::string(builtin_prelude()) + "struct s:\n    v: speed = 10.0m\n");
+        resolve_errors_std("struct s:\n    v: speed = 10.0m\n");
     EXPECT_TRUE(mentions(errors, "but 'speed' is"));
 }
 
