@@ -965,6 +965,189 @@ modifier map.set_traffic_lights_control_file:
     file: string
 )OSC";
 
+// §8.8.2–§8.8.4 the movement actions: fifteen for `movable_object`, thirteen
+// for `vehicle` and one for `person`, plus the four enums they use and the two
+// intermediate bases §8.8.1 names only in prose. Each action's table gives it a
+// parent, its controlled states and how it ends; only the parent and the
+// parameters translate, the other two being runtime semantics.
+// Translation worksheet: docs/dev/stdlib-worksheets/08-08-movement-actions.md
+constexpr std::string_view kDomainMovementActions = R"OSC(
+# --- §8.8.2/§8.8.3/§8.8.4 the intermediate action bases ----------------------
+# §8.8.1 declares `osc_action` with exactly two children. §8.8.3's and §8.8.4's
+# "Parents" rows then name `action_for_vehicle` and `action_for_person`, which
+# no table declares; §8.8.1's prose supplies them — "Actions for actors that
+# are children of `movable_object`, like `vehicle` or `person`, inherit from
+# `action_for_movable_object`".
+action vehicle.action_for_vehicle inherits movable_object.action_for_movable_object
+
+action person.action_for_person inherits movable_object.action_for_movable_object
+
+# --- §8.8.2.18 enum dynamic_profile ------------------------------------------
+enum dynamic_profile: [none, constant, smooth, asap]
+
+# --- §8.8.2 actions for movable object ---------------------------------------
+# The tables give each action a parent, its controlled states and how it ends.
+# Only the parent and the parameters translate: the other two are runtime
+# semantics with no place in a declaration.
+action movable_object.move inherits movable_object.action_for_movable_object
+
+# §8.8.2.4: "Use only one of the three possible arguments" — the language has no
+# choice group, and §7.3.11 already lets a scenario leave a field unconstrained.
+action movable_object.assign_position inherits movable_object.action_for_movable_object:
+    position: position_3d
+    route_point: route_point
+    odr_point: odr_point
+
+action movable_object.assign_orientation inherits movable_object.action_for_movable_object:
+    orientation: orientation_3d
+
+action movable_object.assign_speed inherits movable_object.action_for_movable_object:
+    speed: speed
+
+action movable_object.assign_acceleration inherits movable_object.action_for_movable_object:
+    acceleration: acceleration
+
+action movable_object.replay_path inherits movable_object.action_for_movable_object:
+    absolute: path
+    relative: relative_path
+    reference: physical_object
+    transform: relative_transform
+    start_offset: length
+    end_offset: length
+
+action movable_object.replay_trajectory inherits movable_object.action_for_movable_object:
+    absolute: trajectory
+    relative: relative_trajectory
+    reference: physical_object
+    transform: relative_transform
+    start_offset: length
+    end_offset: length
+
+action movable_object.remain_stationary inherits movable_object.action_for_movable_object
+
+# `target_xyz` is marked deprecated in the same table that declares it, in
+# favour of `target_position`. It is declared anyway: the language has no
+# deprecation marker, and dropping a field the standard prints would reject a
+# conforming scenario.
+action movable_object.change_position inherits movable_object.action_for_movable_object:
+    target_position: position
+    target_st: route_point
+    target_odr: odr_point
+    target_xyz: position_3d
+    interpolation: path_interpolation
+    on_road_network: bool
+
+action movable_object.change_speed inherits movable_object.action_for_movable_object:
+    target: speed
+    rate_profile: dynamic_profile
+    rate_peak: acceleration
+
+action movable_object.keep_speed inherits movable_object.action_for_movable_object
+
+action movable_object.change_acceleration inherits movable_object.action_for_movable_object:
+    target: acceleration
+    rate_profile: dynamic_profile
+    rate_peak: jerk
+
+action movable_object.keep_acceleration inherits movable_object.action_for_movable_object
+
+# §8.8.2.16/§8.8.2.17 are the target-behaviour counterparts of replay_path and
+# replay_trajectory (§8.8.2.1 vs §8.8.2.2): same parameters, different promise
+# about the actor's dynamic limits.
+action movable_object.follow_path inherits movable_object.action_for_movable_object:
+    absolute: path
+    relative: relative_path
+    reference: physical_object
+    transform: relative_transform
+    start_offset: length
+    end_offset: length
+
+action movable_object.follow_trajectory inherits movable_object.action_for_movable_object:
+    absolute: trajectory
+    relative: relative_trajectory
+    reference: physical_object
+    transform: relative_transform
+    start_offset: length
+    end_offset: length
+
+# --- §8.8.3.14 enum lane_change_side -----------------------------------------
+enum lane_change_side: [left, right, inside, outside, same]
+
+# --- §8.8.3.15 enum gap_direction --------------------------------------------
+enum gap_direction: [ahead, behind, left, right, inside, outside]
+
+# --- §8.8.3.16 enum headway_direction ----------------------------------------
+enum headway_direction: [ahead, behind]
+
+# --- §8.8.3 actions for vehicle ----------------------------------------------
+action vehicle.drive inherits vehicle.action_for_vehicle
+
+action vehicle.follow_lane inherits vehicle.action_for_vehicle:
+    offset: length
+    rate_profile: dynamic_profile
+    rate_peak: speed
+    target: lane
+
+# `reference` documents `Default=it.actor`; a default naming the invoking actor
+# is not a constant expression, so the field is simply left unconstrained.
+action vehicle.change_lane inherits vehicle.action_for_vehicle:
+    num_of_lanes: uint
+    side: lane_change_side
+    reference: physical_object
+    offset: length
+    rate_profile: dynamic_profile
+    rate_peak: speed
+    target: lane
+
+# The change_/keep_ pairs below are deliberately asymmetric: a `change_*` takes
+# a `gap_direction` (six values, longitudinal and lateral), a `keep_*` takes a
+# `road_distance_direction` (§8.7.22, just longitudinal and lateral).
+action vehicle.change_time_gap inherits vehicle.action_for_vehicle:
+    target: time
+    direction: gap_direction
+    reference: physical_object
+
+action vehicle.keep_time_gap inherits vehicle.action_for_vehicle:
+    reference: physical_object
+    direction: road_distance_direction
+
+action vehicle.change_space_gap inherits vehicle.action_for_vehicle:
+    target: length
+    direction: gap_direction
+    reference: physical_object
+
+action vehicle.keep_space_gap inherits vehicle.action_for_vehicle:
+    reference: physical_object
+    direction: road_distance_direction
+
+action vehicle.change_time_headway inherits vehicle.action_for_vehicle:
+    target: time
+    direction: headway_direction
+    reference: physical_object
+
+action vehicle.keep_time_headway inherits vehicle.action_for_vehicle:
+    reference: physical_object
+
+action vehicle.change_space_headway inherits vehicle.action_for_vehicle:
+    target: length
+    direction: headway_direction
+    reference: physical_object
+
+action vehicle.keep_space_headway inherits vehicle.action_for_vehicle:
+    reference: physical_object
+
+action vehicle.connect_trailer inherits vehicle.action_for_vehicle:
+    trailer: trailer
+
+action vehicle.disconnect_trailer inherits vehicle.action_for_vehicle
+
+# --- §8.8.4 actions for person -----------------------------------------------
+# §8.8.4's prose says a person OR an animal walks, but the parent it names is
+# `action_for_person` and no `action_for_animal` exists. Declared on `person` as
+# printed; an animal reaches `move` through `action_for_movable_object`.
+action person.walk inherits person.action_for_person
+)OSC";
+
 const std::string& types_module() {
     static const std::string source = std::string(kTypesScalars) + std::string(kTypesCompound);
     return source;
@@ -973,7 +1156,8 @@ const std::string& types_module() {
 const std::string& domain_module() {
     static const std::string source = std::string(kDomainEntities) + std::string(kDomainRoads) +
                                       std::string(kDomainEnvironment) +
-                                      std::string(kDomainTrafficLights) + std::string(kDomainMap);
+                                      std::string(kDomainTrafficLights) + std::string(kDomainMap) +
+                                      std::string(kDomainMovementActions);
     return source;
 }
 
