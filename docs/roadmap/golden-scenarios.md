@@ -259,33 +259,49 @@ a cross vehicle flows during the orthogonal phase.
 - **Pass:** bit-identical trace; ego standstill while red; ego crosses only
   during green window; phase timings match declared program.
 
-### GS-12 — DSL cut-in (parity pair with GS-2)
+### GS-12 — DSL cruise, with an XML twin (parity pair) — **landed**
 
-The GS-2 scenario expressed in OpenSCENARIO DSL 2.x as a concrete scenario
-(`osc.vehicle` actors, `do serial`/`parallel` composition, movement actions
-with speed/position/lane modifiers), compiled through the DSL frontend to
-the same Scenario IR.
+`gs12-dsl-cruise.osc`: a concrete DSL scenario — one `vehicle` actor, a
+`do serial` of two `drive()` phases with concrete durations, speed modifiers
+anchored at `start` and at `end` — compiled through the DSL frontend into the
+same Scenario IR the XML frontend produces. `gs12-xml-cruise.xosc` says the same
+thing in the other language.
 
 - **Exercises:** P7 (parse, type-check against the standard library), P8
-  (lowering, modifiers, composition), plus everything GS-2 touches.
-- **Pass:** DSL trace is **bit-identical to the GS-2 XML trace** — the
-  two-frontends-one-runtime claim, verified literally.
-- **Role:** retires the execution-parity risk (R5); the release headline
-  demo.
+  (entry point, actor lowering, serial composition, durations, `at` anchoring).
+- **Pass:** the two traces are **equal byte for byte**
+  (`golden.py compare-pair gs12`, part of `check-all` on all three platforms) —
+  the two-frontends-one-runtime claim, verified literally.
+- **Role:** retires the execution-parity risk (R5); the release headline demo.
 
-### GS-13 — DSL composition showcase
+> **Why the pair is GS-1's shape and not GS-2's.** The plan was a DSL twin of
+> the GS-2 cut-in. A byte-identical pair needs both files to denote the *same IR
+> actions*, and GS-2's lane change does not survive that: §8.9's `lateral`
+> modifier lowers to a `LaneOffsetAction` while GS-2's XML uses a
+> `LaneChangeAction`, whose transition time is derived from `maxLateralAcc`
+> rather than from a duration (ADR-0016). The two are different actions with
+> different timing laws, so a pair built on them would compare two things that
+> were never claimed to be equal. GS-1's longitudinal shape is expressible
+> identically in both languages, so it is what the parity claim is made on;
+> GS-13 covers the DSL-only constructs that have no XML counterpart at all.
 
-A DSL-only scenario: `do serial` of a `parallel` phase (two vehicles adjust
-speeds concurrently) and a `one_of` phase executed with the documented
-deterministic selection input (host-selected alternative, default first);
-an `event`/`wait` dependency gates the final phase; `until` bounds a
-sub-composition.
+### GS-13 — DSL composition showcase — **landed**
 
-- **Exercises:** P7 (full syntax incl. events), P8 (serial/parallel/one_of
-  semantics per DSL §7.6, modifier timing), P6.
-- **Pass:** bit-identical trace per selected alternative (run twice with
-  alternative 0 and 1, each against its own reference); phase boundaries at
-  declared times; `wait` releases exactly on the emitted event.
+`gs13-dsl-alternatives.osc`: DSL-only constructs, with no XML counterpart. A
+`do serial` whose first phase is a `parallel` of two vehicles adjusting speed
+concurrently — one of them placed by a `position(ahead_of:)` modifier — followed
+by a `one_of` phase run with the documented deterministic selection input
+(`--select`, default the first alternative). The chosen alternative uses a
+relative-speed modifier (`slower_than`), the other an absolute target.
+
+- **Exercises:** P7 (full syntax), P8 (serial/parallel/one_of per §7.6.2.1,
+  modifier timing, relative targets), P6 (the CLI's selection input).
+- **Pass:** bit-identical trace for the default alternative; phase boundaries at
+  the declared times; `--select brake` changes what runs and nothing else.
+- **Not covered, and deliberately:** `event`/`wait`/`until` gating. §7.6.2.5's
+  events are abstract control objects with no runtime carrier in v0.0.1, so they
+  are reported rather than executed (ADR-0031); a golden scenario asserting them
+  would be asserting a diagnostic, not a behaviour.
 
 ### GS-14 — Determinism soak
 

@@ -1,0 +1,32 @@
+# GS-13 — composition, modifiers and a one_of alternative.
+#
+# Authored from the ASAM OpenSCENARIO DSL specification text (ADR-0002). What
+# it exercises has no XML counterpart at all: a nested parallel inside a serial,
+# a relative-speed modifier, a placement modifier, and a `one_of` whose
+# alternative is chosen by an input rather than by chance (ADR-0031).
+#
+# The default alternative is `follow`; `scena-run --select brake` runs the other.
+
+import osc.standard.all
+
+namespace scena_golden use std, stdtypes
+
+scenario alternatives:
+    ego: vehicle
+    lead: vehicle
+    keep(ego.vehicle_category == vehicle_category!car)
+    keep(lead.vehicle_category == vehicle_category!van)
+
+    do serial:
+        setup: parallel:
+            ego_cruise: ego.drive(duration: 2s) with:
+                speed(speed: 10mps, at: at!start)
+            lead_cruise: lead.drive(duration: 2s) with:
+                speed(speed: 12mps, at: at!start)
+                position(distance: 30m, ahead_of: ego, at: at!start)
+
+        react: one_of:
+            follow: ego.drive(duration: 4s) with:
+                speed(speed: 4mps, slower_than: lead, at: at!start)
+            brake: ego.drive(duration: 4s) with:
+                speed(speed: 0mps, at: at!end)
