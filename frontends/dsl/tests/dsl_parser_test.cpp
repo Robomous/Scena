@@ -176,7 +176,7 @@ TEST(DslParserTest, EnumsDeclareMembersWithOptionalValues) {
 }
 
 TEST(DslParserTest, AnEnumExtensionIsMarkedAsOne) {
-    // §7.2.2.2.6: enum-type-extension ::= 'extend' enum-name ':' '[' ... ']'
+    // §7.2.2.2.6: enum-type-extension ::= 'extend' enum-name ':' '[' .. ']'
     const File file = parse_ok("extend side: [up, down]\n");
     ASSERT_EQ(file.declarations.size(), 1U);
     EXPECT_EQ(file.declarations[0].kind, Declaration::Kind::Enum);
@@ -573,7 +573,7 @@ TEST(DslParserTest, ListAndRangeConstructorsTakeBothForms) {
     EXPECT_EQ(list->kind, ExprKind::ListConstructor);
     EXPECT_EQ(list->operands.size(), 3U);
     // range-constructor ::= 'range' '(' a ',' b ')' | '[' a '..' b ']'
-    const auto bracket_range = parse_expr("[1...5]");
+    const auto bracket_range = parse_expr("[1..5]");
     EXPECT_EQ(bracket_range->kind, ExprKind::RangeConstructor);
     EXPECT_EQ(bracket_range->operands.size(), 2U);
     const auto call_range = parse_expr("range(1, 5)");
@@ -596,7 +596,7 @@ TEST(DslParserTest, ItIsAPrimaryExpression) {
 }
 
 TEST(DslParserTest, InIsARelationalOperator) {
-    const auto expr = parse_expr("x in [1...5]");
+    const auto expr = parse_expr("x in [1..5]");
     ASSERT_EQ(expr->kind, ExprKind::Binary);
     EXPECT_EQ(expr->text, "in");
 }

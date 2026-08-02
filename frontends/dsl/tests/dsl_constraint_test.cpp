@@ -207,7 +207,7 @@ TEST(DslConstraintTest, AConjunctionOfBindingsIsAccepted) {
 
 TEST(DslConstraintTest, AMembershipBindingIsAccepted) {
     const std::vector<scena::Diagnostic> diagnostics =
-        check("    v: speed\n    keep(v in [10.0kph...30.0kph])\n");
+        check("    v: speed\n    keep(v in [10.0kph..30.0kph])\n");
     EXPECT_FALSE(has_error(diagnostics));
     EXPECT_FALSE(notes_unsupported(diagnostics));
 }

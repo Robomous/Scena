@@ -35,6 +35,7 @@
 #include "scena/dsl/lower.h"
 #include "scena/dsl/types.h"
 #include "scena/ir/action.h"
+#include "scena/ir/condition.h"
 #include "scena/ir/entity.h"
 #include "scena/ir/position.h"
 #include "scena/ir/scenario.h"
@@ -64,7 +65,8 @@ struct Lowered {
 
 /// Checks `source`, then lowers it. Both statuses are recorded rather than
 /// asserted, so a test can pin either half.
-void run(std::string_view source, Lowered& out, const std::string& entry_point = {}) {
+void run(std::string_view source, Lowered& out, const std::string& entry_point = {},
+         const std::string& alternative = {}) {
     out.check_status = scena::dsl::check_source(source, "<test>", LoadOptions{}, out.loaded,
                                                 out.program, out.check_sink);
     if (out.check_status != Status::Ok) {
@@ -72,6 +74,7 @@ void run(std::string_view source, Lowered& out, const std::string& entry_point =
     }
     LowerOptions options;
     options.entry_point = entry_point;
+    options.alternative = alternative;
     out.status = scena::dsl::lower(out.program, out.loaded, options, out.lowered, out.sink);
 }
 
@@ -639,32 +642,204 @@ TEST(DslLoweringTest, AnUnlabelledPhaseGetsItsPositionAsAName) {
     EXPECT_EQ(lowered[1].name, "phase_2");
 }
 
-TEST(DslLoweringTest, OneOfIsReportedAsBelongingToTheNextSprint) {
+// --- composition (§7.6.2.1) -------------------------------------------------
+
+/// The start condition of a phase, rendered as text so a test can read it.
+std::string trigger_text(const Phase& phase) {
+    if (phase.event == nullptr || !phase.event->start_trigger.has_value()) {
+        return "(with parent)";
+    }
+    std::string out;
+    for (const scena::ir::ConditionGroup& group : phase.event->start_trigger->groups) {
+        for (const scena::ir::TriggerCondition& condition : group.conditions) {
+            if (const auto* time = dynamic_cast<const scena::ir::SimulationTimeCondition*>(
+                    condition.expression.get())) {
+                out += "t>=" + std::to_string(time->value()).substr(0, 4) + " ";
+            } else if (const auto* element =
+                           dynamic_cast<const scena::ir::StoryboardElementStateCondition*>(
+                               condition.expression.get())) {
+                out += element->element_ref() + " complete ";
+            }
+        }
+    }
+    return out;
+}
+
+TEST(DslLoweringTest, ConcreteDurationsBecomeAbsoluteStartTimes) {
+    // The storyboard starts at t = 0 and every duration that lowers is a
+    // constant, so a phase's start time is the sum of the ones before it —
+    // arithmetic load time can do, with no runtime feedback.
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do serial:\n"
+            "        a: ego.assign_speed(speed: 10mps, duration: 4s)\n"
+            "        b: ego.change_speed(target: 20mps, rate_peak: 2.0, duration: 6s)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    // The first phase starts with its parent: `t >= 0` would be a tautology.
+    EXPECT_EQ(trigger_text(lowered[0]), "(with parent)");
+    EXPECT_EQ(trigger_text(lowered[1]), "t>=4.00 ");
+    // The scenario ends when its `do` directive does, and here that is a
+    // constant, so the storyboard can say so.
+    ASSERT_TRUE(result.lowered.scenario.storyboard.stop_trigger.has_value());
+}
+
+TEST(DslLoweringTest, APhaseWithoutADurationChainsOnCompletionInstead) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do serial:\n"
+                                     "        a: ego.assign_speed(speed: 10mps)\n"
+                                     "        b: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    EXPECT_EQ(trigger_text(lowered[1]), "a complete ");
+    // Nothing fixes when the run ends, so nothing claims to.
+    EXPECT_FALSE(result.lowered.scenario.storyboard.stop_trigger.has_value());
+}
+
+TEST(DslLoweringTest, AParallelCompositionEndsWhenItsLastMemberDoes) {
+    // §7.6.2.1.4's default overlap is `start`: members begin together and may
+    // end apart, so what follows waits for the last of them.
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    lead: vehicle\n"
+            "    do serial:\n"
+            "        setup: ego.assign_speed(speed: 10mps, duration: 2s)\n"
+            "        both: parallel:\n"
+            "            x: ego.change_speed(target: 20mps, rate_peak: 2.0, duration: 5s)\n"
+            "            y: lead.assign_speed(speed: 30mps, duration: 3s)\n"
+            "        after: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 4U);
+    // Both members of the parallel start when the composition does ...
+    EXPECT_EQ(trigger_text(lowered[1]), "t>=2.00 ");
+    EXPECT_EQ(trigger_text(lowered[2]), "t>=2.00 ");
+    EXPECT_EQ(lowered[1].actor, "ego");
+    EXPECT_EQ(lowered[2].actor, "lead");
+    // ... and the phase after it waits for the longer of the two (2 + 5).
+    EXPECT_EQ(trigger_text(lowered[3]), "t>=7.00 ");
+}
+
+TEST(DslLoweringTest, AParallelJoinAndsTheMembersThatEndOnCompletion) {
+    // A ConditionGroup is an AND, which is what makes "all members done"
+    // expressible when their end times are not constants.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    lead: vehicle\n"
+                                     "    do serial:\n"
+                                     "        both: parallel:\n"
+                                     "            x: ego.assign_speed(speed: 10mps)\n"
+                                     "            y: lead.assign_speed(speed: 30mps)\n"
+                                     "        after: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 3U);
+    EXPECT_EQ(trigger_text(lowered[2]), "x complete y complete ");
+}
+
+TEST(DslLoweringTest, WaitElapsedAdvancesTheClockAndNothingElse) {
+    // §7.6.2.4.2: a phase of the given length in which nothing is specified.
+    // Nothing is exactly what it lowers to — the clock is already running.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do serial:\n"
+                                     "        a: ego.assign_speed(speed: 10mps, duration: 2s)\n"
+                                     "        wait elapsed(3s)\n"
+                                     "        b: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    EXPECT_EQ(trigger_text(lowered[1]), "t>=5.00 ");
+}
+
+TEST(DslLoweringTest, OneOfRunsItsFirstAlternativeUnlessOneIsNamed) {
+    // §7.6.2.1.3 says at least one alternative must hold and says nothing about
+    // which, so the choice is an input rather than a coin toss.
+    const std::string source =
+        std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do one_of:\n"
+                                     "        slow: ego.assign_speed(speed: 10mps)\n"
+                                     "        fast: ego.assign_speed(speed: 30mps)\n");
+    Lowered first;
+    run(source, first);
+    ASSERT_EQ(first.status, Status::Ok) << first_message(first.sink);
+    ASSERT_EQ(phases(first.lowered.scenario).size(), 1U);
+    EXPECT_EQ(phases(first.lowered.scenario)[0].name, "slow");
+}
+
+TEST(DslLoweringTest, AnAlternativeThatIsNotThereIsReported) {
     Lowered result;
     run(std::string(kPrelude).append("scenario go:\n"
                                      "    ego: vehicle\n"
                                      "    do one_of:\n"
-                                     "        a: ego.assign_speed(speed: 10mps)\n"
-                                     "        b: ego.assign_speed(speed: 20mps)\n"),
-        result);
-    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    EXPECT_TRUE(sink_says(result.sink, "one_of"));
-    EXPECT_TRUE(result.lowered.scenario.storyboard.stories.empty());
+                                     "        slow: ego.assign_speed(speed: 10mps)\n"
+                                     "        fast: ego.assign_speed(speed: 30mps)\n"),
+        result, "", "nope");
+    EXPECT_EQ(result.status, Status::ValidationError);
+    EXPECT_TRUE(sink_says(result.sink, "not an alternative"));
 }
 
-TEST(DslLoweringTest, ModifiersAndInvocationDurationsAreReportedAsDeferred) {
-    // Both are real constructs of the invocation, and both belong to a later
+TEST(DslLoweringTest, ARangeDurationBoundsTracesRatherThanFixingATime) {
+    // §7.6.2.4's range is a constraint on accepted traces; choosing a value
+    // from it needs a solver, which is post-v0.0.1 (ADR-0004).
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do a: ego.assign_speed(speed: 10mps, duration: [2s..4s])\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "not a single value"));
+    EXPECT_FALSE(result.lowered.scenario.storyboard.stop_trigger.has_value());
+}
+
+TEST(DslLoweringTest, ANonDefaultParallelOverlapIsReported) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    lead: vehicle\n"
+                                     "    do parallel(overlap: equal):\n"
+                                     "        x: ego.assign_speed(speed: 10mps)\n"
+                                     "        y: lead.assign_speed(speed: 30mps)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "overlap 'equal'"));
+}
+
+TEST(DslLoweringTest, ModifiersAreReportedAsDeferred) {
+    // A modifier is a real construct of the invocation that belongs to a later
     // sprint. Reporting beats silently running a scenario that says more than
     // the engine was told.
     Lowered result;
     run(std::string(kPrelude).append("scenario go:\n"
                                      "    ego: vehicle\n"
-                                     "    do phase: ego.drive(duration: 5s) with:\n"
+                                     "    do phase: ego.drive() with:\n"
                                      "        speed(speed: 30kph)\n"),
         result);
     ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    EXPECT_TRUE(sink_says(result.sink, "p8-s2 (#45)"));
     EXPECT_TRUE(sink_says(result.sink, "p8-s3 (#46)"));
 }
 

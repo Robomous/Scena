@@ -38,6 +38,15 @@ struct LowerOptions {
     /// nothing; a file with several is reported rather than guessed at, because
     /// picking one silently would make the run depend on declaration order.
     std::string entry_point;
+
+    /// The `one_of` alternative to run, by its label (§7.6.2.1.3).
+    ///
+    /// The standard says at least one alternative must hold and says nothing
+    /// about which, so an executor picks. Picking at random would put a hidden
+    /// input in the run, which is what the determinism contract exists to
+    /// prevent — so the choice is an explicit input, and empty means the first
+    /// alternative in declaration order.
+    std::string alternative;
 };
 
 /// What lowering produced: the IR plus the host-side references that are not

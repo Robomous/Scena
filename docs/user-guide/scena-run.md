@@ -22,7 +22,7 @@ scena-run tests/golden/scenarios/gs1-cruise-baseline.xosc \
 | `--trace-format <csv\|json>` | override the format inferred from the extension |
 | `--map <file.xodr>` | road network, overriding the scenario's `RoadNetwork/LogicFile` |
 | `--replay <entity>=<file>` | drive an entity from a recorded trace |
-| `--select <alternative>` | choose a `one_of` alternative (DSL; p8-s2) |
+| `--select <alternative>` | choose a `one_of` alternative by label (`.osc` only) |
 | `--entry <scenario>` | the DSL scenario to run (`.osc` only) |
 | `-I`, `--search-path <dir>` | where DSL imports are looked up (repeatable) |
 | `--quiet` | do not print diagnostics |
@@ -51,6 +51,12 @@ error: the file declares more than one scenario; name the entry point (§7.7.2):
 
 `--entry second` (or `--entry demo::second`) names it. `-I` adds a directory to
 the import search path, exactly as it does for `scena-check`.
+
+A `one_of` composition offers alternatives, and §7.6.2.1.3 leaves the choice to
+the executor. `--select <label>` makes it, and without it the first alternative
+in declaration order runs — the choice is never random, because a seed the
+scenario does not state would be exactly the hidden input the determinism
+contract exists to rule out.
 
 The road network works the same way in both languages: XML names it in
 `RoadNetwork/LogicFile`, DSL in §8.5.4's `map_file` — written either as
