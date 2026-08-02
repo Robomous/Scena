@@ -53,6 +53,9 @@ expected. It also keeps the dependency list unchanged.
 | `src/stdlib.cpp` | its source, as chunked raw literals |
 | `tests/dsl_import_test.cpp` | §7.7.5 imports, search paths, diagnostics carrying their file |
 | `tests/dsl_stdlib_test.cpp` | the §8 library, pinned declaration by declaration |
+| `include/scena/dsl/lower.h` | `lower()` / `entry_points()` — checked program to Scenario IR |
+| `src/lower.cpp` | the §7.7.2 entry point, §8.7 actors as entities, §7.3.11 concrete values |
+| `tests/dsl_lowering_test.cpp` | the DSL→IR mapping, and that lowering is deterministic |
 
 ## Lexing notes
 
@@ -215,3 +218,27 @@ expected. It also keeps the dependency list unchanged.
   an engine's diagnostic list. `scripts/parity_audit.py` now audits these entry
   points alongside the `Engine` methods, so a frontend function added to one
   surface and forgotten in the others is a CI failure.
+
+## Lowering notes (ADR-0030)
+
+- **Lowering decides denotation, not semantics.** Both frontends compile into
+  one IR; runtime behaviour lives in the runtime. If the DSL side needs
+  behaviour the XML side would also need, it belongs in `core/`.
+- **The entry point is named, and a lone scenario names itself.** §7.7.2 leaves
+  the choice to the implementation. A file declaring several scenarios is an
+  error listing them, because picking one would make the run depend on
+  declaration order.
+- **A participant is a field deriving from `std::physical_object`.** §8.7 roots
+  its hierarchy there, so that is the test; `animal` has no taxonomy
+  counterpart and stays an unclassified participant rather than being misfiled
+  as a pedestrian.
+- **Concrete means `keep(field == constant)`.** Either operand order, constant
+  side folding without a solver. Everything else is diagnosed (ADR-0004).
+  Values arrive already folded to base units, so lowering never converts —
+  re-applying §8.14.1.3's printed factors a second time is exactly the bug
+  ADR-0029 exists to prevent.
+- **An enum literal resolves through the use list.** `vehicle_category!bus`
+  written in `namespace demo use std` names a type in `std`, so constant
+  evaluation searches the use list after the current namespace (§7.7.4.2).
+  Before p8-s1 it searched only the current namespace, which silently made every
+  enum-valued `keep` look like one that needs a solver.

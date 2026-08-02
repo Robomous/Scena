@@ -30,6 +30,7 @@
 
 #include "scena/diagnostic.h"
 #include "scena/dsl/expression.h"
+#include "scena/dsl/load.h"
 #include "scena/dsl/parser.h"
 #include "scena/dsl/resolve.h"
 #include "scena/dsl/stdlib.h"
@@ -44,6 +45,8 @@ using scena::Status;
 using scena::dsl::ExpressionContext;
 using scena::dsl::File;
 using scena::dsl::kInvalidType;
+using scena::dsl::LoadOptions;
+using scena::dsl::LoadResult;
 using scena::dsl::Program;
 using scena::dsl::TypeId;
 using scena::dsl::Value;
@@ -587,6 +590,50 @@ TEST(DslExpressionTest, AFieldReadIsNotConstant) {
     EXPECT_FALSE(scena::dsl::evaluate_constant(
         program, *file.declarations.front().structured.members.front().field.default_value, context,
         value));
+}
+
+TEST(DslExpressionTest, AQualifiedEnumLiteralResolvesThroughTheUseList) {
+    // §7.3.3's `enum-name '!' member` names a type, and §7.7.4.2 says a type
+    // name resolves through the use list after the current namespace. Constant
+    // evaluation searched only the current namespace until p8-s1, which
+    // silently made every enum-valued `keep` written in a namespace that *uses*
+    // the enum's look like one that needs a solver.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("namespace lights\n"
+                                       "enum colour: [red, amber, green]\n"
+                                       "export *\n"
+                                       "namespace demo use lights\n"
+                                       "struct signal:\n    c: colour = colour!amber\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+
+    const auto signal = program.types_by_name.find("demo::signal");
+    ASSERT_NE(signal, program.types_by_name.end());
+    const scena::dsl::FieldInfo* field = program.find_field(signal->second, "c");
+    ASSERT_NE(field, nullptr);
+    ASSERT_NE(field->declaration, nullptr);
+    ASSERT_NE(field->declaration->default_value, nullptr);
+
+    ExpressionContext context;
+    context.name_space = "demo";
+    context.uses = {"lights"};
+    Value value;
+    ASSERT_TRUE(
+        scena::dsl::evaluate_constant(program, *field->declaration->default_value, context, value));
+    EXPECT_EQ(value.kind, Value::Kind::Enum);
+    EXPECT_EQ(value.enum_value, 1U);
+    EXPECT_EQ(program.types[value.type].name, "lights::colour");
+
+    // Without the use list there is nothing to find, which is the behaviour an
+    // explicitly qualified name must not depend on.
+    ExpressionContext bare;
+    bare.name_space = "demo";
+    Value unused;
+    EXPECT_FALSE(
+        scena::dsl::evaluate_constant(program, *field->declaration->default_value, bare, unused));
 }
 
 TEST(DslExpressionTest, TypingIsDeterministicAcrossRepeats) {

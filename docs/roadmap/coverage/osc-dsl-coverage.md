@@ -37,6 +37,22 @@ construct one.
 | C ABI — `scn_check_dsl_file` / `scn_check_dsl_string` | In | p7-s5 | Opaque `scn_dsl_check` handle carrying the diagnostics and the two counts; a failing check still produces one, because that is the case whose findings you want (`c_consumer.c`) |
 | Python — `scena.check_dsl_file` / `check_dsl_string` | In | p7-s5 | Returns a `DslCheck` — status, diagnostics, `type_count`, `file_count` (`test_dsl_check.py`, `python/examples/check_dsl.py`) |
 
+## Lowering to the IR (P8)
+
+The DSL and the XML frontend compile into one Scenario IR, so nothing in this
+table decides runtime semantics — only which DSL construct denotes which IR
+construct (ADR-0030). Lowering is inside the determinism contract, because load
+time is.
+
+| Feature | Section | Check | Exec | Sprint(s) | Notes |
+|---|---|---|---|---|---|
+| Actor field → IR entity | §8.7 | In | In | p8-s1 | **Landed** (`dsl_lowering_test.cpp`): every entry-scenario field whose type derives from `std::physical_object` becomes one entity, in declaration order, engine-controlled. `vehicle`/`person`/`stationary_object` classify onto the p2-s1 taxonomy; anything else deriving from `physical_object` (§8.7.10's `animal`) stays an unclassified participant rather than being misfiled |
+| Concrete value binding | §7.3.11 | In | In | p8-s1 | **Landed**: `keep(<field-path> == <constant>)` in either operand order, where the constant folds without a solver — that is what §6.3.1.2.1's "attribute-level concrete" means. §7.3.8.2 conditional inheritance is read the same way. Anything needing search is diagnosed, never approximated (ADR-0004) |
+| Physical values in the IR | §7.3.4 | In | In | p8-s1 | **Landed**: values arrive already folded to their base unit, so lowering never converts and never re-applies the standard's printed factors a second time (ADR-0029) |
+| Performance limits | §8.7 | n/a | Excl | p8-s1 | §8.7 declares no performance limits at all — the domain model has no counterpart to XML's `Performance`. The IR's zeros are the faithful lowering: the runtime reads a non-positive limit as unconstrained. No numbers are invented |
+| §8.8 movement actions → IR actions | §8.8.2–§8.8.4 | In | In | p8-s1 | Planned (p8-s1 follow-up): the subset the action table below marks In |
+| `set_map_file` → road backend | §8.12.2 | In | In | p8-s1 | Planned (p8-s1 follow-up) |
+
 ## Language core (§7.2, §7.3)
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |
@@ -70,7 +86,7 @@ construct one.
 | Namespaces + `::`, export rules | §7.7.4 | In | n/a | p7-s3 | **Landed**: `namespace ... use`, explicit `ns::name`, export lists and wildcards, the current namespace shadowing the use list (§7.7.4.2), ambiguity across two used namespaces reported, `std`-prefixed namespaces warned, each file starting in the null namespace |
 | Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2, p7-s5 | **Landed** (`dsl_import_test.cpp`): both reference forms resolved, `file` URIs (`file:///p`, `file:/p`, bare) with relative references anchored to the referencing file, module references mapped `a.b.c` → `a/b/c.osc` over configured search paths, import-once by canonical path so a diamond declares once and a cycle terminates (§7.7.5.1), referenced files ordered before the referencing file, `osc`-prefixed references reserved (§7.7.5.1.2) |
 | Standard-library access (built-in definitions; auto-use) | §7.7.5.2 | In | n/a | p7-s5 | **Landed** (`dsl_import_test.cpp`, `dsl_stdlib_test.cpp`): the types sub-module is provided as built-in definitions, the route §7.7.5.2 permits, with `stdtypes` auto-used in the null namespace (§7.7.5.2.3) so a physical literal types before any import; all four module references accepted; a namespace statement restores the ordinary §7.7.4 use-list rules (ADR-0029) |
-| Scenario entry-point selection | §7.7.2 | n/a | In | p8-s1 | Implementation-defined per spec: qualified name via API/CLI |
+| Scenario entry-point selection | §7.7.2 | n/a | In | p8-s1 | **Landed** (`dsl_lowering_test.cpp`): §7.7.2 leaves the choice to the implementation. `LowerOptions::entry_point` takes a scenario by qualified name or as written; empty means the root file's only scenario, and a file declaring several is an error that lists them rather than guessing (ADR-0030). `entry_points()` returns the same list in declaration order |
 
 ## Expressions (§7.4)
 
