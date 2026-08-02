@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Accepted
 - **Date:** 2026-08-02
-- **Sprint:** p8-s1 (#44)
+- **Sprint:** p8-s1 (#44), extended in the same sprint's second half
 - **Supersedes:** nothing. Builds on ADR-0028 (symbols and the type model),
   ADR-0029 (the bundled standard library) and ADR-0010 (the entity taxonomy).
 
@@ -115,10 +115,83 @@ Anything that would need search is a diagnostic, not a silently-defaulted value
 frontend takes for constructs it does not implement. A scenario that declares no
 participant is a warning: the file is well-formed, it simply has nothing to run.
 
+### 6. A behavior invocation denotes an IR action; the `do` directive denotes a storyboard
+
+The runtime the two frontends share already knows what a speed transition is, so
+lowering a §8.8 movement action decides only which IR action it *is*. Seven of
+them have an unambiguous counterpart and lower:
+
+| §8.8 action | IR action |
+|---|---|
+| `assign_speed` | `SpeedAction`, Step |
+| `change_speed` | `SpeedAction` with the transition §8.8.2.18 asks for |
+| `remain_stationary` | `SpeedAction` to zero, Step |
+| `assign_position` | `TeleportAction` to a `WorldPosition` |
+| `change_lane` | `LaneChangeAction` with a `RelativeTargetLane` |
+| `change_space_gap` | `LongitudinalDistanceAction`, distance |
+| `change_time_gap` | `LongitudinalDistanceAction`, time gap |
+
+`move`, `drive` and `walk` are the generic actions: they carry no target of
+their own and exist to be shaped by §8.9 modifiers (p8-s3). On their own they
+say "keep doing what you are doing", which the runtime already does, so they
+lower to nothing. Every other §8.8 action is reported by name, never silently
+dropped.
+
+Two readings are worth stating because the standard does not state them:
+
+- **`dynamic_profile` names a shape, `rate_peak` a magnitude, and neither is a
+  duration.** With no peak rate there is no number to ramp over, so the change
+  is instantaneous — which is exactly what a Step shape means (§7.4.1.2).
+  `asap` is a Step from the other direction: §8.7 declares no performance
+  envelope, so "as soon as possible" is bounded by nothing.
+- **`change_lane` needs an explicit `left` or `right`.** §8.8.3.14's `inside`,
+  `outside` and `same` need road geometry to say which way that is, and an
+  unstated side would have to be *chosen*. Choosing is what the determinism
+  contract forbids, so this is a diagnostic rather than a default.
+
+The `do` directive becomes one Story, one Act, and one ManeuverGroup per phase —
+the group is where an actor lives, so a group per phase keeps each invocation's
+actor with its actions. `serial` chains a phase on its predecessor reaching
+completeState, which is the trigger form §7.6.2.1.2's "starts when its
+predecessor ends" already has in the runtime; `parallel` leaves the triggers
+absent, so every phase starts with its Act (§7.6.1.1). A phase without a label
+is named for its position, because the runtime addresses storyboard elements by
+name path. Everything else about composition — `one_of`, nesting, `until`,
+`wait`, `emit`, `call`, and an invocation's `duration` — is reported and belongs
+to p8-s2.
+
+### 7. A struct-valued argument names a declaration, and the `keep`s on it are the value
+
+The DSL has no struct constructor: §7.2.2.6.7 declares list and range
+constructors and nothing else. So `assign_position(position: start)` can only
+name a declaration, and what makes `start` concrete is the same binding table
+decision 3 already uses for an actor's own attributes. Nothing new is invented;
+the rule is simply applied one level further out. A coordinate nothing
+constrains is reported, not assumed.
+
+### 8. The map file travels beside the IR, not inside it
+
+§8.5.4's `map_file` is the DSL's counterpart to `RoadNetwork/LogicFile`, and it
+gets the same treatment the XML frontend already gives that: a road-network path
+is an input to the *host*, not kernel state, because the engine reaches roads
+only through `IRoadQuery` (ADR-0003). `LowerResult` therefore mirrors
+`xml::Document` — the IR plus the file reference — rather than growing a path
+field on `ir::Scenario`.
+
+Both spellings the standard prints are read and mean the same thing:
+`map.set_map_file("m.xodr")` (Code 61) and `keep(my_map.map_file == "m.xodr")`
+(Code 62). The first needs one resolution rule the checker did not have: **a
+bare actor type name is a receiver in its own right**. `map` in Code 61 names
+the actor *type* — the road network is a singleton no scenario declares a field
+for — and without that rule the standard's own concrete-scenario example
+(Code 6) is rejected. A declared field of the same name still wins, because the
+receiver a reader means by a name is the declaration in front of them.
+
 ## Consequences
 
-- `.osc` produces an `ir::Scenario` the existing engine accepts. Actions,
-  `set_map_file` and `scena-run`'s `.osc` support are the rest of p8-s1.
+- `.osc` produces an `ir::Scenario` the existing engine accepts, and
+  `scena-run` runs one: the file's extension picks the frontend and everything
+  past the load sees only the IR.
 - Lowering is inside the determinism contract, because load time is. It reads
   ordered containers only, walks fields in declaration order, and does no
   floating-point arithmetic of its own — the values it copies were folded once,
@@ -136,6 +209,14 @@ what executes.
 **Give DSL vehicles a documented default performance profile.** Rejected: it
 fabricates numbers the standard does not state. "Unconstrained" is what §8.7
 actually says, and the runtime already spells it as zero.
+
+**Give `drive()` a default action so every scenario runs something.** Rejected:
+the generic actions mean "unconstrained", and inventing a speed for them would
+put a number in the trace that the scenario never stated.
+
+**Put the road-network path in `ir::Scenario`.** Rejected: it would make the
+kernel carry a host-side file reference, which is the coupling the gateway
+exists to prevent, and the XML frontend already states the opposite rule.
 
 **Solve constraints during lowering.** Rejected by ADR-0004: constraint solving
 is post-v0.0.1, and half-solving would produce scenarios whose behaviour depends

@@ -1111,17 +1111,35 @@ void Resolver::check_modifier_application(const ModifierApplication& application
     // expression names the receiver; omitting it means the receiver is the one
     // the application site already implies — the enclosing declaration or the
     // actor of the invocation the `with:` block belongs to.
+    const Scope scope{context.name_space, context.uses, context.file};
+
     TypeId receiver = implicit_receiver;
     if (application.actor != nullptr) {
-        // May grow Program::types (a list or range constructor interns a type),
-        // so nothing may hold a TypeInfo& across it.
-        receiver = check_expression(*application.actor, context);
-        if (receiver == kInvalidType) {
-            return; // the actor expression already reported why
+        // §8.5.4 writes the map file as `map.set_map_file("m.xodr")` (Code 61,
+        // and Code 6's concrete scenario), where `map` names the actor *type*:
+        // the road network is a singleton no scenario declares a field for. A
+        // bare name that resolves to an actor type is therefore a receiver in
+        // its own right — but only when no field of that name is in scope,
+        // because a declared field is what the reader means by the name.
+        TypeId named = kInvalidType;
+        if (application.actor->kind == ExprKind::Name &&
+            out_.find_field(context.self, application.actor->text) == nullptr) {
+            named = lookup_declared(application.actor->text, scope);
+            if (named != kInvalidType && out_.types[named].kind != TypeKind::Actor) {
+                named = kInvalidType; // only an actor has modifiers to apply
+            }
+        }
+        if (named != kInvalidType) {
+            receiver = named;
+        } else {
+            // May grow Program::types (a list or range constructor interns a
+            // type), so nothing may hold a TypeInfo& across it.
+            receiver = check_expression(*application.actor, context);
+            if (receiver == kInvalidType) {
+                return; // the actor expression already reported why
+            }
         }
     }
-
-    const Scope scope{context.name_space, context.uses, context.file};
 
     // An unassociated or scenario-associated modifier is named plainly
     // (§7.3.12.4.2's first example); an actor-associated one lives in the actor

@@ -23,8 +23,39 @@ scena-run tests/golden/scenarios/gs1-cruise-baseline.xosc \
 | `--map <file.xodr>` | road network, overriding the scenario's `RoadNetwork/LogicFile` |
 | `--replay <entity>=<file>` | drive an entity from a recorded trace |
 | `--select <alternative>` | choose a `one_of` alternative (DSL; p8-s2) |
+| `--entry <scenario>` | the DSL scenario to run (`.osc` only) |
+| `-I`, `--search-path <dir>` | where DSL imports are looked up (repeatable) |
 | `--quiet` | do not print diagnostics |
 | `-h`, `--help` | usage |
+
+## Two frontends, one runtime
+
+The file's extension picks the frontend: `.osc` is compiled by the
+OpenSCENARIO DSL frontend, anything else by the OpenSCENARIO XML frontend.
+Everything past the load — the engine, the gateway, the trace — sees only the
+Scenario IR, so the options, the exit codes and the trace format are the same
+either way.
+
+```sh
+scena-run cruise.osc --dt 0.01 --duration 12 --trace out/cruise.csv
+```
+
+A DSL file may declare several scenarios, and §7.7.2 leaves it to the
+implementation which one runs. Scena runs the only one when there is only one
+and reports the choice when there is not, because guessing would make the run
+depend on declaration order:
+
+```
+error: the file declares more than one scenario; name the entry point (§7.7.2): demo::first demo::second
+```
+
+`--entry second` (or `--entry demo::second`) names it. `-I` adds a directory to
+the import search path, exactly as it does for `scena-check`.
+
+The road network works the same way in both languages: XML names it in
+`RoadNetwork/LogicFile`, DSL in §8.5.4's `map_file` — written either as
+`map.set_map_file("m.xodr")` or as `keep(my_map.map_file == "m.xodr")`. Both
+are resolved relative to the scenario file, and `--map` overrides either.
 
 Only whole steps run: `--duration 1 --dt 0.3` runs three steps, not three and a
 third. A variable last step would make the tail of every trace depend on how the

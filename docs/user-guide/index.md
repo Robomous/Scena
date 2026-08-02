@@ -56,8 +56,8 @@ The user guide grows sprint by sprint along the
   reach position), the traffic-signal conditions, the scalar-velocity model, the observation-sampling
   contract, and the host interface (C++/C/Python).
 - [`scena-run`](scena-run.md) — the headless CLI: options and exit codes, the
-  round-trip-exact trace format, replaying a host-controlled entity, and the
-  golden suite harness.
+  round-trip-exact trace format, replaying a host-controlled entity, running a
+  `.osc` file through the DSL frontend, and the golden suite harness.
 - [`scena-check`](scena-check.md) — the OpenSCENARIO DSL checker: options and
   exit codes, the diagnostic format, resolving imports and search paths,
   checking from C and Python, and what "checked clean" does and does not cover.

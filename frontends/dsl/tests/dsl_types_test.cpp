@@ -715,6 +715,40 @@ TEST(DslTypesTest, ANameThatIsNotAModifierSaysWhatItIs) {
     EXPECT_TRUE(mentions(errors, "not a modifier"));
 }
 
+TEST(DslTypesTest, AnActorTypeNameIsAReceiverInItsOwnRight) {
+    // §8.5.4 writes the map file as `map.set_map_file("m.xodr")` (Code 61),
+    // where `map` names the actor *type*: a singleton the scenario never
+    // declares a field for. Without this the standard's own spelling of a
+    // concrete scenario is rejected.
+    const Program program = resolve_ok("actor road_map:\n    file: string\n"
+                                       "modifier road_map.set_file:\n    name: string\n"
+                                       "scenario demo:\n"
+                                       "    road_map.set_file(\"m.xodr\")\n");
+    EXPECT_NE(program.find("::road_map.set_file"), nullptr);
+}
+
+TEST(DslTypesTest, ADeclaredFieldWinsOverAnActorTypeOfTheSameName) {
+    // The receiver a reader means by a name is the declaration in front of
+    // them, so a field shadows the type it is named after.
+    const Program program = resolve_ok("actor thing:\n    def go() is undefined\n"
+                                       "modifier thing.tweak:\n    v: int\n"
+                                       "scenario demo:\n"
+                                       "    thing: thing\n"
+                                       "    thing.tweak(1)\n");
+    EXPECT_NE(program.find("::thing.tweak"), nullptr);
+}
+
+TEST(DslTypesTest, ATypeNameThatIsNotAnActorIsStillJustAnExpression) {
+    // Only an actor has modifiers, so a struct name in receiver position gets
+    // the ordinary "that is a type, not a value" answer rather than a special
+    // case that would hide the mistake.
+    const std::vector<scena::Diagnostic> errors = resolve_errors("struct box:\n    v: int\n"
+                                                                 "modifier tweak:\n    v: int\n"
+                                                                 "scenario demo:\n"
+                                                                 "    box.tweak(1)\n");
+    EXPECT_TRUE(mentions(errors, "is a type, not a value"));
+}
+
 TEST(DslTypesTest, AScenarioAssociatedModifierIsRejectedElsewhere) {
     const std::vector<scena::Diagnostic> errors = resolve_errors("scenario drive\n"
                                                                  "modifier follow of drive\n"

@@ -90,6 +90,8 @@ def test_the_audit_notices_an_unbound_method(tmp_path) -> None:
                 sandbox / "frontends/xml/include/scena/xml/loader.h")
     shutil.copy(REPO / "frontends/dsl/include/scena/dsl/load.h",
                 sandbox / "frontends/dsl/include/scena/dsl/load.h")
+    shutil.copy(REPO / "frontends/dsl/include/scena/dsl/lower.h",
+                sandbox / "frontends/dsl/include/scena/dsl/lower.h")
 
     header = (REPO / "core" / "include" / "scena" / "engine.h").read_text(encoding="utf-8")
     doctored = header.replace(

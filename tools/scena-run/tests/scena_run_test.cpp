@@ -309,6 +309,108 @@ TEST(ScenaRunTest, SelectIsAcceptedAndReportedAsNotYetActive) {
     EXPECT_NE(output.find("--select has no effect yet"), std::string::npos);
 }
 
+// --- the DSL frontend (p8-s1, #44) -----------------------------------------
+
+/// Writes a DSL scenario to a temporary file and returns its path. The source
+/// lives here rather than in a fixture directory because what these tests pin
+/// is the *CLI*, and a scenario the reader can see beside the assertion is
+/// worth more than one they have to go and find.
+fs::path dsl_file(const std::string& name, const std::string& source) {
+    const fs::path path = temp_file(name);
+    std::ofstream(path) << source;
+    return path;
+}
+
+constexpr const char* kCruiseOsc = R"(import osc.standard.all
+
+namespace demo use std, stdtypes
+
+scenario cruise:
+    ego: vehicle
+    start: position_3d
+    keep(start.x == 5m)
+    do serial:
+        place: ego.assign_position(position: start)
+        launch: ego.assign_speed(speed: 10mps)
+)";
+
+TEST(ScenaRunTest, ADslScenarioRunsEndToEnd) {
+    // The p8-s1 exit criterion, driven the way a user would drive it: a .osc
+    // file in, a trace out, through the same runtime the XML frontend feeds.
+    const fs::path scenario = dsl_file("scena_run_cruise.osc", kCruiseOsc);
+    const fs::path trace = temp_file("scena_run_cruise.csv");
+    std::string output;
+    ASSERT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 1 --trace \"" +
+                      trace.string() + "\"",
+                  output),
+              0)
+        << output;
+    const std::vector<std::string> lines = read_lines(trace);
+    ASSERT_EQ(lines.size(), 11U); // header + 10 steps
+    EXPECT_EQ(lines[0], "t,entity,x,y,z,heading,speed");
+    // Teleported to x = 5 m, then driving at 10 m/s: after one step, 6 m.
+    EXPECT_EQ(lines[1], "0.1,ego,6,0,0,0,10");
+    EXPECT_EQ(lines.back(), "1,ego,15,0,0,0,10");
+}
+
+TEST(ScenaRunTest, ADslScenarioWithSeveralEntryPointsNeedsOneNamed) {
+    // §7.7.2 leaves the choice to the implementation, and guessing would make
+    // the run depend on declaration order.
+    const fs::path scenario = dsl_file("scena_run_two.osc",
+                                       R"(import osc.standard.all
+
+namespace demo use std, stdtypes
+
+scenario first:
+    ego: vehicle
+    do launch: ego.assign_speed(speed: 10mps)
+
+scenario second:
+    ego: vehicle
+    do launch: ego.assign_speed(speed: 20mps)
+)");
+    std::string output;
+    EXPECT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 0.2", output), 3);
+    EXPECT_NE(output.find("more than one scenario"), std::string::npos) << output;
+
+    const fs::path trace = temp_file("scena_run_two.csv");
+    ASSERT_EQ(run("\"" + scenario.string() +
+                      "\" --dt 0.1 --duration 0.2 --entry second --trace \"" + trace.string() +
+                      "\"",
+                  output),
+              0)
+        << output;
+    const std::vector<std::string> lines = read_lines(trace);
+    ASSERT_GT(lines.size(), 1U);
+    EXPECT_NE(lines[1].find(",20"), std::string::npos) << lines[1];
+}
+
+TEST(ScenaRunTest, AMalformedDslScenarioIsALoadErrorNotACrash) {
+    const fs::path scenario = dsl_file("scena_run_broken.osc", "scenario :\n  ???\n");
+    std::string output;
+    EXPECT_EQ(run("\"" + scenario.string() + "\"", output), 3);
+}
+
+TEST(ScenaRunTest, ADslScenarioNamesItsOwnRoadNetwork) {
+    // §8.5.4's map_file plays the part RoadNetwork/LogicFile plays on the XML
+    // side, including being resolved relative to the scenario file.
+    const fs::path scenario = dsl_file("scena_run_map.osc",
+                                       R"(import osc.standard.all
+
+namespace demo use std, stdtypes
+
+scenario mapped:
+    map.set_map_file("no_such_map.xodr")
+    ego: vehicle
+    do launch: ego.assign_speed(speed: 10mps)
+)");
+    std::string output;
+    // The map does not exist, which is exactly what makes the reference
+    // observable: the run stops with the map exit code rather than ignoring it.
+    EXPECT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 0.2", output), 7);
+    EXPECT_NE(output.find("no_such_map.xodr"), std::string::npos) << output;
+}
+
 TEST(ScenaRunTest, QuietSuppressesDiagnosticsButNotFailures) {
     std::string output;
     EXPECT_EQ(run("no/such/scenario.xosc --quiet", output), 3);

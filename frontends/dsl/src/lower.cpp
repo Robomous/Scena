@@ -25,16 +25,25 @@
 #include "scena/dsl/lower.h"
 
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "scena/dsl/ast.h"
 #include "scena/dsl/expression.h"
+#include "scena/ir/action.h"
 #include "scena/ir/bounding_box.h"
+#include "scena/ir/condition.h"
+#include "scena/ir/dynamics.h"
 #include "scena/ir/entity.h"
 #include "scena/ir/entity_types.h"
+#include "scena/ir/evaluation_context.h"
+#include "scena/ir/position.h"
+#include "scena/ir/storyboard.h"
+#include "scena/ir/trigger.h"
 
 namespace scena::dsl {
 namespace {
@@ -47,6 +56,7 @@ struct LibraryTypes {
     TypeId vehicle = kInvalidType;
     TypeId person = kInvalidType;
     TypeId stationary_object = kInvalidType;
+    TypeId map = kInvalidType;
 };
 
 [[nodiscard]] TypeId find_type(const Program& program, const std::string& name) {
@@ -60,6 +70,7 @@ struct LibraryTypes {
     types.vehicle = find_type(program, "std::vehicle");
     types.person = find_type(program, "std::person");
     types.stationary_object = find_type(program, "std::stationary_object");
+    types.map = find_type(program, "std::map");
     return types;
 }
 
@@ -242,6 +253,131 @@ std::optional<ir::VehicleCategory> vehicle_category_of(const std::string& name) 
     return found->second;
 }
 
+// --- §8.8 movement actions -------------------------------------------------
+
+/// One argument of a behavior invocation, taken as far as lowering can take it:
+/// a folded constant, or the path of the field it names.
+///
+/// The two cases are different in kind, not in degree. `target: 20mps` is a
+/// value; `reference: lead` and `position: start_point` name a *declaration*,
+/// and what makes them concrete is the equality constraints the scenario put on
+/// it — the same binding table §7.3.11 already gives the entities (ADR-0030).
+struct ArgumentValue {
+    bool folded = false;
+    Value value;
+    std::vector<std::string> path;
+    SourceRange range;
+};
+
+using ArgumentMap = std::map<std::string, ArgumentValue>;
+
+/// Binds an invocation's arguments to the invoked behavior's parameter names.
+///
+/// Positional arguments bind in declaration order and named ones by name
+/// (§7.2.2.5.2). A name the behavior does not declare is left out: the resolver
+/// has already reported it, and lowering does not repeat a diagnostic.
+ArgumentMap bind_arguments(const Program& program, TypeId behavior,
+                           const std::vector<Argument>& arguments,
+                           const ExpressionContext& context) {
+    ArgumentMap bound;
+    const std::vector<std::string>& order = program.types[behavior].field_order;
+    std::size_t positional = 0;
+    for (const Argument& argument : arguments) {
+        if (argument.value == nullptr) {
+            continue;
+        }
+        std::string name = argument.name;
+        if (name.empty()) {
+            if (positional >= order.size()) {
+                continue;
+            }
+            name = order[positional++];
+        }
+        ArgumentValue value;
+        value.range = argument.range;
+        value.folded = evaluate_constant(program, *argument.value, context, value.value);
+        if (!value.folded) {
+            (void)field_path(*argument.value, value.path);
+        }
+        bound.insert_or_assign(std::move(name), std::move(value));
+    }
+    return bound;
+}
+
+/// The folded number an argument carries, if it carries one.
+std::optional<double> argument_number(const ArgumentMap& arguments, const char* name) {
+    const auto found = arguments.find(name);
+    if (found == arguments.end() || !found->second.folded || !found->second.value.is_numeric()) {
+        return std::nullopt;
+    }
+    return found->second.value.as_double();
+}
+
+/// The enum member an argument names, or empty.
+std::string argument_enum(const Program& program, const ArgumentMap& arguments, const char* name) {
+    const auto found = arguments.find(name);
+    if (found == arguments.end() || !found->second.folded ||
+        found->second.value.kind != Value::Kind::Enum || found->second.value.type == kInvalidType) {
+        return {};
+    }
+    for (const EnumMemberInfo& member : program.types[found->second.value.type].enum_members) {
+        if (member.value == found->second.value.enum_value) {
+            return member.name;
+        }
+    }
+    return {};
+}
+
+/// The single field name an argument refers to, or empty when it is not a plain
+/// reference to a declaration of the scenario.
+std::string argument_reference(const ArgumentMap& arguments, const char* name) {
+    const auto found = arguments.find(name);
+    if (found == arguments.end() || found->second.folded || found->second.path.size() != 1) {
+        return {};
+    }
+    return found->second.path.front();
+}
+
+/// The behavior an invocation names, found the way §7.3.12.2 scopes it: through
+/// the receiver's inheritance chain, one exact lookup per supertype.
+TypeId lookup_behavior_on(const Program& program, TypeId receiver, const std::string& name) {
+    for (TypeId current = receiver; current != kInvalidType;
+         current = program.types[current].base) {
+        const auto found = program.types_by_name.find(program.types[current].name + "." + name);
+        if (found != program.types_by_name.end() &&
+            program.types[found->second].kind == TypeKind::Action) {
+            return found->second;
+        }
+    }
+    return kInvalidType;
+}
+
+/// The transition a §8.8 `rate_profile`/`rate_peak` pair asks for.
+///
+/// §8.8.2.18's `dynamic_profile` names the *shape* of the change and
+/// `rate_peak` its magnitude. Neither carries a duration, so with no peak rate
+/// there is no number to ramp over and the change is instantaneous — which is
+/// what a Step shape means (§7.4.1.2). `asap` is a Step from the other
+/// direction: §8.7 declares no performance envelope at all (ADR-0030), so "as
+/// soon as possible" is bounded by nothing.
+ir::TransitionDynamics rate_dynamics(const std::string& profile,
+                                     const std::optional<double>& peak) {
+    ir::TransitionDynamics dynamics;
+    if (profile == "asap" || !peak.has_value() || *peak <= 0.0) {
+        dynamics.shape = ir::DynamicsShape::Step;
+        dynamics.dimension = ir::DynamicsDimension::Time;
+        dynamics.value = 0.0;
+        return dynamics;
+    }
+    // `smooth` is the profile whose gradient vanishes at both ends, which is
+    // the Cubic shape (§DynamicsShape); `constant` and an unstated profile are
+    // both a constant rate, which is Linear.
+    dynamics.shape = profile == "smooth" ? ir::DynamicsShape::Cubic : ir::DynamicsShape::Linear;
+    dynamics.dimension = ir::DynamicsDimension::Rate;
+    dynamics.value = *peak;
+    return dynamics;
+}
+
 /// The `use` list the file gives `name_space` (§7.7.4).
 std::vector<std::string> uses_of(const File& file, const std::string& name_space) {
     for (const Declaration& declaration : file.declarations) {
@@ -252,6 +388,344 @@ std::vector<std::string> uses_of(const File& file, const std::string& name_space
     }
     return {};
 }
+
+// --- the `do` directive ----------------------------------------------------
+
+/// Everything the behavior half of lowering reads.
+struct Behaviors {
+    const Program& program;
+    const LibraryTypes& library;
+    const std::string& file;
+    const ExpressionContext& context;
+    const std::vector<Binding>& bindings;
+    std::set<std::string> entities;
+    DiagnosticSink& sink;
+
+    void warn(const SourceRange& at, std::string message) {
+        report(sink, Severity::Warning, Status::UnsupportedFeature, file, at, std::move(message));
+    }
+    void error(const SourceRange& at, std::string message) {
+        report(sink, Severity::Error, Status::SemanticError, file, at, std::move(message));
+    }
+
+    /// The world position a `position_3d`-typed declaration is constrained to.
+    ///
+    /// The DSL has no struct constructor — §7.2.2.6.7 declares list and range
+    /// constructors and nothing else — so a struct-valued argument can only
+    /// name a declaration, and the values come from the `keep`s on it. That is
+    /// the same route ADR-0030 already takes for an actor's own attributes.
+    ir::WorldPosition world_position(const std::string& field, const SourceRange& at) {
+        ir::WorldPosition position;
+        bind_number(bindings, field, {"x"}, position.x);
+        bind_number(bindings, field, {"y"}, position.y);
+        bind_number(bindings, field, {"z"}, position.z);
+        if (binding_for(bindings, field, {"x"}) == nullptr &&
+            binding_for(bindings, field, {"y"}) == nullptr &&
+            binding_for(bindings, field, {"z"}) == nullptr) {
+            warn(at, "no constraint fixes any coordinate of '" + field +
+                         "', so it lowers as the world origin (§7.3.11)");
+        }
+        return position;
+    }
+
+    /// The entity an argument refers to, reported when it names anything else.
+    std::string entity_argument(const ArgumentMap& arguments, const char* name,
+                                const SourceRange& at, const std::string& action) {
+        const std::string reference = argument_reference(arguments, name);
+        if (reference.empty() || entities.count(reference) == 0) {
+            error(at, "'" + action + "' needs '" + name +
+                          "' to name a §8.7 participant of this scenario (§8.8.3)");
+            return {};
+        }
+        return reference;
+    }
+
+    /// One §8.8 invocation as the IR actions it denotes, or none.
+    std::vector<std::shared_ptr<ir::Action>>
+    actions_of(const DoMember& member, const std::string& actor, TypeId actor_type) {
+        std::vector<std::shared_ptr<ir::Action>> actions;
+        const TypeId behavior = lookup_behavior_on(program, actor_type, member.name);
+        if (behavior == kInvalidType) {
+            // A scenario invocation, a user-declared behavior, or something the
+            // resolver already complained about. Composition of scenarios is
+            // p8-s2 (#45), so this stays a note rather than an error.
+            warn(member.range, "'" + member.name +
+                                   "' is not a §8.8 movement action, so it contributes no IR "
+                                   "action (scenario invocation is p8-s2, #45)");
+            return actions;
+        }
+        const std::string name = program.types[behavior].simple_name;
+        const ArgumentMap arguments = bind_arguments(program, behavior, member.arguments, context);
+
+        if (name == "movable_object.assign_speed") {
+            // §8.8.2.6: the actor's speed *is* the value from this point on, so
+            // it is a Step transition (§7.4.1.2) — the same reading the XML
+            // frontend gives an init SpeedAction.
+            const std::optional<double> speed = argument_number(arguments, "speed");
+            if (!speed.has_value()) {
+                error(member.range, "'assign_speed' needs a concrete 'speed' (§8.8.2.6)");
+                return actions;
+            }
+            actions.push_back(std::make_shared<ir::SpeedAction>(actor, *speed));
+            return actions;
+        }
+        if (name == "movable_object.change_speed") {
+            const std::optional<double> target = argument_number(arguments, "target");
+            if (!target.has_value()) {
+                error(member.range, "'change_speed' needs a concrete 'target' (§8.8.2.12)");
+                return actions;
+            }
+            actions.push_back(std::make_shared<ir::SpeedAction>(
+                actor, *target,
+                rate_dynamics(argument_enum(program, arguments, "rate_profile"),
+                              argument_number(arguments, "rate_peak"))));
+            return actions;
+        }
+        if (name == "movable_object.remain_stationary") {
+            // §8.8.2.10 is "the actor does not move": speed zero, immediately.
+            actions.push_back(std::make_shared<ir::SpeedAction>(actor, 0.0));
+            return actions;
+        }
+        if (name == "movable_object.assign_position") {
+            if (arguments.count("route_point") != 0 || arguments.count("odr_point") != 0) {
+                warn(member.range, "'assign_position' by route or OpenDRIVE point is not lowered "
+                                   "yet (§8.8.2.4); use 'position'");
+                return actions;
+            }
+            const std::string field = argument_reference(arguments, "position");
+            if (field.empty()) {
+                error(member.range, "'assign_position' needs 'position' to name a 'position_3d' "
+                                    "declaration (§8.8.2.4)");
+                return actions;
+            }
+            actions.push_back(std::make_shared<ir::TeleportAction>(
+                actor, ir::Position{world_position(field, member.range)}));
+            return actions;
+        }
+        if (name == "vehicle.change_lane") {
+            const std::string side = argument_enum(program, arguments, "side");
+            if (side != "left" && side != "right") {
+                // §8.8.3.14's `inside`/`outside`/`same` need the road geometry
+                // to say which way that is, and an unstated side would have to
+                // be chosen — a choice the determinism contract does not allow
+                // lowering to make.
+                error(member.range,
+                      "'change_lane' needs an explicit 'side' of left or right (§8.8.3.3); '" +
+                          (side.empty() ? std::string("none given") : side) + "' is not lowered");
+                return actions;
+            }
+            const std::optional<double> count = argument_number(arguments, "num_of_lanes");
+            ir::RelativeTargetLane target;
+            // The reference defaults to the actor itself (§8.8.3.3's
+            // `Default=it.actor`), and positive counts go left (§7.4.1.4).
+            target.entity_ref = argument_reference(arguments, "reference");
+            if (target.entity_ref.empty() || entities.count(target.entity_ref) == 0) {
+                target.entity_ref = actor;
+            }
+            const int lanes = count.has_value() ? static_cast<int>(*count) : 1;
+            target.value = side == "left" ? lanes : -lanes;
+            actions.push_back(std::make_shared<ir::LaneChangeAction>(
+                actor, target,
+                rate_dynamics(argument_enum(program, arguments, "rate_profile"),
+                              argument_number(arguments, "rate_peak"))));
+            return actions;
+        }
+        if (name == "vehicle.change_space_gap" || name == "vehicle.change_time_gap") {
+            const bool space = name == "vehicle.change_space_gap";
+            const std::optional<double> target = argument_number(arguments, "target");
+            if (!target.has_value()) {
+                error(member.range, "'" + member.name + "' needs a concrete 'target' (§8.8.3." +
+                                        (space ? "6" : "4") + ")");
+                return actions;
+            }
+            const std::string reference =
+                entity_argument(arguments, "reference", member.range, member.name);
+            if (reference.empty()) {
+                return actions;
+            }
+            // §8.8.3.15's `ahead`/`behind` say which side of the reference the
+            // actor ends up on, which is exactly §LongitudinalDisplacement; the
+            // four lateral members have no longitudinal reading.
+            const std::string direction = argument_enum(program, arguments, "direction");
+            ir::LongitudinalDisplacement displacement =
+                ir::LongitudinalDisplacement::TrailingReferencedEntity;
+            if (direction == "ahead") {
+                displacement = ir::LongitudinalDisplacement::LeadingReferencedEntity;
+            } else if (!direction.empty() && direction != "behind") {
+                warn(member.range, "gap direction '" + direction +
+                                       "' is lateral and is not lowered (§8.8.3.15); the "
+                                       "longitudinal gap is kept behind the reference");
+            }
+            // A "gap" in §8.8.3 is the clear space between the two objects, so
+            // it is measured between bounding boxes, not reference points
+            // (§6.4.7). `change_*` reaches the gap and ends; `keep_*` is the
+            // continuous form and is not lowered yet.
+            actions.push_back(std::make_shared<ir::LongitudinalDistanceAction>(
+                actor, reference, space ? target : std::nullopt, space ? std::nullopt : target,
+                /*freespace=*/true, /*continuous=*/false, ir::CoordinateSystem::Entity,
+                displacement));
+            return actions;
+        }
+        if (name == "movable_object.move" || name == "vehicle.drive" || name == "person.walk") {
+            // §8.8.2.3/§8.8.3.1/§8.8.4.1 are the generic actions: they carry no
+            // target of their own and exist to be shaped by §8.9 modifiers,
+            // which are p8-s3 (#46). On their own they say "keep doing what you
+            // are doing", which the runtime already does, so they lower to
+            // nothing and say so only when they carry modifiers that would
+            // have changed that.
+            return actions;
+        }
+        warn(member.range, "'" + name +
+                               "' has no runtime counterpart in v0.0.1 (§8.8); see the "
+                               "DSL coverage matrix");
+        return actions;
+    }
+
+    /// The actor a `do` member is invoked on, and its type.
+    bool actor_of(const DoMember& member, std::string& actor, TypeId& actor_type) {
+        std::vector<std::string> path;
+        if (member.actor == nullptr || !field_path(*member.actor, path) || path.size() != 1) {
+            error(member.range,
+                  "a movement action is invoked on one participant of this scenario (§7.2.2.4.7)");
+            return false;
+        }
+        actor = path.front();
+        if (entities.count(actor) == 0) {
+            error(member.range, "'" + actor + "' is not a §8.7 participant of this scenario");
+            return false;
+        }
+        const auto field = program.types[context.self].fields.find(actor);
+        if (field == program.types[context.self].fields.end()) {
+            return false;
+        }
+        actor_type = field->second.type;
+        return true;
+    }
+
+    /// Reports the parts of an invocation that p8-s2 and p8-s3 will lower.
+    void report_deferred(const DoMember& member) {
+        for (const Argument& argument : member.arguments) {
+            if (argument.name == "duration") {
+                warn(argument.range,
+                     "an invocation 'duration' bounds the phase and is lowered in p8-s2 (#45), "
+                     "§7.6.2.5.3");
+            }
+        }
+        for (const ModifierApplication& modifier : member.with.modifiers) {
+            warn(modifier.range,
+                 "movement modifier '" + modifier.name + "' is lowered in p8-s3 (#46), §8.9");
+        }
+        for (const EventSpec& until : member.with.until) {
+            (void)until;
+            warn(member.range, "'until' ends the invocation at an event and is lowered in p8-s2 "
+                               "(#45), §7.6.2.5.4");
+        }
+    }
+
+    /// A name for the phase that is unique among its siblings, because the
+    /// runtime addresses storyboard elements by name path.
+    std::string phase_name(const DoMember& member, std::size_t index,
+                           std::set<std::string>& taken) {
+        std::string name =
+            member.label.empty() ? "phase_" + std::to_string(index + 1) : member.label;
+        std::string candidate = name;
+        for (std::size_t suffix = 2; taken.count(candidate) != 0; ++suffix) {
+            candidate = name + "_" + std::to_string(suffix);
+        }
+        taken.insert(candidate);
+        return candidate;
+    }
+
+    /// The `do` directive as a storyboard.
+    ///
+    /// One Story, one Act, and one ManeuverGroup per phase — the group is where
+    /// the actor lives, so a phase per group is what keeps each invocation's
+    /// actor with its actions. `serial` chains a phase's Event on the previous
+    /// group reaching completeState, which is the trigger form §7.6.2.1.2's
+    /// "starts when its predecessor ends" already has in the runtime;
+    /// `parallel` leaves the triggers absent, so every phase starts with the
+    /// Act (§7.6.1.1). Everything else about composition is p8-s2 (#45).
+    void build(const DoMember& root, const std::string& story_name, ir::Storyboard& out) {
+        std::vector<const DoMember*> phases;
+        bool serial = true;
+        if (root.kind == DoMemberKind::Composition) {
+            if (root.composition == CompositionOperator::OneOf) {
+                warn(root.range, "'one_of' selects one alternative and is lowered in p8-s2 (#45), "
+                                 "§7.6.2.1.3");
+                return;
+            }
+            serial = root.composition == CompositionOperator::Serial;
+            for (const Argument& argument : root.composition_arguments) {
+                warn(argument.range,
+                     "composition argument '" +
+                         (argument.name.empty() ? std::string("(positional)") : argument.name) +
+                         "' is lowered in p8-s2 (#45), §7.6.2.1");
+            }
+            for (const DoMemberPtr& member : root.members) {
+                if (member != nullptr) {
+                    phases.push_back(member.get());
+                }
+            }
+        } else {
+            phases.push_back(&root);
+        }
+
+        ir::Act act;
+        act.name = "act";
+        std::set<std::string> taken;
+        std::string previous;
+        for (std::size_t index = 0; index < phases.size(); ++index) {
+            const DoMember& member = *phases[index];
+            if (member.kind != DoMemberKind::Invocation) {
+                warn(member.range,
+                     "only a behavior invocation is lowered in p8-s1; nested composition, 'wait', "
+                     "'emit' and 'call' are p8-s2 (#45), §7.6.2.5");
+                continue;
+            }
+            std::string actor;
+            TypeId actor_type = kInvalidType;
+            if (!actor_of(member, actor, actor_type)) {
+                continue;
+            }
+            report_deferred(member);
+            std::vector<std::shared_ptr<ir::Action>> actions =
+                actions_of(member, actor, actor_type);
+            if (actions.empty()) {
+                continue; // nothing to run; whoever decided that has said why
+            }
+
+            const std::string name = phase_name(member, index, taken);
+            ir::Event event;
+            event.name = name;
+            event.actions = std::move(actions);
+            if (serial && !previous.empty()) {
+                event.start_trigger =
+                    ir::make_trigger(std::make_shared<ir::StoryboardElementStateCondition>(
+                        ir::StoryboardElementType::ManeuverGroup, previous,
+                        ir::StoryboardElementState::CompleteState));
+            }
+
+            ir::Maneuver maneuver;
+            maneuver.name = name;
+            maneuver.events.push_back(std::move(event));
+
+            ir::ManeuverGroup group;
+            group.name = name;
+            group.actors.push_back(actor);
+            group.maneuvers.push_back(std::move(maneuver));
+            act.groups.push_back(std::move(group));
+            previous = name;
+        }
+
+        if (act.groups.empty()) {
+            return; // an empty Act would be an init-time validation error
+        }
+        ir::Story story;
+        story.name = story_name;
+        story.acts.push_back(std::move(act));
+        out.stories.push_back(std::move(story));
+    }
+};
 
 } // namespace
 
@@ -282,7 +756,8 @@ std::vector<std::string> entry_points(const Program& program, const LoadResult& 
 }
 
 Status lower(const Program& program, const LoadResult& loaded, const LowerOptions& options,
-             ir::Scenario& out, DiagnosticSink& sink) {
+             LowerResult& result, DiagnosticSink& sink) {
+    ir::Scenario& out = result.scenario;
     const File* root = loaded.root();
     if (root == nullptr) {
         // Nothing parsed. Host misuse: lowering is only defined for a program
@@ -443,6 +918,51 @@ Status lower(const Program& program, const LoadResult& loaded, const LowerOption
     if (out.entities.empty()) {
         report(sink, Severity::Warning, Status::UnsupportedFeature, root->path, SourceRange{},
                "'" + entry + "' declares no §8.7 participant, so the lowered scenario is empty");
+    }
+
+    // §8.5.4's map_file, in either spelling the standard prints: the
+    // `map.set_map_file("m.xodr")` modifier of Code 61, or a `keep` on a
+    // declared `map` field (Code 62). Both are the same statement about which
+    // road network the scenario means, and neither is kernel state — the file
+    // reference goes to the host, exactly as `LogicFile` does on the XML side.
+    for (const Binding& binding : bindings) {
+        if (binding.path.size() != 2 || binding.path[1] != "map_file" ||
+            binding.value.kind != Value::Kind::String) {
+            continue;
+        }
+        const auto field = scenario.fields.find(binding.path.front());
+        if (field != scenario.fields.end() && library.map != kInvalidType &&
+            program.is_derived_from(field->second.type, library.map)) {
+            result.map_file = binding.value.text;
+        }
+    }
+
+    Behaviors behaviors{program, library, root->path, context, bindings, {}, sink};
+    for (const ir::Entity& entity : out.entities) {
+        behaviors.entities.insert(entity.id);
+    }
+
+    for (const StructuredDecl* declaration : scenario.declarations) {
+        if (declaration == nullptr) {
+            continue;
+        }
+        for (const Member& member : declaration->members) {
+            const TypeId set_map_file = find_type(program, "std::map.set_map_file");
+            if (member.kind == Member::Kind::ModifierApplication &&
+                member.modifier.name == "set_map_file" && set_map_file != kInvalidType) {
+                const ArgumentMap arguments =
+                    bind_arguments(program, set_map_file, member.modifier.arguments, context);
+                const auto file = arguments.find("file");
+                if (file != arguments.end() && file->second.folded &&
+                    file->second.value.kind == Value::Kind::String) {
+                    result.map_file = file->second.value.text;
+                }
+                continue;
+            }
+            if (member.kind == Member::Kind::Behavior && member.behavior != nullptr) {
+                behaviors.build(*member.behavior, scenario.simple_name, out.storyboard);
+            }
+        }
     }
 
     return sink.has_errors() ? Status::ValidationError : Status::Ok;
