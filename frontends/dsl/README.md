@@ -253,6 +253,18 @@ expected. It also keeps the dependency list unchanged.
   range constructors and no struct constructor, so `assign_position(position:
   start)` reaches its numbers through the same `keep`s that make an actor
   concrete.
+- **Composition decides when a phase starts, and nothing else** (ADR-0031). A
+  concrete `duration` is arithmetic done at load — the storyboard starts at
+  t = 0, so a phase's start time is the sum of the durations before it — and a
+  parallel join is one ConditionGroup, which is already an AND. `one_of` picks
+  by label from `LowerOptions::alternative`, defaulting to the first: the engine
+  has no seed machinery, and a hidden input is what determinism forbids.
+  `wait elapsed(d)` lowers to nothing but the offset.
+- **`..` has to beat a float that starts with a dot.** §7.2.2.6.7 spells the
+  range constructor `[a '..' b]` while §7.2.1.5.2 makes a float's leading digits
+  optional, so `[2..4]` is a race the operator must win. It did not until p8-s2;
+  the lexer emitted no `..` and the parser looked for `...`, and because the two
+  agreed nothing noticed.
 - **The map file travels beside the IR.** §8.5.4's `map_file` is the DSL's
   `RoadNetwork/LogicFile`, and like it, a road-network path is a host input
   rather than kernel state — the engine reaches roads only through

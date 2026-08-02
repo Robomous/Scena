@@ -386,10 +386,10 @@ TEST(DslExpressionTest, IndexingSomethingThatIsNotAListIsReported) {
 
 TEST(DslExpressionTest, RangeConstructorsTakeBothFormsAndACommonBase) {
     Program program = host_program("    r: range of float\n    s: range of speed\n");
-    EXPECT_EQ(type_name_of(program, "[1.5...3.5]"), "range of float");
+    EXPECT_EQ(type_name_of(program, "[1.5..3.5]"), "range of float");
     EXPECT_EQ(type_name_of(program, "range(1.5, 3.5)"), "range of float");
     // §7.4.2.8.1: one float and one int converts to float.
-    EXPECT_EQ(type_name_of(program, "[10...20.5]"), "range of float");
+    EXPECT_EQ(type_name_of(program, "[10..20.5]"), "range of float");
 }
 
 TEST(DslExpressionTest, RangeBoundOperatorsYieldTheBaseType) {
@@ -402,7 +402,7 @@ TEST(DslExpressionTest, RangeBoundOperatorsYieldTheBaseType) {
 TEST(DslExpressionTest, ARangeOverTwoDifferentPhysicalTypesIsReported) {
     Program program = host_program("    v: speed\n    d: length\n");
     DiagnosticSink sink;
-    EXPECT_EQ(type_of_expression(program, "[1.0kph...2.0m]", sink), kInvalidType);
+    EXPECT_EQ(type_of_expression(program, "[1.0kph..2.0m]", sink), kInvalidType);
     EXPECT_TRUE(mentions(sink.diagnostics(), "§7.4.2.8.1"));
 }
 
@@ -549,8 +549,8 @@ TEST(DslExpressionTest, RangeBoundsAreOrderedByValue) {
     Program program = host_program("    a: int\n");
     Value forward;
     Value backward;
-    ASSERT_TRUE(fold(program, "[1.0...5.0]", forward));
-    ASSERT_TRUE(fold(program, "[5.0...1.0]", backward));
+    ASSERT_TRUE(fold(program, "[1.0..5.0]", forward));
+    ASSERT_TRUE(fold(program, "[5.0..1.0]", backward));
     ASSERT_EQ(forward.items.size(), 2U);
     EXPECT_EQ(forward.items[0].as_double(), 1.0);
     EXPECT_EQ(backward.items[0].as_double(), 1.0);
@@ -560,9 +560,9 @@ TEST(DslExpressionTest, RangeBoundsAreOrderedByValue) {
 TEST(DslExpressionTest, MembershipFoldsOverListsAndRanges) {
     Program program = host_program("    a: int\n");
     Value value;
-    ASSERT_TRUE(fold(program, "3.0 in [1.0...5.0]", value));
+    ASSERT_TRUE(fold(program, "3.0 in [1.0..5.0]", value));
     EXPECT_TRUE(value.boolean);
-    ASSERT_TRUE(fold(program, "7.0 in [1.0...5.0]", value));
+    ASSERT_TRUE(fold(program, "7.0 in [1.0..5.0]", value));
     EXPECT_FALSE(value.boolean);
     ASSERT_TRUE(fold(program, "2 in [1, 2, 3]", value));
     EXPECT_TRUE(value.boolean);

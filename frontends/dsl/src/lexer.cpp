@@ -64,7 +64,13 @@ constexpr std::array<std::string_view, 74> kReservedWords{
 /// The multi-character operators of Table 5, longest first: §7.2.1.5 says
 /// "tokens comprise the longest possible match that forms a legal token".
 constexpr std::array<std::string_view, 8> kMultiCharOperators{
-    "...", "->", "=>", "==", "!=", "<=", ">=", "::",
+    // `..` is the range constructor's own spelling (§7.2.2.6.7's
+    // `'[' expression '..' expression ']'`). It has to be matched before a
+    // float is: without it `[2..4]` lexes as `2`, `.`, `.4` — the second dot is
+    // swallowed by `float-literal ::= digit* '.' digit+`, whose leading digits
+    // are optional. Table 5 lists neither this operator nor `::`; the grammar
+    // productions are what the tokens have to serve.
+    "..", "->", "=>", "==", "!=", "<=", ">=", "::",
 };
 
 /// The single-character operators and delimiters of Table 5.

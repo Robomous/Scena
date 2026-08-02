@@ -98,7 +98,7 @@ options:
   --trace-format <csv|json>  override the format inferred from the extension
   --map <file.xodr>          road network, overriding the scenario's LogicFile
   --replay <entity>=<file>   drive a host-controlled entity from a trace file
-  --select <alternative>     choose a one_of alternative by name (DSL, p8-s2)
+  --select <alternative>     choose a one_of alternative by label (.osc only)
   --entry <scenario>         the DSL scenario to run (.osc only)
   -I, --search-path <dir>    where DSL imports are looked up (repeatable)
   --quiet                    do not print diagnostics to stderr
@@ -438,12 +438,12 @@ int main(int argc, char** argv) {
     }
     const Options& options = *parsed;
 
-    if (!options.select.empty()) {
-        // Accepted and reported rather than silently ignored: one_of alternatives
-        // are a DSL construct and arrive with p8-s2 (#45).
+    if (!options.select.empty() && options.scenario.extension() != ".osc") {
+        // Accepted and reported rather than silently ignored: `one_of` is a DSL
+        // construct, so the option means nothing to an XML scenario.
         if (!options.quiet) {
-            std::cerr << "warning: --select has no effect yet; one_of alternatives arrive with "
-                         "the DSL execution pillar (p8-s2)\n";
+            std::cerr << "warning: --select names a one_of alternative, which only an "
+                         "OpenSCENARIO DSL scenario has\n";
         }
     }
 
@@ -464,6 +464,7 @@ int main(int argc, char** argv) {
         if (loaded == scena::Status::Ok) {
             scena::dsl::LowerOptions lower_options;
             lower_options.entry_point = options.entry;
+            lower_options.alternative = options.select;
             scena::dsl::LowerResult lowered;
             loaded = scena::dsl::lower(program, files, lower_options, lowered, load_sink);
             scenario = std::move(lowered.scenario);

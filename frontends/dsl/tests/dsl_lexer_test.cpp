@@ -504,6 +504,28 @@ scenario dut.cut_in:
     EXPECT_GT(indents, 0);
 }
 
+TEST(DslLexerTest, TheRangeOperatorWinsOverAFloatThatStartsWithADot) {
+    // §7.2.2.6.7 spells the range constructor `'[' expression '..' expression
+    // ']'`, and §7.2.1.5.2's `float-literal ::= digit* '.' digit+` makes the
+    // leading digits optional — so `[2..4]` is a race between `..` and `.4`,
+    // and the operator has to win or the standard's own spelling does not lex.
+    // Table 5 lists neither `..` nor `::`; the grammar productions decide.
+    const std::vector<Token> tokens = lex_ok("[2..4]");
+    ASSERT_EQ(tokens.size(), 7U); // [ 2 .. 4 ] NEWLINE EOF
+    EXPECT_EQ(tokens[1].text, "2");
+    EXPECT_EQ(tokens[2].text, "..");
+    EXPECT_EQ(tokens[3].text, "4");
+}
+
+TEST(DslLexerTest, ARangeOfPhysicalLiteralsLexesToo) {
+    // The form the specification actually writes durations in (§7.6.2.4).
+    const std::vector<Token> tokens = lex_ok("[10s..30s]");
+    ASSERT_EQ(tokens.size(), 7U);
+    EXPECT_EQ(tokens[1].text, "10s");
+    EXPECT_EQ(tokens[2].text, "..");
+    EXPECT_EQ(tokens[3].text, "30s");
+}
+
 TEST(DslLexerTest, LexingIsDeterministicAcrossRepeats) {
     // The frontend's output reaches the IR, so it is inside the bit-identity
     // contract exactly as the XML frontend's is.

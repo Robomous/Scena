@@ -640,7 +640,7 @@ ExprPtr Parser::parse_primary() {
         // Either a list constructor or the `[a..b]` range form (§7.2.2.6.7).
         advance();
         ExprPtr first = parse_expression();
-        if (at_op("...")) {
+        if (at_op("..")) {
             advance();
             expr->kind = ExprKind::RangeConstructor;
             expr->operands = {std::move(first), parse_expression()};

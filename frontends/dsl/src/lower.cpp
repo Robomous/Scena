@@ -24,6 +24,7 @@
 
 #include "scena/dsl/lower.h"
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <optional>
@@ -42,6 +43,7 @@
 #include "scena/ir/entity_types.h"
 #include "scena/ir/evaluation_context.h"
 #include "scena/ir/position.h"
+#include "scena/ir/rule.h"
 #include "scena/ir/storyboard.h"
 #include "scena/ir/trigger.h"
 
@@ -399,6 +401,11 @@ struct Behaviors {
     const ExpressionContext& context;
     const std::vector<Binding>& bindings;
     std::set<std::string> entities;
+    /// The `one_of` alternative to run, by label; empty means the first.
+    std::string alternative;
+    /// Phase names already used, so siblings stay unique: the runtime
+    /// addresses storyboard elements by name path.
+    std::set<std::string> taken;
     DiagnosticSink& sink;
 
     void warn(const SourceRange& at, std::string message) {
@@ -604,28 +611,22 @@ struct Behaviors {
 
     /// Reports the parts of an invocation that p8-s2 and p8-s3 will lower.
     void report_deferred(const DoMember& member) {
-        for (const Argument& argument : member.arguments) {
-            if (argument.name == "duration") {
-                warn(argument.range,
-                     "an invocation 'duration' bounds the phase and is lowered in p8-s2 (#45), "
-                     "§7.6.2.5.3");
-            }
-        }
         for (const ModifierApplication& modifier : member.with.modifiers) {
             warn(modifier.range,
                  "movement modifier '" + modifier.name + "' is lowered in p8-s3 (#46), §8.9");
         }
         for (const EventSpec& until : member.with.until) {
             (void)until;
-            warn(member.range, "'until' ends the invocation at an event and is lowered in p8-s2 "
-                               "(#45), §7.6.2.5.4");
+            // §7.6.2.5.4 ends the invocation *exactly* at an event, and the
+            // events it names have no runtime carrier in v0.0.1.
+            warn(member.range, "'until' ends the invocation at an event, which has no runtime "
+                               "carrier in v0.0.1 (§7.6.2.5.4)");
         }
     }
 
     /// A name for the phase that is unique among its siblings, because the
     /// runtime addresses storyboard elements by name path.
-    std::string phase_name(const DoMember& member, std::size_t index,
-                           std::set<std::string>& taken) {
+    std::string phase_name(const DoMember& member, std::size_t index) {
         std::string name =
             member.label.empty() ? "phase_" + std::to_string(index + 1) : member.label;
         std::string candidate = name;
@@ -645,77 +646,328 @@ struct Behaviors {
     /// "starts when its predecessor ends" already has in the runtime;
     /// `parallel` leaves the triggers absent, so every phase starts with the
     /// Act (§7.6.1.1). Everything else about composition is p8-s2 (#45).
-    void build(const DoMember& root, const std::string& story_name, ir::Storyboard& out) {
-        std::vector<const DoMember*> phases;
-        bool serial = true;
-        if (root.kind == DoMemberKind::Composition) {
-            if (root.composition == CompositionOperator::OneOf) {
-                warn(root.range, "'one_of' selects one alternative and is lowered in p8-s2 (#45), "
-                                 "§7.6.2.1.3");
-                return;
+    /// Where a phase begins or ends, as far as *load time* can know it.
+    ///
+    /// A concrete `duration` makes the time arithmetic: the storyboard starts
+    /// at t = 0 and every duration that lowers is a constant, so an absolute
+    /// time is exact and needs no runtime feedback. When a phase ends by its
+    /// actions finishing instead, the only thing load time can say is "when
+    /// that group completes". A trigger ANDs whatever of the two is known,
+    /// which is what makes a parallel join expressible: a ConditionGroup is an
+    /// AND, so "all members done" is one group with one condition per member.
+    struct TimePoint {
+        std::optional<double> at;       ///< absolute simulation time [s]
+        std::vector<std::string> after; ///< groups that must all be complete
+
+        [[nodiscard]] bool unset() const { return !at.has_value() && after.empty(); }
+    };
+
+    /// The trigger a TimePoint asks for, or none when it is "with the parent".
+    [[nodiscard]] std::optional<ir::Trigger> trigger_for(const TimePoint& point) const {
+        if (point.unset() || (point.after.empty() && *point.at <= 0.0)) {
+            // §7.6.1.1: an element with no start trigger starts with its
+            // parent, which is what "at t = 0" means — and `t >= 0` as a
+            // condition would be a tautology in the IR rather than a fact.
+            return std::nullopt;
+        }
+        ir::ConditionGroup group;
+        if (point.at.has_value()) {
+            ir::TriggerCondition condition;
+            condition.expression =
+                std::make_shared<ir::SimulationTimeCondition>(*point.at, ir::Rule::GreaterOrEqual);
+            group.conditions.push_back(std::move(condition));
+        }
+        for (const std::string& element : point.after) {
+            ir::TriggerCondition condition;
+            condition.expression = std::make_shared<ir::StoryboardElementStateCondition>(
+                ir::StoryboardElementType::ManeuverGroup, element,
+                ir::StoryboardElementState::CompleteState);
+            group.conditions.push_back(std::move(condition));
+        }
+        ir::Trigger trigger;
+        trigger.groups.push_back(std::move(group));
+        return trigger;
+    }
+
+    /// Both points reached: the later time, and every completion either wanted.
+    [[nodiscard]] static TimePoint both(TimePoint left, const TimePoint& right) {
+        if (right.at.has_value()) {
+            left.at = left.at.has_value() ? std::max(*left.at, *right.at) : right.at;
+        }
+        for (const std::string& element : right.after) {
+            left.after.push_back(element);
+        }
+        return left;
+    }
+
+    /// A concrete `duration` argument, or none.
+    ///
+    /// §7.6.2.4 lets a duration be a range, which is a constraint on accepted
+    /// traces rather than a value — choosing one needs a solver, which is
+    /// post-v0.0.1 (ADR-0004). A constant is a value, and lowers.
+    [[nodiscard]] std::optional<double> duration_of(const std::vector<Argument>& arguments,
+                                                    const std::string& what) {
+        for (const Argument& argument : arguments) {
+            if (argument.name != "duration" || argument.value == nullptr) {
+                continue;
             }
-            serial = root.composition == CompositionOperator::Serial;
-            for (const Argument& argument : root.composition_arguments) {
-                warn(argument.range,
-                     "composition argument '" +
-                         (argument.name.empty() ? std::string("(positional)") : argument.name) +
-                         "' is lowered in p8-s2 (#45), §7.6.2.1");
+            Value value;
+            if (evaluate_constant(program, *argument.value, context, value) && value.is_numeric()) {
+                return value.as_double();
             }
-            for (const DoMemberPtr& member : root.members) {
-                if (member != nullptr) {
-                    phases.push_back(member.get());
+            warn(argument.range, "the duration of " + what +
+                                     " is not a single value, so it bounds accepted traces rather "
+                                     "than fixing a time (§7.6.2.4); it is not lowered");
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    /// The `elapsed(<duration>)` of a `wait` directive, or none.
+    [[nodiscard]] std::optional<double> elapsed_of(const EventSpec& event) {
+        if (event.kind != EventConditionKind::Elapsed || event.expression == nullptr) {
+            return std::nullopt;
+        }
+        Value value;
+        if (evaluate_constant(program, *event.expression, context, value) && value.is_numeric()) {
+            return value.as_double();
+        }
+        return std::nullopt;
+    }
+
+    /// Reports the composition arguments §7.6.2.1.4 defines but v0.0.1 does not
+    /// realise. `overlap: start` is the default and is what absent triggers
+    /// already give, so only a *different* overlap is worth a word.
+    void report_composition_arguments(const DoMember& composition) {
+        for (const Argument& argument : composition.composition_arguments) {
+            if (argument.name == "duration") {
+                continue; // read by duration_of
+            }
+            if (argument.name == "overlap" && argument.value != nullptr) {
+                Value value;
+                if (evaluate_constant(program, *argument.value, context, value) &&
+                    value.kind == Value::Kind::Enum) {
+                    // The default is `start`, which is exactly "every member
+                    // starts with its parent" — nothing to do.
+                    const std::string named = argument_enum_name(value);
+                    if (named.empty() || named == "start") {
+                        continue;
+                    }
+                    warn(argument.range, "parallel overlap '" + named +
+                                             "' is not realised in v0.0.1; members start together "
+                                             "and end when their actions do (§7.6.2.1.4)");
+                    continue;
                 }
             }
+            warn(argument.range,
+                 "composition argument '" +
+                     (argument.name.empty() ? std::string("(positional)") : argument.name) +
+                     "' is not realised in v0.0.1 (§7.6.2.1.4)");
+        }
+    }
+
+    [[nodiscard]] std::string argument_enum_name(const Value& value) const {
+        if (value.kind != Value::Kind::Enum || value.type == kInvalidType) {
+            return {};
+        }
+        for (const EnumMemberInfo& member : program.types[value.type].enum_members) {
+            if (member.value == value.enum_value) {
+                return member.name;
+            }
+        }
+        return {};
+    }
+
+    /// The alternative a `one_of` runs.
+    ///
+    /// §7.6.2.1.3 says at least one alternative must hold, and says nothing
+    /// about which — so an executor picks. Picking at random would put a hidden
+    /// input in the run, so the choice is an *input*: `LowerOptions::alternative`
+    /// (which `scena-run --select` feeds), defaulting to the first alternative
+    /// in declaration order.
+    [[nodiscard]] const DoMember* chosen_alternative(const DoMember& composition) {
+        const DoMember* first = nullptr;
+        for (const DoMemberPtr& member : composition.members) {
+            if (member == nullptr) {
+                continue;
+            }
+            if (first == nullptr) {
+                first = member.get();
+            }
+            if (!alternative.empty() && member->label == alternative) {
+                return member.get();
+            }
+        }
+        if (!alternative.empty()) {
+            std::string message = "'" + alternative +
+                                  "' is not an alternative of this one_of (§7.6.2.1.3); it offers:";
+            for (const DoMemberPtr& member : composition.members) {
+                if (member != nullptr) {
+                    message +=
+                        " " + (member->label.empty() ? std::string("(unlabelled)") : member->label);
+                }
+            }
+            error(composition.range, std::move(message));
+            return nullptr;
+        }
+        return first;
+    }
+
+    /// Lowers one `do` member starting at `start`, and answers where it ends.
+    TimePoint lower_member(const DoMember& member, const TimePoint& start, ir::Act& act) {
+        switch (member.kind) {
+        case DoMemberKind::Composition:
+            return lower_composition(member, start, act);
+        case DoMemberKind::Wait:
+            return lower_wait(member, start);
+        case DoMemberKind::Invocation:
+            return lower_invocation(member, start, act);
+        case DoMemberKind::Emit:
+        case DoMemberKind::Call:
+            break;
+        }
+        // §7.6.2.5.2's emit and §7.3.7's call are zero-time directives whose
+        // meaning is an event or a method call, neither of which the runtime
+        // has a carrier for yet.
+        warn(member.range, "'" + std::string(member.kind == DoMemberKind::Emit ? "emit" : "call") +
+                               "' is a zero-time directive with no runtime carrier in v0.0.1 "
+                               "(§7.6.2.5)");
+        return start;
+    }
+
+    TimePoint lower_composition(const DoMember& composition, const TimePoint& start, ir::Act& act) {
+        report_composition_arguments(composition);
+        const std::optional<double> bound =
+            duration_of(composition.composition_arguments, "this composition");
+
+        TimePoint end = start;
+        if (composition.composition == CompositionOperator::Serial) {
+            for (const DoMemberPtr& member : composition.members) {
+                if (member != nullptr) {
+                    end = lower_member(*member, end, act);
+                }
+            }
+        } else if (composition.composition == CompositionOperator::Parallel) {
+            // §7.6.2.1.4's default overlap is `start`: every member begins with
+            // the composition. It ends when all of them have.
+            TimePoint joined;
+            bool any = false;
+            for (const DoMemberPtr& member : composition.members) {
+                if (member == nullptr) {
+                    continue;
+                }
+                const TimePoint member_end = lower_member(*member, start, act);
+                joined = any ? both(std::move(joined), member_end) : member_end;
+                any = true;
+            }
+            end = any ? joined : start;
         } else {
-            phases.push_back(&root);
+            const DoMember* alternative_member = chosen_alternative(composition);
+            if (alternative_member != nullptr) {
+                end = lower_member(*alternative_member, start, act);
+            }
         }
 
+        if (bound.has_value()) {
+            // A composition duration bounds the whole composition from its own
+            // start (§7.6.2.1.2), so it only fixes an end time when the start
+            // itself is a time.
+            if (start.at.has_value()) {
+                end.at = *start.at + *bound;
+                end.after.clear();
+            } else {
+                warn(composition.range,
+                     "this composition's duration is measured from a start no constant fixes, so "
+                     "it does not bound an absolute time (§7.6.2.4)");
+            }
+        }
+        return end;
+    }
+
+    TimePoint lower_wait(const DoMember& member, const TimePoint& start) {
+        // §7.6.2.4.2: `wait elapsed(d)` adds a phase of length d in which
+        // nothing is specified. Nothing is exactly what it lowers to — the
+        // clock is what advances, and the clock is already running.
+        const std::optional<double> elapsed = elapsed_of(member.event);
+        if (elapsed.has_value()) {
+            if (start.at.has_value()) {
+                TimePoint end = start;
+                end.at = *start.at + *elapsed;
+                end.after.clear();
+                return end;
+            }
+            warn(member.range, "'wait elapsed' follows a phase whose end no constant fixes, so the "
+                               "wait has no absolute end (§7.6.2.4.2)");
+            return start;
+        }
+        warn(member.range, "only 'wait elapsed(<duration>)' is lowered in v0.0.1; waiting for an "
+                           "event needs the event carrier §7.6.2.5 has no runtime counterpart for");
+        return start;
+    }
+
+    TimePoint lower_invocation(const DoMember& member, const TimePoint& start, ir::Act& act) {
+        std::string actor;
+        TypeId actor_type = kInvalidType;
+        if (!actor_of(member, actor, actor_type)) {
+            return start;
+        }
+        report_deferred(member);
+        const std::optional<double> duration = duration_of(member.arguments, "this invocation");
+        std::vector<std::shared_ptr<ir::Action>> actions = actions_of(member, actor, actor_type);
+
+        TimePoint end = start;
+        if (duration.has_value()) {
+            if (start.at.has_value()) {
+                end.at = *start.at + *duration;
+                end.after.clear();
+            } else {
+                warn(member.range,
+                     "this invocation's duration is measured from a start no constant fixes, so it "
+                     "does not bound an absolute time (§7.6.2.4.1)");
+            }
+        }
+        if (actions.empty()) {
+            // Nothing to run — a generic action, or one already reported. The
+            // phase still takes its duration, because the actor is still doing
+            // something for that long.
+            return end;
+        }
+
+        const std::string name = phase_name(member, act.groups.size());
+        ir::Event event;
+        event.name = name;
+        event.actions = std::move(actions);
+        event.start_trigger = trigger_for(start);
+
+        ir::Maneuver maneuver;
+        maneuver.name = name;
+        maneuver.events.push_back(std::move(event));
+
+        ir::ManeuverGroup group;
+        group.name = name;
+        group.actors.push_back(actor);
+        group.maneuvers.push_back(std::move(maneuver));
+        act.groups.push_back(std::move(group));
+
+        if (!duration.has_value() || !start.at.has_value()) {
+            // The phase ends when its actions do, and only the runtime knows
+            // when that is.
+            end.at = start.at.has_value() && duration.has_value() ? end.at : std::nullopt;
+            end.after = {name};
+        }
+        return end;
+    }
+
+    /// The `do` directive as a storyboard.
+    ///
+    /// One Story, one Act, and one ManeuverGroup per phase — the group is where
+    /// an actor lives, so a group per phase keeps each invocation's actor with
+    /// its actions. Composition decides only *when* a phase starts, which is a
+    /// start trigger on its Event; the runtime is unchanged.
+    void build(const DoMember& root, const std::string& story_name, ir::Storyboard& out) {
         ir::Act act;
         act.name = "act";
-        std::set<std::string> taken;
-        std::string previous;
-        for (std::size_t index = 0; index < phases.size(); ++index) {
-            const DoMember& member = *phases[index];
-            if (member.kind != DoMemberKind::Invocation) {
-                warn(member.range,
-                     "only a behavior invocation is lowered in p8-s1; nested composition, 'wait', "
-                     "'emit' and 'call' are p8-s2 (#45), §7.6.2.5");
-                continue;
-            }
-            std::string actor;
-            TypeId actor_type = kInvalidType;
-            if (!actor_of(member, actor, actor_type)) {
-                continue;
-            }
-            report_deferred(member);
-            std::vector<std::shared_ptr<ir::Action>> actions =
-                actions_of(member, actor, actor_type);
-            if (actions.empty()) {
-                continue; // nothing to run; whoever decided that has said why
-            }
-
-            const std::string name = phase_name(member, index, taken);
-            ir::Event event;
-            event.name = name;
-            event.actions = std::move(actions);
-            if (serial && !previous.empty()) {
-                event.start_trigger =
-                    ir::make_trigger(std::make_shared<ir::StoryboardElementStateCondition>(
-                        ir::StoryboardElementType::ManeuverGroup, previous,
-                        ir::StoryboardElementState::CompleteState));
-            }
-
-            ir::Maneuver maneuver;
-            maneuver.name = name;
-            maneuver.events.push_back(std::move(event));
-
-            ir::ManeuverGroup group;
-            group.name = name;
-            group.actors.push_back(actor);
-            group.maneuvers.push_back(std::move(maneuver));
-            act.groups.push_back(std::move(group));
-            previous = name;
-        }
+        const TimePoint end = lower_member(root, TimePoint{0.0, {}}, act);
 
         if (act.groups.empty()) {
             return; // an empty Act would be an init-time validation error
@@ -724,6 +976,13 @@ struct Behaviors {
         story.name = story_name;
         story.acts.push_back(std::move(act));
         out.stories.push_back(std::move(story));
+
+        // §7.6.2: the scenario ends when its `do` directive ends. When that
+        // moment is a constant the storyboard can say so, which is what makes
+        // the run's element states finish rather than hang at running.
+        if (end.at.has_value() && end.after.empty() && *end.at > 0.0) {
+            out.stop_trigger = trigger_for(end);
+        }
     }
 };
 
@@ -937,7 +1196,8 @@ Status lower(const Program& program, const LoadResult& loaded, const LowerOption
         }
     }
 
-    Behaviors behaviors{program, library, root->path, context, bindings, {}, sink};
+    Behaviors behaviors{program, library, root->path, context, bindings, {}, options.alternative,
+                        {},      sink};
     for (const ir::Entity& entity : out.entities) {
         behaviors.entities.insert(entity.id);
     }

@@ -299,16 +299,6 @@ TEST(ScenaRunTest, ReplayDrivesAHostControlledEntity) {
     }
 }
 
-TEST(ScenaRunTest, SelectIsAcceptedAndReportedAsNotYetActive) {
-    std::string output;
-    ASSERT_EQ(run("\"" + golden("gs1-cruise-baseline.xosc").string() +
-                      "\" --dt 0.1 --duration 0.2 --select alt",
-                  output),
-              0)
-        << output;
-    EXPECT_NE(output.find("--select has no effect yet"), std::string::npos);
-}
-
 // --- the DSL frontend (p8-s1, #44) -----------------------------------------
 
 /// Writes a DSL scenario to a temporary file and returns its path. The source
@@ -409,6 +399,84 @@ scenario mapped:
     // observable: the run stops with the map exit code rather than ignoring it.
     EXPECT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 0.2", output), 7);
     EXPECT_NE(output.find("no_such_map.xodr"), std::string::npos) << output;
+}
+
+// --- composition operators (p8-s2, #45) ------------------------------------
+
+TEST(ScenaRunTest, SelectSaysSoWhenTheScenarioHasNoAlternatives) {
+    // `one_of` is a DSL construct, so the option means nothing to XML — said
+    // out loud rather than ignored.
+    std::string output;
+    ASSERT_EQ(run("\"" + golden("gs1-cruise-baseline.xosc").string() +
+                      "\" --dt 0.1 --duration 0.2 --select alt",
+                  output),
+              0)
+        << output;
+    EXPECT_NE(output.find("--select names a one_of alternative"), std::string::npos);
+}
+
+TEST(ScenaRunTest, SelectChoosesAOneOfAlternative) {
+    // §7.6.2.1.3 leaves the choice to the executor. Making it an input is what
+    // keeps the run reproducible; the default is the first alternative.
+    const fs::path scenario = dsl_file("scena_run_one_of.osc",
+                                       R"(import osc.standard.all
+
+namespace demo use std, stdtypes
+
+scenario pick:
+    ego: vehicle
+    do one_of:
+        slow: ego.assign_speed(speed: 10mps)
+        fast: ego.assign_speed(speed: 30mps)
+)");
+    const fs::path first = temp_file("scena_run_one_of_first.csv");
+    std::string output;
+    ASSERT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 0.2 --trace \"" +
+                      first.string() + "\"",
+                  output),
+              0)
+        << output;
+    ASSERT_GT(read_lines(first).size(), 1U);
+    EXPECT_NE(read_lines(first)[1].find(",10"), std::string::npos) << read_lines(first)[1];
+
+    const fs::path chosen = temp_file("scena_run_one_of_fast.csv");
+    ASSERT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 0.2 --select fast --trace \"" +
+                      chosen.string() + "\"",
+                  output),
+              0)
+        << output;
+    ASSERT_GT(read_lines(chosen).size(), 1U);
+    EXPECT_NE(read_lines(chosen)[1].find(",30"), std::string::npos) << read_lines(chosen)[1];
+}
+
+TEST(ScenaRunTest, ADslScenarioSequencesItsPhasesByDuration) {
+    // The p8-s2 exit criterion end to end: a serial composition with concrete
+    // durations turns into absolute phase boundaries in the trace.
+    const fs::path scenario = dsl_file("scena_run_phases.osc",
+                                       R"(import osc.standard.all
+
+namespace demo use std, stdtypes
+
+scenario phases:
+    ego: vehicle
+    do serial:
+        cruise: ego.assign_speed(speed: 10mps, duration: 1s)
+        stop: ego.remain_stationary()
+)");
+    const fs::path trace = temp_file("scena_run_phases.csv");
+    std::string output;
+    ASSERT_EQ(run("\"" + scenario.string() + "\" --dt 0.1 --duration 2 --trace \"" +
+                      trace.string() + "\"",
+                  output),
+              0)
+        << output;
+    const std::vector<std::string> lines = read_lines(trace);
+    ASSERT_EQ(lines.size(), 21U);
+    // Phase 1 holds 10 m/s ...
+    EXPECT_EQ(lines[1], "0.1,ego,1,0,0,0,10");
+    // ... and phase 2 takes over at t = 1 s, exactly where the duration said:
+    // 10 m covered in that second, then standing still for the rest of the run.
+    EXPECT_EQ(lines.back(), "2,ego,10,0,0,0,0");
 }
 
 TEST(ScenaRunTest, QuietSuppressesDiagnosticsButNotFailures) {
