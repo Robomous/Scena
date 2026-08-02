@@ -31,30 +31,30 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 | Lexical structure (indentation blocks, comments, continuation, escaped identifiers) | §7.2.1 | In | n/a | p7-s1 | **Landed** (`dsl_lexer_test.cpp`): logical lines with explicit `\` and implicit bracket joining, CR/LF/CRLF, offside rule → INDENT/DEDENT with 8-column tab stops, `#` comments, both identifier forms. No `Keyword` token kind — §7.2.1.5.1 makes reserved words positional, so the parser decides (ADR-0027) |
 | Literals (int/uint/hex/float/bool/string/physical) | §7.2.1.5.2 | In | In | p7-s1, p8-s1 | **Lexing landed** (`dsl_lexer_test.cpp`): uint/int/hex with exact 64-bit values, every float form incl. `inf`/`nan`, short and long strings with escapes, physical literal = number joined to a unit name with no intervening whitespace. `std::from_chars`, never locale-dependent parsing |
 | Grammar (declarations, structured-type members, behavior specification, expression ladder) | §7.2.2 | In | n/a | p7-s2 | **Landed** (`dsl_parser_test.cpp`): recursive-descent parser over the §7.2.2 productions → AST (`ast.h`), left recursions rewritten as loops per the spec's own note. Error recovery is contractual — a parse error resynchronises at the end of the logical line or block and the parse continues, so one run reports many §-cited diagnostics (ADR-0027) |
-| Physical types + units, SI dimensions, conversion factors/offsets | §7.2.2.2.1, §7.3.4 | In | In | p7-s3, p8-s1 | Dimension checking; global unit namespace |
-| Enums (incl. `enum!member`, extension) | §7.3.3 | In | In | p7-s3, p8-s1 | |
-| Primitive types (bool, int, uint, float, string) | §7.3.2 | In | In | p7-s3 | IEEE 754 float; 64-bit int/uint |
-| Structs | §7.3.5.1.1 | In | In | p7-s3, p8-s1 | |
-| Actors | §7.3.5.1.2 | In | In | p7-s3, p8-s1 | |
-| Scenarios (assoc. actor, ≤1 `do`, n `on`) | §7.3.5.1.3 | In | In | p7-s3, p8-s1 | |
+| Physical types + units, SI dimensions, conversion factors/offsets | §7.2.2.2.1, §7.3.4 | In | In | p7-s3, p8-s1 | **Checking landed** (`dsl_types_test.cpp`): SI exponent vectors, a unit must carry its type's dimension, `value * factor + offset` conversion, unit names in their own global namespace |
+| Enums (incl. `enum!member`, extension) | §7.3.3 | In | In | p7-s3, p8-s1 | **Checking landed**: implicit value succession, the `= other_member` reference form with cycle detection, extension continuing the numbering, overloaded literals enumerated in name order |
+| Primitive types (bool, int, uint, float, string) | §7.3.2 | In | In | p7-s3 | **Checking landed**: always present, never namespaced (§7.3.2); int/uint→float implicit in a literal default. IEEE 754 float; 64-bit int/uint |
+| Structs | §7.3.5.1.1 | In | In | p7-s3, p8-s1 | **Checking landed**; a struct carries no `do` directive |
+| Actors | §7.3.5.1.2 | In | In | p7-s3, p8-s1 | **Checking landed** |
+| Scenarios (assoc. actor, ≤1 `do`, n `on`) | §7.3.5.1.3 | In | In | p7-s3, p8-s1 | **Checking landed**: the actor prefix resolves to an actor; more than one `do` is reported, including one arriving by extension |
 | Actions (atomic behaviors) | §7.3.5.1.4, §7.6.3 | In | In (matrix subset) | p7-s3, p8-s1 | Action internals are implementation-defined per §7.6.3; see §8.8 table |
-| Modifier declarations + application | §7.3.12 | In | In (matrix subset) | p7-s3, p8-s3 | Argument = equality constraint (§7.3.12.4) |
+| Modifier declarations + application | §7.3.12 | In | In (matrix subset) | p7-s3, p8-s3 | **Checking landed**: all three association types (§7.3.12.3), `of` names a scenario or action, applications resolve and their named arguments must name parameters. Argument = equality constraint (§7.3.12.4) |
 | `override()` atomic modifier | §7.3.12.1.1 | In | Post | p7-s3 | Maps to XML override/skip machinery; wiring deferred with a documented diagnostic |
-| Lists (+ list operators) | §7.3.5.2.1, §7.4.2.7 | In | In | p7-s4 | |
-| Ranges (`[a..b]`, range operators) | §7.3.5.2.2, §7.4.2.8 | In | Partial → see keep/ranges row | p7-s4 | |
-| Fields: parameters vs `var` variables, `with:` blocks | §7.3.6 | In | In | p7-s3, p8-s1 | Parameters fixed at init; variables runtime-mutable |
+| Lists (+ list operators) | §7.3.5.2.1, §7.4.2.7 | In | In | p7-s3, p7-s4 | **Declarator checking landed** (p7-s3): structural and shared, and a list of lists is reported (§7.3.1). Operators in p7-s4 |
+| Ranges (`[a..b]`, range operators) | §7.3.5.2.2, §7.4.2.8 | In | Partial → see keep/ranges row | p7-s3, p7-s4 | **Declarator checking landed** (p7-s3): `range of` needs a numeric base type (§7.3.1). Operators in p7-s4 |
+| Fields: parameters vs `var` variables, `with:` blocks | §7.3.6 | In | In | p7-s3, p8-s1 | **Checking landed**: typed, ordered, unique, non-shadowing; a literal default is checked against the declared type and unit. Parameters fixed at init; variables runtime-mutable |
 | `sample()` variable initializer | §7.3.10.4 | In | Post | p7-s4 | Event-sampled variables deferred (needs event-valuation plumbing beyond v0.0.1 set) |
 | `keep(hard/default)` constraints | §7.3.11 | In | **Concrete-value only** | p7-s4, p8-s1 | Fixed-value/equality resolution at init; violated hard keep = error; anything requiring search → diagnostic (ADR-0004) |
 | `remove_default()` | §7.3.11 | In | In (within concrete resolution) | p7-s4 | |
-| Methods (expression, `undefined`, override rules) | §7.3.7 | In | In (expression methods in constant contexts) | p7-s3 | |
+| Methods (expression, `undefined`, override rules) | §7.3.7 | In | In (expression methods in constant contexts) | p7-s3 | **Signature checking landed**: parameters and return type resolved; `is only` requires a supertype method and keeps its return type (§7.3.7.2). Bodies type-check in p7-s4 |
 | External methods (`is external ...`) | §7.3.7.4 | In (parse/check) | Post | p7-s4 | Host-binding FFI is post-release; invocation diagnosed |
-| Inheritance (single; conditional `inherits X(f == v)`) | §7.3.8 | In | In | p7-s3 | Latent subtypes via `is()`/`as()` |
-| Extension (`extend`) | §7.3.9 | In | In | p7-s3 | Compile-time composition |
+| Inheritance (single; conditional `inherits X(f == v)`) | §7.3.8 | In | In | p7-s3 | **Checking landed**: single, same-kind, cycle-broken; guards need a bool or enum determinant that the base declares; Rule 1 (§7.3.8.2.3) enforced; actor-behavior inheritance restricted per §7.3.8.1. Latent subtypes via `is()`/`as()` (p7-s4) |
+| Extension (`extend`) | §7.3.9 | In | In | p7-s3 | **Checking landed**: members merge into the extended type, in any textual order, and cannot shadow existing ones. Compile-time composition |
 | Events (`event`, predefined start/end/fail) | §7.3.10 | In | In | p7-s3, p8-s2 | Predefined events map to storyboard element transitions |
 | Event specifications (`@`, `rise`, `fall`, `elapsed`, `every`, `if`, `as` binding) | §7.3.10.4 | In | In except `every` | p7-s2, p8-s2 | **Parsing landed** (`dsl_parser_test.cpp`): all five condition forms plus the `as` binding and `if` guard. `every` (periodic) Post: no v0.0.1 scenario needs it; deterministic period machinery deferred |
-| Global parameters | §7.3.14 | In | In | p7-s3 | |
-| Type resolution order (declare-anywhere) | §7.3.15 | In | n/a | p7-s3 | Multi-pass resolution |
-| Namespaces + `::`, export rules | §7.7.4 | In | n/a | p7-s3 | |
+| Global parameters | §7.3.14 | In | In | p7-s3 | **Checking landed**: typed, ordered, unique; `it` has no instance to bind to in one (§7.4.1.3) |
+| Type resolution order (declare-anywhere) | §7.3.15 | In | n/a | p7-s3 | **Landed**: three passes — declare, link, members (ADR-0028). Use may precede declaration for types, units and extensions alike |
+| Namespaces + `::`, export rules | §7.7.4 | In | n/a | p7-s3 | **Landed**: `namespace ... use`, explicit `ns::name`, export lists and wildcards, the current namespace shadowing the use list (§7.7.4.2), ambiguity across two used namespaces reported, `std`-prefixed namespaces warned, each file starting in the null namespace |
 | Import (URI + identifier forms; `osc.standard.all/types/domain`, legacy `osc.standard`) | §7.7.5 | In | n/a | p7-s2 | **Parsing landed** (`dsl_parser_test.cpp`): both reference forms, and prelude-before-main enforced (§7.2.2.1.1). Dedup and resolution with the symbol table (p7-s3) |
 | Scenario entry-point selection | §7.7.2 | n/a | In | p8-s1 | Implementation-defined per spec: qualified name via API/CLI |
 

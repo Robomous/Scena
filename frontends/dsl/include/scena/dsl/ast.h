@@ -339,8 +339,12 @@ struct UnitDecl {
 /// One `enum-member-decl` (§7.2.2.2.2).
 struct EnumMember {
     std::string name;
-    /// The explicit `= value`, when written.
+    /// The explicit `= value`, when written as a literal.
     std::optional<std::int64_t> value;
+    /// The explicit `= other` when written as an enum-value-reference: either
+    /// a bare member name or `enum-name!member-name`. Resolved against the
+    /// symbol table (§7.3.3), which is also where reference cycles are caught.
+    std::string value_reference;
     SourceRange range;
 };
 

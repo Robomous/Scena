@@ -9,6 +9,8 @@
 add_library(scena-frontend-dsl STATIC
     src/lexer.cpp
     src/parser.cpp
+    src/resolve.cpp
+    src/types.cpp
 )
 add_library(scena::frontend-dsl ALIAS scena-frontend-dsl)
 

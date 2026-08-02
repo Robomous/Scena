@@ -36,8 +36,13 @@ expected. It also keeps the dependency list unchanged.
 | `include/scena/dsl/ast.h` | the §7.2.2 syntax tree |
 | `include/scena/dsl/parser.h` | `parse()` / `parse_source()` — tokens to AST |
 | `src/parser.cpp` | recursive descent over the §7.2.2 productions |
+| `include/scena/dsl/types.h` | the §7.3 type model and the resolved program |
+| `include/scena/dsl/resolve.h` | `resolve()` — AST to symbol table, and the prelude |
+| `src/types.cpp` | queries over a resolved program |
+| `src/resolve.cpp` | the three resolution passes and the §7.3 rules |
 | `tests/dsl_lexer_test.cpp` | §7.2.1 token goldens |
 | `tests/dsl_parser_test.cpp` | §7.2.2 grammar, expression precedence, error recovery |
+| `tests/dsl_types_test.cpp` | §7.3 type rules, units, inheritance, namespaces |
 
 ## Lexing notes
 
@@ -80,3 +85,24 @@ expected. It also keeps the dependency list unchanged.
 - **The `-` sign lives in the literal.** §7.2.1.5.2 puts the sign inside
   `int-literal`, so the lexer hands `-2` over as one token; where a value has
   already been parsed, `parse_sum` splits it back into a subtraction.
+
+## Resolution notes (ADR-0028)
+
+- **Three passes, because the language declares anywhere.** §7.3.15 puts no
+  ordering restriction on declaration and use, and §7.3.9 lets an `extend` reach
+  a type declared later or in another file. Declare, then link, then members —
+  and anything needing a supertype's members (a conditional-inheritance
+  determinant) waits for the end of the third pass.
+- **Types are indices, not pointers.** The table grows while it is being built —
+  `list of int` becomes a type the moment someone writes it — so helpers take a
+  `TypeId` and re-index after any call that can resolve a declarator. A
+  `TypeInfo&` held across such a call is a dangling reference.
+- **Ordered containers everywhere.** `std::map` plus a declaration-order vector
+  for the two places order is meaning: positional arguments and enumeration
+  value succession. Load time is inside the determinism contract.
+- **Physical types are compared by dimension.** A unit must carry its type's
+  SI exponents exactly (§7.3.4), which is what makes
+  `base = value * factor + offset` a legal direct conversion.
+- **The prelude is source, not a hand-built table.** It travels through the same
+  lexer, parser and resolver as user code, so a bug in any of them shows up
+  there first.
