@@ -212,13 +212,17 @@ envelopes belong to the logical level).
 
 | Modifier | Section | Exec | Sprint | Notes |
 |---|---|---|---|---|
-| position() / keep_position() | §8.9.2–.3 | In | p8-s3 | ahead_of/behind + distance forms; `*_range`/at_point-with-projection variants Post |
-| speed() / change_speed() / keep_speed() | §8.9.4–.6 | In | p8-s3 | Absolute + faster_than/slower_than/same_as relative forms |
-| acceleration() | §8.9.7 | In | p8-s3 | Scalar form |
-| lateral() | §8.9.8 | In | p8-s3 | t-axis offset; measure_by default |
-| lane() / change_lane() / keep_lane() | §8.9.14–.16 | In | p8-s3 | `change_lane` without an explicit side is diagnosed, not randomized (determinism) |
-| along() / along_trajectory() | §8.9.11–.12 | In | p8-s3 | Route/path/trajectory binding |
-| distance() | §8.9.13 | In | p8-s3 | Traveled-distance bound |
+| position() | §8.9.2 | In | p8-s3 | **Landed** (`dsl_lowering_test.cpp`): `ahead_of`/`behind` with a concrete distance. The anchor changes the *kind* of action — at the start a `TeleportAction` placement, over the phase a `LongitudinalDistanceAction` gap (ADR-0032). Point forms and `*_range` Post |
+| keep_position() | §8.9.3 | In | p8-s3 | **Landed**: lowers to *no* action. The runtime already holds relative position between actions, so one that set the current value would be a no-op that still occupies the action domain (§7.5) |
+| speed() / change_speed() | §8.9.4–.5 | In | p8-s3 | **Landed**: absolute, and the `faster_than`/`slower_than`/`same_as` relative forms with `factor` → `RelativeTargetSpeed`. `change_speed` is relative to the actor's own speed. Ranges are reported |
+| keep_speed() | §8.9.6 | In | p8-s3 | **Landed**: lowers to no action, same reason as `keep_position` |
+| acceleration() | §8.9.7 | Post | — | Reported: it shapes an acceleration the phase is already performing, and the IR has no acceleration-target action — the same reason §8.8's are deferred |
+| lateral() | §8.9.8 | In | p8-s3 | **Landed**: `side_of` → `LateralDistanceAction`, otherwise a `LaneOffsetAction` from the lane centre. Positive offsets are to the left (§7.4.1.4), so `side: right` is negative |
+| lane() / change_lane() / keep_lane() | §8.9.14–.16 | In | p8-s3 | **Landed**: a lane number → an absolute lane target, `side_of`+`side` → a relative one, `keep_lane` → a continuous zero `LaneOffsetAction`. `change_lane` without an explicit side is diagnosed, not chosen (determinism) |
+| along() / along_trajectory() | §8.9.11–.12 | Post | — | Reported: both need a concrete route or trajectory value, and the DSL has no struct constructor (§7.2.2.6.7) — one can only come from §8.12.2's map methods, which the standard says may be external (§7.3.7.4) |
+| distance() | §8.9.13 | Post | — | Reported: it bounds a phase by distance travelled, and phase sequencing is by time (ADR-0031) |
+| `at` phase anchoring | §8.9.1.1.1, §8.9.19 | In | p8-s3 | **Landed**: absent/`all`/`start` set the value when the phase begins (a Step); `end` reaches it over the phase, which needs the phase length p8-s2's duration fixes. Without one it is reported, never invented |
+| Overloaded enum literal resolved by context | §7.3.3 | **Gap** | — | §7.3.3 says the literal "will depend on the type requirements of the place it is used in"; Scena reports the ambiguity first, so the standard's own `at: start` is rejected while `at: at!start` works. Tracked as #110; blocks nothing |
 | yaw() / orientation() | §8.9.9–.10 | Post | — | Orientation-target modifiers deferred (teleport orientation covers placements) |
 | physical_movement() | §8.9.17 | Post | — | Single documented default profile in v0.0.1 |
 | avoid_collisions() | §8.9.18 | Post | — | No collision-avoidance controller in v0.0.1 (engine executes what the scenario says; Collision condition detects) |

@@ -828,19 +828,276 @@ TEST(DslLoweringTest, ANonDefaultParallelOverlapIsReported) {
     EXPECT_TRUE(sink_says(result.sink, "overlap 'equal'"));
 }
 
-TEST(DslLoweringTest, ModifiersAreReportedAsDeferred) {
-    // A modifier is a real construct of the invocation that belongs to a later
-    // sprint. Reporting beats silently running a scenario that says more than
-    // the engine was told.
+// --- §8.9 movement modifiers ------------------------------------------------
+
+// §8.9.19's `at` and §8.12's `route_overlap_kind` both declare `start` and
+// `end`, so the anchors are written qualified here. §7.3.3 says an overloaded
+// literal should resolve by the type the place expects, which Scena does not do
+// yet — #110. The qualified spelling is the one that works today.
+
+TEST(DslLoweringTest, ASpeedModifierAtTheStartSetsTheSpeedAtOnce) {
     Lowered result;
     run(std::string(kPrelude).append("scenario go:\n"
                                      "    ego: vehicle\n"
-                                     "    do phase: ego.drive() with:\n"
-                                     "        speed(speed: 30kph)\n"),
+                                     "    do a: ego.drive() with:\n"
+                                     "        speed(speed: 36kph, at: at!start)\n"),
         result);
     ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    EXPECT_TRUE(sink_says(result.sink, "p8-s3 (#46)"));
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::SpeedAction* action = only_action<scena::ir::SpeedAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    // 36 kph folded once, at check time, through §8.14.1.3's printed factor.
+    EXPECT_NEAR(action->target_speed(), 10.0, 1e-6);
+    EXPECT_EQ(action->dynamics().shape, scena::ir::DynamicsShape::Step);
+}
+
+TEST(DslLoweringTest, ASpeedModifierAtTheEndIsReachedOverThePhase) {
+    // This is what makes p8-s2's durations load-bearing: `at: end` needs an
+    // interval to spread the change over, and the duration is that interval.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive(duration: 4s) with:\n"
+                                     "        speed(speed: 0kph, at: at!start)\n"
+                                     "        speed(speed: 36kph, at: at!end)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    ASSERT_EQ(lowered[0].event->actions.size(), 2U);
+    const auto* ramp =
+        dynamic_cast<const scena::ir::SpeedAction*>(lowered[0].event->actions[1].get());
+    ASSERT_NE(ramp, nullptr);
+    EXPECT_EQ(ramp->dynamics().shape, scena::ir::DynamicsShape::Linear);
+    EXPECT_EQ(ramp->dynamics().dimension, scena::ir::DynamicsDimension::Time);
+    EXPECT_EQ(ramp->dynamics().value, 4.0);
+}
+
+TEST(DslLoweringTest, AnEndAnchorWithoutADurationIsReportedNotInvented) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        speed(speed: 36kph, at: at!end)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "no duration fixes"));
+}
+
+TEST(DslLoweringTest, ARelativeSpeedModifierNamesTheOtherActor) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    lead: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        speed(speed: 5mps, faster_than: lead)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const scena::ir::SpeedAction* action =
+        only_action<scena::ir::SpeedAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_TRUE(action->is_relative());
+    EXPECT_EQ(action->relative_target()->entity_ref, "lead");
+    EXPECT_EQ(action->relative_target()->value, 5.0);
+    EXPECT_EQ(action->relative_target()->value_type, scena::ir::SpeedTargetValueType::Delta);
+}
+
+TEST(DslLoweringTest, SlowerThanIsTheSameTargetWithTheSignTurnedRound) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    lead: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        speed(speed: 5mps, slower_than: lead)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const scena::ir::SpeedAction* action =
+        only_action<scena::ir::SpeedAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_TRUE(action->is_relative());
+    EXPECT_EQ(action->relative_target()->value, -5.0);
+}
+
+TEST(DslLoweringTest, ChangeSpeedIsRelativeToTheActorsOwnSpeed) {
+    // §8.9.5 changes the speed *by* an amount, which is what a relative target
+    // against the actor itself says.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        change_speed(speed: 2mps)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const scena::ir::SpeedAction* action =
+        only_action<scena::ir::SpeedAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_TRUE(action->is_relative());
+    EXPECT_EQ(action->relative_target()->entity_ref, "ego");
+    EXPECT_EQ(action->relative_target()->value, 2.0);
+}
+
+TEST(DslLoweringTest, APositionModifierPlacesAtTheStartAndKeepsAGapAfterwards) {
+    // The same modifier says two different things depending on its anchor: at
+    // the start it is a placement, over the phase it is a gap to hold.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    lead: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        position(distance: 20m, behind: lead, at: at!start)\n"
+                                     "        position(distance: 10m, behind: lead, at: at!all)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    ASSERT_EQ(lowered[0].event->actions.size(), 2U);
+    const auto* placement =
+        dynamic_cast<const scena::ir::TeleportAction*>(lowered[0].event->actions[0].get());
+    ASSERT_NE(placement, nullptr);
+    const auto* relative = std::get_if<scena::ir::RelativeObjectPosition>(&placement->position());
+    ASSERT_NE(relative, nullptr);
+    EXPECT_EQ(relative->entity_ref, "lead");
+    EXPECT_EQ(relative->dx, -20.0);
+    const auto* gap = dynamic_cast<const scena::ir::LongitudinalDistanceAction*>(
+        lowered[0].event->actions[1].get());
+    ASSERT_NE(gap, nullptr);
+    EXPECT_EQ(gap->entity_ref(), "lead");
+    ASSERT_TRUE(gap->distance().has_value());
+    EXPECT_EQ(*gap->distance(), 10.0);
+    EXPECT_TRUE(gap->continuous());
+    EXPECT_EQ(gap->displacement(), scena::ir::LongitudinalDisplacement::TrailingReferencedEntity);
+}
+
+TEST(DslLoweringTest, ALaneModifierTargetsALaneOfTheRoadNetwork) {
+    // §8.9.14 counts lanes by road-network identity, which is exactly what an
+    // absolute lane target is on the XML side.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        lane(lane: 2)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const auto* action =
+        only_action<scena::ir::LaneChangeAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_FALSE(action->is_relative());
+    EXPECT_EQ(action->absolute_target()->value, "2");
+}
+
+TEST(DslLoweringTest, ChangeLaneModifierCountsLanesFromTheActor) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        change_lane(lane: 2, side: side_left_right!left)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const auto* action =
+        only_action<scena::ir::LaneChangeAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_TRUE(action->is_relative());
+    EXPECT_EQ(action->relative_target()->entity_ref, "ego");
+    EXPECT_EQ(action->relative_target()->value, 2);
+}
+
+TEST(DslLoweringTest, ChangeLaneModifierNeedsASide) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        change_lane(lane: 1)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    EXPECT_EQ(result.status, Status::ValidationError);
+    EXPECT_TRUE(sink_says(result.sink, "explicit 'side'"));
+}
+
+TEST(DslLoweringTest, KeepLaneHoldsTheLaneOffsetContinuously) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        keep_lane()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const auto* action =
+        only_action<scena::ir::LaneOffsetAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_TRUE(action->continuous());
+}
+
+TEST(DslLoweringTest, ALateralModifierOffsetsFromTheLaneCentre) {
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do a: ego.drive() with:\n"
+            "        lateral(distance: 1m, side: side_left_right!right)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const auto* action =
+        only_action<scena::ir::LaneOffsetAction>(phases(result.lowered.scenario)[0]);
+    ASSERT_NE(action, nullptr);
+    // Positive lane offsets are to the left (§7.4.1.4), so `right` is negative.
+    ASSERT_FALSE(action->is_relative());
+    EXPECT_EQ(action->absolute_target()->value, -1.0);
+}
+
+TEST(DslLoweringTest, KeepSpeedAndKeepPositionLowerToNothingOnPurpose) {
+    // Both say "do not change what you are doing", and the runtime already
+    // holds speed and relative position between actions — so an action that set
+    // the current value would be a no-op with a trace of its own.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        keep_speed()\n"
+                                     "        keep_position()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(result.lowered.scenario.storyboard.stories.empty());
+    EXPECT_TRUE(result.sink.diagnostics().empty());
+}
+
+TEST(DslLoweringTest, AModifierWithNoRuntimeCounterpartIsReported) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        acceleration(acceleration: 2.0)\n"
+                                     "        distance(distance: 100m)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "acceleration-target action"));
+    EXPECT_TRUE(sink_says(result.sink, "distance travelled"));
+}
+
+TEST(DslLoweringTest, ARouteModifierSaysWhyItCannotBeMadeConcrete) {
+    // §8.12.2's map methods are what produce a route, and the standard says
+    // they may be external implementations (§7.3.7.4) — post-v0.0.1.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    r: route\n"
+                                     "    do a: ego.drive() with:\n"
+                                     "        along(route: r)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "external"));
 }
 
 // --- Â§8.5.4 the map file ------------------------------------------------------
