@@ -22,6 +22,8 @@
 
 #include "scena/dsl/resolve.h"
 
+#include "scena/dsl/expression.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -187,6 +189,17 @@ private:
     void declare();
     void link();
     void check_members();
+    void check_expressions();
+
+    // Expression, constraint and coverage helpers (§7.4, §7.3.11, §7.5).
+    void note_unsupported(const SourceRange& at, std::string message);
+    [[nodiscard]] TypeId check_expression(const Expr& expression, const ExpressionContext& context);
+    void check_value(const Expr& expression, const ExpressionContext& context, TypeId target,
+                     std::string_view what);
+    void check_constraint(const Constraint& constraint, const ExpressionContext& context);
+    void check_event_spec(const EventSpec& spec, const ExpressionContext& context);
+    void check_do_member(const DoMember& member, const ExpressionContext& context);
+    void check_coverage(const CoverageDecl& coverage, const ExpressionContext& context);
 
     // Declaration helpers.
     TypeId add_type(TypeKind kind, const Scope& scope, std::string_view simple_name,
@@ -1228,10 +1241,351 @@ void Resolver::check_members() {
     }
 }
 
+// --- pass 4: expressions, constraints and coverage (§7.4, §7.3.11, §7.5) ---
+
+/// True when a value of `source` may be used where `target` is expected, under
+/// §7.4.2.6's implicit conversions.
+[[nodiscard]] bool assignable(const Program& program, TypeId target, TypeId source) {
+    if (target == kInvalidType || source == kInvalidType || target == source) {
+        return true; // an untyped side already produced its own diagnostic
+    }
+    const TypeKind target_kind = program.types[target].kind;
+    const TypeKind source_kind = program.types[source].kind;
+    if (is_numeric(target_kind) && is_numeric(source_kind)) {
+        // §7.4.2.6: int→uint, and int or uint→float, are implicit; physical
+        // types never convert (§7.4.2.3.1).
+        if (target_kind == TypeKind::Physical || source_kind == TypeKind::Physical) {
+            return false;
+        }
+        return target_kind == TypeKind::Float || source_kind != TypeKind::Float;
+    }
+    // §7.4.2.8.2: a numeric value converts to a range of a compatible base type.
+    if (target_kind == TypeKind::Range && is_numeric(source_kind)) {
+        return assignable(program, program.types[target].element, source);
+    }
+    if (target_kind == TypeKind::Range && source_kind == TypeKind::Range) {
+        return assignable(program, program.types[target].element, program.types[source].element);
+    }
+    // §7.4.2.6: "Lists follow the same implicit conversion rules as their
+    // element type."
+    if (target_kind == TypeKind::List && source_kind == TypeKind::List) {
+        return assignable(program, program.types[target].element, program.types[source].element);
+    }
+    // Compound types are implicitly upcast to their base classes.
+    return program.is_derived_from(source, target);
+}
+
+void Resolver::note_unsupported(const SourceRange& at, std::string message) {
+    // Checked, not executed. The severity is Warning because the file is legal
+    // DSL — Status::UnsupportedFeature is the machine-readable half, and the
+    // kernel's invariant (only warnings ⇒ Ok) still holds.
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::Warning;
+    diagnostic.code = Status::UnsupportedFeature;
+    diagnostic.message = std::move(message);
+    diagnostic.location.line = at.line;
+    diagnostic.location.column = at.column;
+    sink_.report(std::move(diagnostic));
+}
+
+TypeId Resolver::check_expression(const Expr& expression, const ExpressionContext& context) {
+    // type_of reports straight to the sink, so the resolver watches for what it
+    // added rather than losing the failure: an expression error must still make
+    // resolve() return ValidationError.
+    const std::size_t before = sink_.diagnostics().size();
+    const TypeId type = type_of(out_, expression, context, sink_);
+    for (std::size_t i = before; i < sink_.diagnostics().size(); ++i) {
+        if (sink_.diagnostics()[i].severity == Severity::Error) {
+            failed_ = true;
+            break;
+        }
+    }
+    return type;
+}
+
+void Resolver::check_value(const Expr& expression, const ExpressionContext& context, TypeId target,
+                           std::string_view what) {
+    const TypeId actual = check_expression(expression, context);
+    if (actual == kInvalidType || target == kInvalidType) {
+        return;
+    }
+    if (!assignable(out_, target, actual)) {
+        error(expression.range, std::string(what) + " is " + out_.types[target].name +
+                                    ", and this expression is " + out_.types[actual].name +
+                                    " (§7.4.2.6)");
+    }
+}
+
+/// True when `expression` binds a parameter to a concrete value — the only
+/// shape v0.0.1 resolves without search (ADR-0004): `f == <constant>`,
+/// `f in <constant range or list>`, or a conjunction of those.
+[[nodiscard]] bool is_concrete_binding(const Program& program, const Expr& expression,
+                                       const ExpressionContext& context) {
+    if (expression.kind != ExprKind::Binary) {
+        return false;
+    }
+    if (expression.text == "and") {
+        return is_concrete_binding(program, *expression.operands[0], context) &&
+               is_concrete_binding(program, *expression.operands[1], context);
+    }
+    if (expression.text != "==" && expression.text != "in") {
+        return false;
+    }
+    Value value;
+    const bool left_constant = evaluate_constant(program, *expression.operands[0], context, value);
+    const bool right_constant = evaluate_constant(program, *expression.operands[1], context, value);
+    // Exactly one side constant: the other names what is being bound.
+    return left_constant != right_constant;
+}
+
+void Resolver::check_constraint(const Constraint& constraint, const ExpressionContext& context) {
+    if (constraint.expression == nullptr) {
+        return;
+    }
+    if (constraint.is_remove_default) {
+        // §7.3.11: remove_default names the parameter whose default goes away.
+        if (constraint.expression->kind != ExprKind::Name || context.self == kInvalidType ||
+            out_.find_field(context.self, constraint.expression->text) == nullptr) {
+            error(constraint.range, "remove_default names a parameter of this type (§7.3.11)");
+        }
+        return;
+    }
+    const TypeId type = check_expression(*constraint.expression, context);
+    if (type == kInvalidType) {
+        return;
+    }
+    if (out_.types[type].kind != TypeKind::Bool) {
+        error(constraint.range, "a keep constraint is a Boolean expression, not " +
+                                    out_.types[type].name + " (§7.3.11.1)");
+        return;
+    }
+    Value value;
+    if (evaluate_constant(out_, *constraint.expression, context, value) &&
+        value.kind == Value::Kind::Bool) {
+        if (!value.boolean) {
+            // §7.3.11.3: a hard constraint that cannot hold is an error, and an
+            // unqualified keep is hard. A `default` keep only proposes a value,
+            // so a false one is a warning.
+            if (constraint.qualifier == "default") {
+                warn(constraint.range,
+                     "this default constraint cannot hold and will have no effect (§7.3.11.3)");
+            } else {
+                error(constraint.range, "this constraint cannot be satisfied (§7.3.11.3)");
+            }
+        }
+        return;
+    }
+    if (!is_concrete_binding(out_, *constraint.expression, context)) {
+        note_unsupported(constraint.range,
+                         "this constraint needs a solver; v0.0.1 resolves fixed values only "
+                         "(§7.3.11, ADR-0004)");
+    }
+}
+
+void Resolver::check_event_spec(const EventSpec& spec, const ExpressionContext& context) {
+    if (spec.kind == EventConditionKind::Every) {
+        note_unsupported(spec.range, "'every' is checked but not executed in v0.0.1 (§7.3.10.4)");
+    }
+    if (spec.expression == nullptr) {
+        return;
+    }
+    const TypeId type = check_expression(*spec.expression, context);
+    if (type == kInvalidType) {
+        return;
+    }
+    const bool wants_bool =
+        spec.kind == EventConditionKind::Expression || spec.kind == EventConditionKind::Rise ||
+        spec.kind == EventConditionKind::Fall || spec.kind == EventConditionKind::Reference;
+    if (wants_bool && out_.types[type].kind != TypeKind::Bool) {
+        error(spec.range, "an event condition is a Boolean expression, not " +
+                              out_.types[type].name + " (§7.3.10.4)");
+    }
+    if (!wants_bool && !is_numeric(out_.types[type].kind)) {
+        error(spec.range,
+              "'" + std::string(spec.kind == EventConditionKind::Elapsed ? "elapsed" : "every") +
+                  "' takes a duration (§7.3.10.4)");
+    }
+    if (spec.offset != nullptr) {
+        (void)check_expression(*spec.offset, context);
+    }
+}
+
+void Resolver::check_do_member(const DoMember& member, const ExpressionContext& context) {
+    for (const Argument& argument : member.composition_arguments) {
+        if (argument.value != nullptr) {
+            (void)check_expression(*argument.value, context);
+        }
+    }
+    for (const Argument& argument : member.arguments) {
+        if (argument.value != nullptr) {
+            (void)check_expression(*argument.value, context);
+        }
+    }
+    if (member.actor != nullptr) {
+        (void)check_expression(*member.actor, context);
+    }
+    if (member.kind == DoMemberKind::Wait) {
+        check_event_spec(member.event, context);
+    }
+    for (const Constraint& constraint : member.with.constraints) {
+        check_constraint(constraint, context);
+    }
+    for (const ModifierApplication& application : member.with.modifiers) {
+        for (const Argument& argument : application.arguments) {
+            if (argument.value != nullptr) {
+                (void)check_expression(*argument.value, context);
+            }
+        }
+    }
+    for (const EventSpec& until : member.with.until) {
+        check_event_spec(until, context);
+    }
+    for (const DoMemberPtr& nested : member.members) {
+        if (nested != nullptr) {
+            check_do_member(*nested, context);
+        }
+    }
+}
+
+void Resolver::check_coverage(const CoverageDecl& coverage, const ExpressionContext& context) {
+    for (const Argument& argument : coverage.arguments) {
+        if (argument.value != nullptr) {
+            (void)check_expression(*argument.value, context);
+        }
+    }
+    // §7.5: coverage steers generation. v0.0.1 checks it and says so rather
+    // than silently collecting nothing.
+    note_unsupported(coverage.range, std::string(coverage.is_record ? "record" : "cover") +
+                                         " is checked but not collected in v0.0.1 (§7.5)");
+}
+
+void Resolver::check_expressions() {
+    for (const PendingStructured& pending : structured_) {
+        ExpressionContext context;
+        context.self = pending.id;
+        context.name_space = pending.scope.name_space;
+        context.uses = pending.scope.uses;
+        for (const Member& member : pending.decl->members) {
+            switch (member.kind) {
+            case Member::Kind::Field: {
+                const Field& field = member.field;
+                if (!field.constraints.empty()) {
+                    // §7.3.12.4: inside a parameter's `with:` block, `it` is
+                    // that parameter — `keep(it > 0)` constrains the field, not
+                    // the enclosing instance.
+                    const FieldInfo* info = field.names.empty()
+                                                ? nullptr
+                                                : out_.find_field(pending.id, field.names.front());
+                    ExpressionContext inner = context;
+                    inner.it_binding = info == nullptr ? kInvalidType : info->type;
+                    for (const Constraint& constraint : field.constraints) {
+                        check_constraint(constraint, inner);
+                    }
+                }
+                if (field.is_sampled) {
+                    if (field.sample_event.has_value()) {
+                        check_event_spec(*field.sample_event, context);
+                    }
+                    note_unsupported(field.range,
+                                     "sample() is checked but not executed in v0.0.1 (§7.3.10.4)");
+                }
+                if (field.default_value == nullptr) {
+                    break;
+                }
+                // A literal default is already checked against its unit and
+                // primitive type in pass 3; typing it again would say the same
+                // thing twice.
+                if (field.default_value->kind == ExprKind::Literal ||
+                    field.default_value->kind == ExprKind::PhysicalLiteral) {
+                    break;
+                }
+                const FieldInfo* info = field.names.empty()
+                                            ? nullptr
+                                            : out_.find_field(pending.id, field.names.front());
+                check_value(*field.default_value, context,
+                            info == nullptr ? kInvalidType : info->type, "this field");
+                break;
+            }
+            case Member::Kind::Constraint:
+                check_constraint(member.constraint, context);
+                break;
+            case Member::Kind::Method: {
+                const MethodDecl& method = member.method;
+                if (method.implementation != "expression" || method.expression == nullptr) {
+                    break;
+                }
+                const MethodInfo* info = out_.find_method(pending.id, method.name);
+                // A method body sees its own parameters (§7.4.1.1).
+                ExpressionContext inner = context;
+                inner.locals = info == nullptr ? nullptr : &info->parameters;
+                check_value(*method.expression, inner,
+                            info == nullptr ? kInvalidType : info->return_type,
+                            "this method returns");
+                break;
+            }
+            case Member::Kind::Event: {
+                if (!member.event.spec.has_value()) {
+                    break;
+                }
+                const EventInfo* info = nullptr;
+                const auto found = out_.types[pending.id].events.find(member.event.name);
+                if (found != out_.types[pending.id].events.end()) {
+                    info = &found->second;
+                }
+                ExpressionContext inner = context;
+                inner.locals = info == nullptr ? nullptr : &info->parameters;
+                check_event_spec(*member.event.spec, inner);
+                break;
+            }
+            case Member::Kind::Coverage:
+                check_coverage(member.coverage, context);
+                break;
+            case Member::Kind::ModifierApplication:
+                for (const Argument& argument : member.modifier.arguments) {
+                    if (argument.value != nullptr) {
+                        (void)check_expression(*argument.value, context);
+                    }
+                }
+                break;
+            case Member::Kind::Behavior:
+                if (member.behavior != nullptr) {
+                    check_do_member(*member.behavior, context);
+                }
+                break;
+            case Member::Kind::On:
+                check_event_spec(member.on.event, context);
+                for (const DoMemberPtr& reaction : member.on.members) {
+                    if (reaction != nullptr) {
+                        check_do_member(*reaction, context);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    for (const PendingGlobal& pending : globals_) {
+        const Field& field = pending.decl->field;
+        if (field.default_value == nullptr || field.default_value->kind == ExprKind::Literal ||
+            field.default_value->kind == ExprKind::PhysicalLiteral) {
+            continue;
+        }
+        ExpressionContext context;
+        context.name_space = pending.scope.name_space;
+        context.uses = pending.scope.uses;
+        const std::string qualified = qualify(pending.scope.name_space, field.names.front());
+        const auto global = out_.globals.find(qualified);
+        check_value(*field.default_value, context,
+                    global == out_.globals.end() ? kInvalidType : global->second.field.type,
+                    "this global");
+    }
+}
+
 Status Resolver::run() {
     declare();
     link();
     check_members();
+    check_expressions();
     return failed_ ? Status::ValidationError : Status::Ok;
 }
 
