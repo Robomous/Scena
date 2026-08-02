@@ -37,11 +37,17 @@ namespace {
 }
 
 /// Reports and returns kInvalidType, so a caller can `return fail(...)`.
-TypeId fail(DiagnosticSink& sink, const SourceRange& at, std::string message) {
+///
+/// `file` is threaded through rather than left to the caller because a
+/// `Program` spans every file its root imported: a line number on its own does
+/// not say which file it is a line of.
+TypeId fail(DiagnosticSink& sink, std::string_view file, const SourceRange& at,
+            std::string message) {
     Diagnostic diagnostic;
     diagnostic.severity = Severity::Error;
     diagnostic.code = Status::ValidationError;
     diagnostic.message = std::move(message);
+    diagnostic.location.file = file;
     diagnostic.location.line = at.line;
     diagnostic.location.column = at.column;
     sink.report(std::move(diagnostic));
@@ -175,7 +181,8 @@ TypeId Typer::type_name(const Expr& expression, TypeId it_type) {
         if (context_.self != kInvalidType) {
             return context_.self;
         }
-        return fail(sink_, expression.range, "'it' has no instance to refer to here (§7.4.1.3)");
+        return fail(sink_, context_.file, expression.range,
+                    "'it' has no instance to refer to here (§7.4.1.3)");
     }
     // A parameter of the method or event the expression belongs to, which the
     // enclosing type's fields do not shadow.
@@ -216,27 +223,28 @@ TypeId Typer::type_name(const Expr& expression, TypeId it_type) {
         for (const TypeId id : enums) {
             names += (names.empty() ? "" : ", ") + program_.types[id].name;
         }
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "'" + expression.text + "' is a member of more than one enum (" + names +
                         "); write the enum name (§7.3.3)");
     }
     // A type name, which is legal as the operand of nothing in an expression,
     // but naming it precisely beats "unknown name".
     if (lookup_type(expression.text) != kInvalidType) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "'" + expression.text + "' is a type, not a value (§7.4.1.1)");
     }
-    return fail(sink_, expression.range, "unknown name '" + expression.text + "' (§7.4.1.1)");
+    return fail(sink_, context_.file, expression.range,
+                "unknown name '" + expression.text + "' (§7.4.1.1)");
 }
 
 TypeId Typer::type_enum_value(const Expr& expression) {
     const TypeId id = lookup_type(expression.type_name);
     if (id == kInvalidType) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "unknown enum '" + expression.type_name + "' (§7.3.3)");
     }
     if (program_.types[id].kind != TypeKind::Enum) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "'" + expression.type_name + "' is not an enum (§7.3.3)");
     }
     const TypeInfo& enumeration = program_.types[id];
@@ -244,7 +252,7 @@ TypeId Typer::type_enum_value(const Expr& expression) {
         std::any_of(enumeration.enum_members.begin(), enumeration.enum_members.end(),
                     [&](const EnumMemberInfo& member) { return member.name == expression.text; });
     if (!known) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "'" + expression.type_name + "' has no member '" + expression.text +
                         "' (§7.3.3)");
     }
@@ -258,7 +266,7 @@ TypeId Typer::type_unary(const Expr& expression, TypeId it_type) {
     }
     if (expression.text == "not") {
         if (kind_of(operand) != TypeKind::Bool) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'not' takes a bool, not " + spelling(operand) + " (§7.4.2.2)");
         }
         return operand;
@@ -266,7 +274,7 @@ TypeId Typer::type_unary(const Expr& expression, TypeId it_type) {
     // Unary minus: "the result type is the type of its operand, or int if the
     // operand is of type uint" (§7.4.2.3.1).
     if (!is_numeric(kind_of(operand))) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "unary '-' takes a numeric type, not " + spelling(operand) + " (§7.4.2.3)");
     }
     return kind_of(operand) == TypeKind::Uint ? kind_id(TypeKind::Int) : operand;
@@ -282,7 +290,8 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
 
     if (op == "and" || op == "or" || op == "=>") {
         if (kind_of(left) != TypeKind::Bool || kind_of(right) != TypeKind::Bool) {
-            return fail(sink_, expression.range, "'" + op + "' takes bool operands (§7.4.2.2)");
+            return fail(sink_, context_.file, expression.range,
+                        "'" + op + "' takes bool operands (§7.4.2.2)");
         }
         return left;
     }
@@ -291,14 +300,14 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
         // §7.4.2.7.1 / §7.4.2.8.3: the right operand is a list or a range.
         const TypeKind container = kind_of(right);
         if (container != TypeKind::List && container != TypeKind::Range) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'in' takes a list or a range on the right (§7.4.2.4.1)");
         }
         const TypeId element = program_.types[right].element;
         if (element != kInvalidType && left != element &&
             common_numeric_type(program_, left, element) == kInvalidType &&
             !program_.is_derived_from(left, element)) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'in' compares " + spelling(left) + " against " + spelling(right) +
                             " (§7.4.2.4.1)");
         }
@@ -312,14 +321,14 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
             // §7.4.2.4.1: after conversion the two types must be identical, and
             // physical types never convert.
             if (common_numeric_type(program_, left, right) == kInvalidType) {
-                return fail(sink_, expression.range,
+                return fail(sink_, context_.file, expression.range,
                             "cannot compare " + spelling(left) + " with " + spelling(right) +
                                 " (§7.4.2.4.1)");
             }
             return kind_id(TypeKind::Bool);
         }
         if (op != "==" && op != "!=") {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'" + op + "' applies to numeric expressions; " + spelling(left) +
                             " is not one (§7.4.2.4.2)");
         }
@@ -327,7 +336,7 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
         // one must inherit from the other".
         if (left != right && !program_.is_derived_from(left, right) &&
             !program_.is_derived_from(right, left)) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "cannot compare " + spelling(left) + " with " + spelling(right) +
                             " (§7.4.2.4.2)");
         }
@@ -336,7 +345,8 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
 
     // Arithmetic (§7.4.2.3).
     if (!is_numeric(kind_of(left)) || !is_numeric(kind_of(right))) {
-        return fail(sink_, expression.range, "'" + op + "' takes numeric operands (§7.4.2.3)");
+        return fail(sink_, context_.file, expression.range,
+                    "'" + op + "' takes numeric operands (§7.4.2.3)");
     }
     if (kind_of(left) == TypeKind::Physical || kind_of(right) == TypeKind::Physical) {
         // §7.4.2.3.1: "Physical types are not converted." Addition and
@@ -347,7 +357,7 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
         // was never declared.
         if (op == "+" || op == "-" || op == "%") {
             if (left != right) {
-                return fail(sink_, expression.range,
+                return fail(sink_, context_.file, expression.range,
                             "'" + op +
                                 "' needs the same physical type "
                                 "on both sides; " +
@@ -357,7 +367,7 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
             return left;
         }
         if (kind_of(left) == TypeKind::Physical && kind_of(right) == TypeKind::Physical) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'" + op +
                             "' over two physical types would need a type that is not "
                             "declared; write the result's type (§7.4.2.3.1)");
@@ -366,7 +376,7 @@ TypeId Typer::type_binary(const Expr& expression, TypeId it_type) {
     }
     const TypeId common = common_numeric_type(program_, left, right);
     if (common == kInvalidType) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "cannot apply '" + op + "' to " + spelling(left) + " and " + spelling(right) +
                         " (§7.4.2.3.1)");
     }
@@ -381,7 +391,7 @@ TypeId Typer::type_postfix(const Expr& expression, TypeId it_type) {
         }
         const TypeId target = lookup_type(expression.type_name);
         if (target == kInvalidType) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "unknown type '" + expression.type_name + "' (§7.4.2.5)");
         }
         if (expression.kind == ExprKind::TypeTest) {
@@ -394,7 +404,7 @@ TypeId Typer::type_postfix(const Expr& expression, TypeId it_type) {
                              kind_of(operand) == TypeKind::Enum ||
                              kind_of(target) == TypeKind::Enum;
         if (!related) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "cannot convert " + spelling(operand) + " to " + spelling(target) +
                             " (§7.4.2.6)");
         }
@@ -408,12 +418,12 @@ TypeId Typer::type_postfix(const Expr& expression, TypeId it_type) {
             return kInvalidType;
         }
         if (kind_of(container) != TypeKind::List) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "indexing applies to a list, not " + spelling(container) + " (§7.4.2.7.2)");
         }
         const TypeKind index_kind = kind_of(index);
         if (index_kind != TypeKind::Int && index_kind != TypeKind::Uint) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "a list index is an integer expression (§7.4.2.7.2)");
         }
         return program_.types[container].element;
@@ -429,17 +439,18 @@ TypeId Typer::type_postfix(const Expr& expression, TypeId it_type) {
         return field->type;
     }
     if (program_.find_method(owner, expression.text) != nullptr) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "'" + expression.text + "' is a method; call it (§7.4.2.1)");
     }
-    return fail(sink_, expression.range,
+    return fail(sink_, context_.file, expression.range,
                 spelling(owner) + " has no field '" + expression.text + "' (§7.4.1.1)");
 }
 
 TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
     const Expr& callee = *expression.operands[0];
     if (callee.kind != ExprKind::FieldAccess && callee.kind != ExprKind::Name) {
-        return fail(sink_, expression.range, "this expression cannot be called (§7.4.2.1)");
+        return fail(sink_, context_.file, expression.range,
+                    "this expression cannot be called (§7.4.2.1)");
     }
 
     // Built-in list and range operators are methods on the aggregate, not on a
@@ -458,7 +469,7 @@ TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
             }
             if (is_member_evaluation(name)) {
                 if (expression.arguments.size() != 1) {
-                    return fail(sink_, expression.range,
+                    return fail(sink_, context_.file, expression.range,
                                 "'" + name + "' takes one expression (§7.4.2.7.3)");
                 }
                 // `it` is the current member inside the argument (§7.4.2.7.3).
@@ -470,7 +481,7 @@ TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
                     return aggregate(TypeKind::List, argument);
                 }
                 if (kind_of(argument) != TypeKind::Bool) {
-                    return fail(sink_, expression.range,
+                    return fail(sink_, context_.file, expression.range,
                                 "'" + name + "' takes a bool expression (§7.4.2.7.3)");
                 }
                 if (name == "filter") {
@@ -486,7 +497,7 @@ TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
         }
         const MethodInfo* method = program_.find_method(owner, name);
         if (method == nullptr) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         spelling(owner) + " has no method '" + name + "' (§7.4.2.1)");
         }
         // Copied out before typing the arguments: that can intern an aggregate
@@ -494,7 +505,7 @@ TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
         const TypeId returns = method->return_type;
         const std::size_t arity = method->parameters.size();
         if (expression.arguments.size() > arity) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "'" + name + "' takes " + std::to_string(arity) + " arguments (§7.4.2.1)");
         }
         for (const Argument& argument : expression.arguments) {
@@ -510,11 +521,12 @@ TypeId Typer::type_call(const Expr& expression, TypeId it_type) {
         return type_range(expression, it_type);
     }
     if (context_.self == kInvalidType) {
-        return fail(sink_, expression.range, "unknown method '" + callee.text + "' (§7.4.2.1)");
+        return fail(sink_, context_.file, expression.range,
+                    "unknown method '" + callee.text + "' (§7.4.2.1)");
     }
     const MethodInfo* method = program_.find_method(context_.self, callee.text);
     if (method == nullptr) {
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     spelling(context_.self) + " has no method '" + callee.text + "' (§7.4.2.1)");
     }
     const TypeId returns = method->return_type;
@@ -557,14 +569,15 @@ TypeId Typer::type_list(const Expr& expression, TypeId it_type) {
             candidate = program_.types[candidate].base;
         }
         if (candidate == kInvalidType) {
-            return fail(sink_, expression.range,
+            return fail(sink_, context_.file, expression.range,
                         "a list needs a common element type; " + spelling(common) + " and " +
                             spelling(member_type) + " have none (§7.4.2.7.4)");
         }
         common = candidate;
     }
     if (common == kInvalidType) {
-        return fail(sink_, expression.range, "an empty list has no element type (§7.4.2.7.4)");
+        return fail(sink_, context_.file, expression.range,
+                    "an empty list has no element type (§7.4.2.7.4)");
     }
     return aggregate(TypeKind::List, common);
 }
@@ -580,7 +593,8 @@ TypeId Typer::type_range(const Expr& expression, TypeId it_type) {
         low = arguments[0].value.get();
         high = arguments[1].value.get();
     } else {
-        return fail(sink_, expression.range, "a range takes two bounds (§7.4.2.8.1)");
+        return fail(sink_, context_.file, expression.range,
+                    "a range takes two bounds (§7.4.2.8.1)");
     }
     const TypeId left = type_of(*low, it_type);
     const TypeId right = type_of(*high, it_type);
@@ -588,14 +602,15 @@ TypeId Typer::type_range(const Expr& expression, TypeId it_type) {
         return kInvalidType;
     }
     if (!is_numeric(kind_of(left)) || !is_numeric(kind_of(right))) {
-        return fail(sink_, expression.range, "a range is built over a numeric type (§7.4.2.8.1)");
+        return fail(sink_, context_.file, expression.range,
+                    "a range is built over a numeric type (§7.4.2.8.1)");
     }
     const TypeId common = common_numeric_type(program_, left, right);
     if (common == kInvalidType) {
         // §7.4.2.8.1: "When constructing a range of a physical type, both
         // expressions must be of that physical type, with possibly different
         // units."
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "a range needs one type for both bounds; " + spelling(left) + " and " +
                         spelling(right) + " differ (§7.4.2.8.1)");
     }
@@ -621,7 +636,8 @@ TypeId Typer::type_of(const Expr& expression, TypeId it_type) {
     case ExprKind::PhysicalLiteral: {
         const auto unit = program_.units.find(expression.text);
         if (unit == program_.units.end()) {
-            return fail(sink_, expression.range, "unknown unit '" + expression.text + "' (§7.3.4)");
+            return fail(sink_, context_.file, expression.range,
+                        "unknown unit '" + expression.text + "' (§7.3.4)");
         }
         return unit->second.physical_type;
     }
@@ -642,7 +658,8 @@ TypeId Typer::type_of(const Expr& expression, TypeId it_type) {
             return kInvalidType;
         }
         if (kind_of(condition) != TypeKind::Bool) {
-            return fail(sink_, expression.range, "'?' takes a bool condition (§7.4.2.9)");
+            return fail(sink_, context_.file, expression.range,
+                        "'?' takes a bool condition (§7.4.2.9)");
         }
         if (when_true == when_false) {
             return when_true;
@@ -657,7 +674,7 @@ TypeId Typer::type_of(const Expr& expression, TypeId it_type) {
         if (program_.is_derived_from(when_false, when_true)) {
             return when_true;
         }
-        return fail(sink_, expression.range,
+        return fail(sink_, context_.file, expression.range,
                     "the arms of '?' have no common type: " + spelling(when_true) + " and " +
                         spelling(when_false) + " (§7.4.2.9)");
     }

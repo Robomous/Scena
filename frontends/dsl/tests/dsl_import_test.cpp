@@ -397,4 +397,35 @@ TEST(DslImportTest, LoadingIsDeterministic) {
     EXPECT_EQ(first, second);
 }
 
+TEST(DslImportTest, ADiagnosticNamesTheFileItCameFrom) {
+    // A Program spans every file its root imported, so a line number on its own
+    // does not locate anything. Both the resolver's diagnostics and the ones
+    // expression typing reports must carry the file they came from — without it
+    // `scena-check` can print a line number but not say which file it is a line
+    // of (p7-s5, #43).
+    const Tree tree;
+    tree.write("helper.osc", "struct helper:\n"
+                             "    v: no_such_type\n"
+                             "export *\n");
+    const auto root = tree.write("main.osc", "import \"helper.osc\"\n"
+                                             "struct probe:\n"
+                                             "    w: another_missing_type\n"
+                                             "    keep(it.w == unknown_name)\n");
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_EQ(scena::dsl::check_file(root, LoadOptions{}, loaded, program, sink),
+              Status::ValidationError);
+    bool named_helper = false;
+    bool named_root = false;
+    for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
+        EXPECT_FALSE(diagnostic.location.file.empty()) << diagnostic.message;
+        named_helper =
+            named_helper || diagnostic.location.file.find("helper.osc") != std::string::npos;
+        named_root = named_root || diagnostic.location.file.find("main.osc") != std::string::npos;
+    }
+    EXPECT_TRUE(named_helper) << "the imported file's error must name the imported file";
+    EXPECT_TRUE(named_root) << "the root's error must name the root";
+}
+
 } // namespace
