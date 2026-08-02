@@ -168,7 +168,20 @@ expected. It also keeps the dependency list unchanged.
 - **An actor's modifier uses the prefixed form.** §8.7.4.1.1 writes
   `stationary_object.location()`, which is `modifier stationary_object.location`
   — not `modifier location of stationary_object`, because §7.3.12.2's `of`
-  names a scenario or an action.
+  names a scenario or an action. Note that such a modifier cannot yet be
+  *applied* — issue #100: the parser keeps the actor prefix in the declared
+  name, so `check_modifier_application` looks up a name no scope holds.
+  Unassociated modifiers are unaffected.
+- **Every declaration name is a lookup space of its own.** The standard reuses
+  words freely: a field `driving_rule` of type `driving_rule` (§8.12.2), a
+  struct `air` and an action `environment.air` (§8.10.4 / §8.11.2), an enum
+  member `left` in both `side_left_right` and `junction_direction`. Only the
+  last of those needs qualifying, and §7.3.3 says how — `side_left_right!left`.
+  At library scale that is the normal case, not the exception.
+- **Each chapter's translation has a worksheet.** `docs/dev/stdlib-worksheets/`
+  holds one file per translated chapter: every declaration with its resulting
+  DSL spelling and a note wherever the printed text needed a judgement call.
+  Reading a worksheet is much cheaper than re-reading the chapter.
 - **`check_source` / `check_file` are the entry points.** Loading and resolving
   in one call, with imports followed; the CLI and the bindings sit on them. The
   `LoadResult` owns the ASTs a `Program` points into, so it must outlive it.
