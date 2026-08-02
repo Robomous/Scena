@@ -43,11 +43,11 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 | Lists (+ list operators) | §7.3.5.2.1, §7.4.2.7 | In | In | p7-s3, p7-s4 | **Declarator checking landed** (p7-s3): structural and shared, and a list of lists is reported (§7.3.1). Operators in p7-s4 |
 | Ranges (`[a..b]`, range operators) | §7.3.5.2.2, §7.4.2.8 | In | Partial → see keep/ranges row | p7-s3, p7-s4 | **Declarator checking landed** (p7-s3): `range of` needs a numeric base type (§7.3.1). Operators in p7-s4 |
 | Fields: parameters vs `var` variables, `with:` blocks | §7.3.6 | In | In | p7-s3, p8-s1 | **Checking landed**: typed, ordered, unique, non-shadowing; a literal default is checked against the declared type and unit. Parameters fixed at init; variables runtime-mutable |
-| `sample()` variable initializer | §7.3.10.4 | In | Post | p7-s4 | Event-sampled variables deferred (needs event-valuation plumbing beyond v0.0.1 set) |
-| `keep(hard/default)` constraints | §7.3.11 | In | **Concrete-value only** | p7-s4, p8-s1 | Fixed-value/equality resolution at init; violated hard keep = error; anything requiring search → diagnostic (ADR-0004) |
-| `remove_default()` | §7.3.11 | In | In (within concrete resolution) | p7-s4 | |
+| `sample()` variable initializer | §7.3.10.4 | In | Post | p7-s4 | **Checking landed** (`dsl_constraint_test.cpp`): the sampled expression and event spec are typed, and an `UnsupportedFeature` note says it is not executed. Event-sampled variables deferred (needs event-valuation plumbing beyond v0.0.1 set) |
+| `keep(hard/default)` constraints | §7.3.11 | In | **Concrete-value only** | p7-s4, p8-s1 | **Checking landed** (`dsl_constraint_test.cpp`): typed as Boolean (§7.3.11.1); a constant-false hard keep is an error and a constant-false `default` keep a warning (§7.3.11.3); `f == const`, `f in <const>` and conjunctions of those resolve; everything else gets an `UnsupportedFeature` note (ADR-0004) |
+| `remove_default()` | §7.3.11 | In | In (within concrete resolution) | p7-s4 | **Checking landed**: must name a parameter of the enclosing type |
 | Methods (expression, `undefined`, override rules) | §7.3.7 | In | In (expression methods in constant contexts) | p7-s3 | **Signature checking landed**: parameters and return type resolved; `is only` requires a supertype method and keeps its return type (§7.3.7.2). Bodies type-check in p7-s4 |
-| External methods (`is external ...`) | §7.3.7.4 | In (parse/check) | Post | p7-s4 | Host-binding FFI is post-release; invocation diagnosed |
+| External methods (`is external ...`) | §7.3.7.4 | In (parse/check) | Post | p7-s3, p7-s4 | **Signature checking landed**; the body is not typed because there is none. Host-binding FFI is post-release; invocation diagnosed |
 | Inheritance (single; conditional `inherits X(f == v)`) | §7.3.8 | In | In | p7-s3 | **Checking landed**: single, same-kind, cycle-broken; guards need a bool or enum determinant that the base declares; Rule 1 (§7.3.8.2.3) enforced; actor-behavior inheritance restricted per §7.3.8.1. Latent subtypes via `is()`/`as()` (p7-s4) |
 | Extension (`extend`) | §7.3.9 | In | In | p7-s3 | **Checking landed**: members merge into the extended type, in any textual order, and cannot shadow existing ones. Compile-time composition |
 | Events (`event`, predefined start/end/fail) | §7.3.10 | In | In | p7-s3, p8-s2 | Predefined events map to storyboard element transitions |
@@ -62,17 +62,17 @@ methods. All of these still **Check** cleanly; execution diagnoses them.
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |
 |---|---|---|---|---|---|
-| Atomic (identifiers, literals, `it`) | §7.4.1 | In | In | p7-s4 | |
-| Logical (short-circuit), arithmetic (+ numeric conversion rules), relational + `in`, ternary, `=>` | §7.4.2.2–.4, .9 | In | In | p7-s4 | Physical types never implicitly converted |
-| `is()` / `as()` | §7.4.2.5–.6 | In | In | p7-s4 | Cast failure = error |
-| Method application | §7.4.2.1 | In | In (constant contexts + In-scope library methods) | p7-s4 | |
-| List/range operators | §7.4.2.7–.8 | In | In | p7-s4 | |
+| Atomic (identifiers, literals, `it`) | §7.4.1 | In | In | p7-s4 | **Landed** (`dsl_expression_test.cpp`): fields, method/event parameters, globals and enum literals; `it` is the enclosing instance, the list member inside a member-evaluation operator, or the parameter inside its `with:` block |
+| Logical (short-circuit), arithmetic (+ numeric conversion rules), relational + `in`, ternary, `=>` | §7.4.2.2–.4, .9 | In | In | p7-s4 | **Landed**: §7.4.2.3.1's conversion ladder (float wins, int+uint→int, unary minus on uint→int), ordering restricted to numerics (§7.4.2.4.2), ternary arms need a common type. Physical types never implicitly converted — a physical literal folds to its base unit so units compare directly |
+| `is()` / `as()` | §7.4.2.5–.6 | In | In | p7-s4 | **Landed**: `is()` yields bool, `as()` the target type, and a conversion between unrelated types is rejected statically. Cast failure = error |
+| Method application | §7.4.2.1 | In | In (constant contexts + In-scope library methods) | p7-s4 | **Landed**: resolved against the receiver's type and its supertypes, arity checked, arguments typed; an expression body must return its declared type |
+| List/range operators | §7.4.2.7–.8 | In | In | p7-s4 | **Landed**: `size`/index, the five member-evaluation operators with their `it` binding, list construction with §7.4.2.7.4's common type and flattening, both range constructor forms with value-ordered bounds, `lower`/`upper`, and `in` over both |
 
 ## Coverage constructs (§7.5)
 
 | Feature | Section | Check | Exec | Sprint(s) | Notes |
 |---|---|---|---|---|---|
-| `cover()` / `record()` / cross / args / override / grading | §7.5 | In | Post | p7-s4 | Checked; collection not performed in v0.0.1 (explicit diagnostic note). `target`/grading exist to steer generation — post-release with the solver family |
+| `cover()` / `record()` / cross / args / override / grading | §7.5 | In | Post | p7-s4 | **Checking landed** (`dsl_constraint_test.cpp`): arguments are typed and every declaration carries an explicit `UnsupportedFeature` note. Collection not performed in v0.0.1. `target`/grading exist to steer generation — post-release with the solver family |
 
 ## Behavior composition & semantics (§7.6)
 
