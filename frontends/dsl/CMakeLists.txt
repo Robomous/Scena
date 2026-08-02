@@ -14,6 +14,7 @@ add_library(scena-frontend-dsl STATIC
     src/types.cpp
     src/stdlib.cpp
     src/load.cpp
+    src/lower.cpp
 )
 add_library(scena::frontend-dsl ALIAS scena-frontend-dsl)
 

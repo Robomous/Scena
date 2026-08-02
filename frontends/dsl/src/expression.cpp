@@ -707,10 +707,39 @@ private:
         return id < program_.types.size() ? program_.types[id].kind : TypeKind::Struct;
     }
     bool evaluate_binary(const Expr& expression, Value& out);
+    [[nodiscard]] TypeId lookup_enum(const std::string& written) const;
 
     const Program& program_;
     const ExpressionContext& context_;
 };
+
+/// Resolves the enum name in `enum-name '!' member` (§7.3.3).
+///
+/// §7.7.4.2's rules, as far as a constant context needs them: an explicitly
+/// qualified name resolves in exactly one place, the current namespace shadows
+/// the use list, and the use list is searched last. Searching the use list is
+/// the whole point — a scenario in `demo use std` writes
+/// `vehicle_category!bus`, and without it that literal is not constant, which
+/// silently turns every enum-valued `keep` into one that "needs a solver".
+TypeId Evaluator::lookup_enum(const std::string& written) const {
+    if (written.find("::") != std::string::npos) {
+        const auto found = program_.types_by_name.find(written);
+        return found == program_.types_by_name.end() ? kInvalidType : found->second;
+    }
+    const auto local = program_.types_by_name.find(
+        (context_.name_space.empty() ? "::" : context_.name_space + "::") + written);
+    if (local != program_.types_by_name.end()) {
+        return local->second;
+    }
+    // The use list, in the order the namespace statement gives it.
+    for (const std::string& used : context_.uses) {
+        const auto found = program_.types_by_name.find(used + "::" + written);
+        if (found != program_.types_by_name.end()) {
+            return found->second;
+        }
+    }
+    return kInvalidType;
+}
 
 bool Evaluator::evaluate_binary(const Expr& expression, Value& out) {
     Value left;
@@ -909,12 +938,7 @@ bool Evaluator::evaluate(const Expr& expression, Value& out) {
         const std::string& member_name = expression.text;
         TypeId id = kInvalidType;
         if (!enum_name.empty()) {
-            const auto found = program_.types_by_name.find(
-                enum_name.find("::") != std::string::npos
-                    ? enum_name
-                    : (context_.name_space.empty() ? "::" : context_.name_space + "::") +
-                          enum_name);
-            id = found == program_.types_by_name.end() ? kInvalidType : found->second;
+            id = lookup_enum(enum_name);
         } else {
             const std::vector<TypeId> enums = program_.enums_declaring(member_name);
             if (enums.size() != 1) {
