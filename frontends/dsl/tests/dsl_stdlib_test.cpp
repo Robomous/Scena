@@ -1200,6 +1200,229 @@ TEST(DslStdlibTest, ASideLiteralNeedsItsEnumName) {
                                             : qualified.diagnostics().front().message);
 }
 
+// --- §8.8.2–§8.8.4 movement actions -----------------------------------------
+
+TEST(DslStdlibTest, TheMovementActionBasesFollowTheActorHierarchy) {
+    // §8.8.1 declares `osc_action` with exactly two children. §8.8.3 and §8.8.4
+    // then name `action_for_vehicle` and `action_for_person` as parents without
+    // a table declaring either; §8.8.1's prose supplies them — actions for
+    // actors below `movable_object` inherit `action_for_movable_object`.
+    Library library;
+    check_full_library(library);
+    const auto movable =
+        library.program.types_by_name.find("std::movable_object.action_for_movable_object");
+    ASSERT_NE(movable, library.program.types_by_name.end());
+    for (const char* derived :
+         {"std::vehicle.action_for_vehicle", "std::person.action_for_person"}) {
+        const auto id = library.program.types_by_name.find(derived);
+        ASSERT_NE(id, library.program.types_by_name.end()) << derived;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Action) << derived;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, movable->second)) << derived;
+    }
+}
+
+TEST(DslStdlibTest, TheMovableObjectActionsAreDeclaredWithTheirParameters) {
+    Library library;
+    check_full_library(library);
+    const auto base =
+        library.program.types_by_name.find("std::movable_object.action_for_movable_object");
+    ASSERT_NE(base, library.program.types_by_name.end());
+    struct Case {
+        const char* name;
+        std::size_t parameters;
+        const char* field;
+    };
+    for (const Case& expected : {Case{"std::movable_object.move", 0, nullptr},
+                                 // §8.8.2.4 says "use only one of the three"; the language has no
+                                 // choice group, so all three are plain fields (§7.3.11).
+                                 Case{"std::movable_object.assign_position", 3, "route_point"},
+                                 Case{"std::movable_object.assign_orientation", 1, "orientation"},
+                                 Case{"std::movable_object.assign_speed", 1, "speed"},
+                                 Case{"std::movable_object.assign_acceleration", 1, "acceleration"},
+                                 Case{"std::movable_object.replay_path", 6, "start_offset"},
+                                 Case{"std::movable_object.replay_trajectory", 6, "transform"},
+                                 Case{"std::movable_object.remain_stationary", 0, nullptr},
+                                 Case{"std::movable_object.change_position", 6, "on_road_network"},
+                                 Case{"std::movable_object.change_speed", 3, "rate_peak"},
+                                 Case{"std::movable_object.keep_speed", 0, nullptr},
+                                 Case{"std::movable_object.change_acceleration", 3, "rate_profile"},
+                                 Case{"std::movable_object.keep_acceleration", 0, nullptr},
+                                 Case{"std::movable_object.follow_path", 6, "absolute"},
+                                 Case{"std::movable_object.follow_trajectory", 6, "relative"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Action) << expected.name;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, base->second)) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].field_order.size(), expected.parameters)
+            << expected.name;
+        if (expected.field != nullptr) {
+            EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+                << expected.name << "." << expected.field;
+        }
+    }
+}
+
+TEST(DslStdlibTest, TheVehicleAndPersonActionsAreDeclaredWithTheirParameters) {
+    Library library;
+    check_full_library(library);
+    const auto vehicle_base = library.program.types_by_name.find("std::vehicle.action_for_vehicle");
+    const auto person_base = library.program.types_by_name.find("std::person.action_for_person");
+    ASSERT_NE(vehicle_base, library.program.types_by_name.end());
+    ASSERT_NE(person_base, library.program.types_by_name.end());
+    struct Case {
+        const char* name;
+        const char* base;
+        std::size_t parameters;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::vehicle.drive", "vehicle", 0, nullptr},
+          Case{"std::vehicle.follow_lane", "vehicle", 4, "rate_peak"},
+          Case{"std::vehicle.change_lane", "vehicle", 7, "num_of_lanes"},
+          Case{"std::vehicle.change_time_gap", "vehicle", 3, "direction"},
+          Case{"std::vehicle.keep_time_gap", "vehicle", 2, "reference"},
+          Case{"std::vehicle.change_space_gap", "vehicle", 3, "target"},
+          Case{"std::vehicle.keep_space_gap", "vehicle", 2, "direction"},
+          Case{"std::vehicle.change_time_headway", "vehicle", 3, "direction"},
+          Case{"std::vehicle.keep_time_headway", "vehicle", 1, "reference"},
+          Case{"std::vehicle.change_space_headway", "vehicle", 3, "target"},
+          Case{"std::vehicle.keep_space_headway", "vehicle", 1, "reference"},
+          Case{"std::vehicle.connect_trailer", "vehicle", 1, "trailer"},
+          Case{"std::vehicle.disconnect_trailer", "vehicle", 0, nullptr},
+          Case{"std::person.walk", "person", 0, nullptr}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Action) << expected.name;
+        const auto base =
+            std::string(expected.base) == "vehicle" ? vehicle_base->second : person_base->second;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, base)) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].field_order.size(), expected.parameters)
+            << expected.name;
+        if (expected.field != nullptr) {
+            EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+                << expected.name << "." << expected.field;
+        }
+    }
+}
+
+TEST(DslStdlibTest, TheChangeAndKeepActionsTakeDifferentDirectionEnums) {
+    // Deliberate asymmetry in the standard: a `change_*` gap action takes a
+    // six-valued `gap_direction` (§8.8.3.15), while its `keep_*` counterpart
+    // takes the two-valued `road_distance_direction` (§8.7.22). Carried as
+    // printed, and pinned because it looks like an oversight.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* action;
+        const char* type;
+    };
+    for (const Case& expected :
+         {Case{"std::vehicle.change_time_gap", "std::gap_direction"},
+          Case{"std::vehicle.change_space_gap", "std::gap_direction"},
+          Case{"std::vehicle.keep_time_gap", "std::road_distance_direction"},
+          Case{"std::vehicle.keep_space_gap", "std::road_distance_direction"},
+          Case{"std::vehicle.change_time_headway", "std::headway_direction"},
+          Case{"std::vehicle.change_space_headway", "std::headway_direction"}}) {
+        const auto id = library.program.types_by_name.find(expected.action);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.action;
+        const scena::dsl::FieldInfo* field = library.program.find_field(id->second, "direction");
+        ASSERT_NE(field, nullptr) << expected.action << ".direction";
+        ASSERT_NE(field->type, scena::dsl::kInvalidType) << expected.action;
+        EXPECT_EQ(library.program.types[field->type].name, expected.type) << expected.action;
+    }
+}
+
+TEST(DslStdlibTest, TheMovementEnumsCarryTheirValues) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::size_t values;
+        const char* sample;
+    };
+    for (const Case& expected :
+         {Case{"std::dynamic_profile", 4, "asap"}, Case{"std::lane_change_side", 5, "same"},
+          Case{"std::gap_direction", 6, "behind"}, Case{"std::headway_direction", 2, "ahead"}}) {
+        const TypeInfo* type = library.program.find(expected.name);
+        ASSERT_NE(type, nullptr) << expected.name;
+        EXPECT_EQ(type->kind, TypeKind::Enum) << expected.name;
+        EXPECT_EQ(type->enum_members.size(), expected.values) << expected.name;
+        bool found = false;
+        for (const auto& member : type->enum_members) {
+            found = found || member.name == expected.sample;
+        }
+        EXPECT_TRUE(found) << expected.name << "!" << expected.sample;
+    }
+}
+
+TEST(DslStdlibTest, ADeprecatedParameterIsStillDeclared) {
+    // §8.8.2.11's Table 103 declares `target_xyz` and marks it deprecated in
+    // favour of `target_position`, in the same row. The language has no
+    // deprecation marker, and dropping a field the standard prints would
+    // reject a conforming scenario, so both exist. Reporting the deprecation
+    // is a job for a later pass, not for the library.
+    Library library;
+    check_full_library(library);
+    const auto id = library.program.types_by_name.find("std::movable_object.change_position");
+    ASSERT_NE(id, library.program.types_by_name.end());
+    EXPECT_NE(library.program.find_field(id->second, "target_xyz"), nullptr);
+    EXPECT_NE(library.program.find_field(id->second, "target_position"), nullptr);
+}
+
+TEST(DslStdlibTest, AnActionAndAModifierMayShareASimpleName) {
+    // `change_speed`, `keep_speed` and `change_lane` are actions here (§8.8)
+    // and modifiers in §8.9. An action's name is a qualified behavior name
+    // (§7.2.2.2.5), so `movable_object.change_speed` never collides with a
+    // plain `change_speed` — which is what lets §8.9 land beside this.
+    Library library;
+    check_full_library(library);
+    for (const char* action : {"std::movable_object.change_speed", "std::movable_object.keep_speed",
+                               "std::vehicle.change_lane"}) {
+        const TypeInfo* type = library.program.find(action);
+        ASSERT_NE(type, nullptr) << action;
+        EXPECT_EQ(type->kind, TypeKind::Action) << action;
+    }
+    for (const char* unqualified : {"std::change_speed", "std::keep_speed", "std::change_lane"}) {
+        EXPECT_EQ(library.program.find(unqualified), nullptr)
+            << unqualified << " is §8.9's, and §8.9 has not landed yet";
+    }
+}
+
+TEST(DslStdlibTest, ADirectionLiteralNeedsItsEnumName) {
+    // §8.8.3's three direction enums overlap heavily with each other and with
+    // §8.12's `side_left_right`: `left` is now a member of four enums and
+    // `ahead` of two. §7.3.3's qualification is the normal case at this scale.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario gap:\n"
+                                       "    where: gap_direction\n"
+                                       "    keep(where == ahead)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::ValidationError);
+    bool explained = false;
+    for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
+        explained = explained || diagnostic.message.find("more than one enum") != std::string::npos;
+    }
+    EXPECT_TRUE(explained);
+
+    DiagnosticSink qualified;
+    LoadResult qualified_loaded;
+    Program qualified_program;
+    EXPECT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario gap:\n"
+                                       "    where: gap_direction\n"
+                                       "    keep(where == gap_direction!ahead)\n",
+                                       "<test>", LoadOptions{}, qualified_loaded, qualified_program,
+                                       qualified),
+              Status::Ok)
+        << (qualified.diagnostics().empty() ? std::string()
+                                            : qualified.diagnostics().front().message);
+}
+
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
     // Load time is inside the determinism contract: the same sources must give
     // the same program and the same diagnostics, in the same order.
