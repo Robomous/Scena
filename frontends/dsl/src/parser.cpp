@@ -1355,8 +1355,19 @@ void Parser::parse_enum(bool is_extension) {
                 advance();
             } else {
                 // enum-member-value ::= uint-literal | hex-uint-literal |
-                // enum-value-reference — the reference form resolves in p7-s3.
-                (void)parse_expression();
+                // enum-value-reference (§7.2.2.2.2). A reference names another
+                // member, of this or another enumeration; what it stands for is
+                // a symbol-table question (§7.3.3), so it is kept as written.
+                const ExprPtr reference = parse_expression();
+                if (reference && reference->kind == ExprKind::EnumValue) {
+                    member.value_reference = reference->type_name + "!" + reference->text;
+                } else if (reference && reference->kind == ExprKind::Name) {
+                    member.value_reference = reference->text;
+                } else {
+                    error(value, "an enum member value is an unsigned literal or a reference to "
+                                 "another enum member (§7.2.2.2.2), found " +
+                                     describe(value));
+                }
             }
         }
         declaration.enumeration.members.push_back(std::move(member));
