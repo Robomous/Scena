@@ -11,7 +11,10 @@ add_executable(scena-run src/main.cpp)
 # LogicFile gets a real road network, which is what the lane-relative and
 # routing golden scenarios need. The engine still reaches it only through
 # gateway::IRoadQuery (ADR-0003).
+# Both frontends, one runtime: the scenario's extension picks which one
+# compiles the file, and everything past the load sees only the Scenario IR.
 target_link_libraries(scena-run PRIVATE scena::core scena::frontend-xml
+                                        scena::frontend-dsl
                                         scena::roads-opendrive)
 target_compile_features(scena-run PRIVATE cxx_std_20)
 set_target_properties(scena-run PROPERTIES CXX_EXTENSIONS OFF)

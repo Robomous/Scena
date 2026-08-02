@@ -58,6 +58,7 @@ CAPI_HEADER = REPO / "capi" / "include" / "scena" / "capi.h"
 BINDINGS = REPO / "python" / "src" / "bindings.cpp"
 XML_LOADER_HEADER = REPO / "frontends" / "xml" / "include" / "scena" / "xml" / "loader.h"
 DSL_LOAD_HEADER = REPO / "frontends" / "dsl" / "include" / "scena" / "dsl" / "load.h"
+DSL_LOWER_HEADER = REPO / "frontends" / "dsl" / "include" / "scena" / "dsl" / "lower.h"
 
 #: C++ Engine methods that deliberately do not reach one or both bindings, with
 #: the reason. Keeping the reason here rather than in a comment is what lets the
@@ -106,9 +107,9 @@ PY_ALIASES: dict[str, str] = {
 
 #: The frontend headers whose namespace-scope entry points are audited, and the
 #: namespace each one lives in (used only to name the row).
-FRONTEND_HEADERS: dict[str, Path] = {
-    "xml": XML_LOADER_HEADER,
-    "dsl": DSL_LOAD_HEADER,
+FRONTEND_HEADERS: dict[str, tuple[Path, ...]] = {
+    "xml": (XML_LOADER_HEADER,),
+    "dsl": (DSL_LOAD_HEADER, DSL_LOWER_HEADER),
 }
 
 #: `<namespace>::<function>` -> the C entry point that implements it. The names
@@ -139,6 +140,11 @@ FRONTEND_EXCLUSIONS: dict[str, str] = {
     # a host actually wants.
     "dsl::load_file": "the lower half of check_file; its result is an AST no binding can carry",
     "dsl::load_source": "the lower half of check_source; same reason",
+    # Lowering produces an ir::Scenario, which no binding carries today: the C
+    # ABI and Python reach a scenario through the loaders, which build and
+    # initialize an engine in one call. The DSL execution surface follows the
+    # same shape in p8-s4 (#47), where the two frontends are compared directly.
+    "dsl::lower": "the IR it produces has no binding carrier yet; p8-s4 (#47)",
 }
 
 
@@ -211,8 +217,13 @@ def main() -> int:
             )
         )
 
-    for name_space, header in FRONTEND_HEADERS.items():
-        for function in frontend_entry_points(header.read_text(encoding="utf-8")):
+    for name_space, headers in FRONTEND_HEADERS.items():
+        functions: list[str] = []
+        for header in headers:
+            for function in frontend_entry_points(header.read_text(encoding="utf-8")):
+                if function not in functions:
+                    functions.append(function)
+        for function in functions:
             qualified = f"{name_space}::{function}"
             c_symbol = FRONTEND_C_ALIASES.get(qualified, "")
             py_name = FRONTEND_PY_ALIASES.get(qualified, "")

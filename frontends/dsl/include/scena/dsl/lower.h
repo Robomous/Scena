@@ -40,6 +40,23 @@ struct LowerOptions {
     std::string entry_point;
 };
 
+/// What lowering produced: the IR plus the host-side references that are not
+/// kernel state.
+///
+/// The shape mirrors `xml::Document` deliberately. A road-network file is an
+/// input to the *host*, not to the engine — the engine reaches roads only
+/// through `IRoadQuery` (ADR-0003) — so it travels beside the IR rather than
+/// inside it, exactly as `xml::RoadNetwork` does.
+struct LowerResult {
+    ir::Scenario scenario;
+    /// §8.5.4's `map_file`, verbatim and unresolved: the string the scenario
+    /// wrote, whether through `map.set_map_file("m.xodr")` (Code 61) or through
+    /// a `keep` on a declared `map` field (Code 62). Interpreting it relative to
+    /// the scenario file is the host's decision, the same rule the XML side
+    /// states for `LogicFile`.
+    std::string map_file;
+};
+
 /// The scenarios a root file offers as entry points, in declaration order.
 ///
 /// What a CLI prints when the choice is ambiguous, and what an editor would
@@ -61,6 +78,6 @@ struct LowerOptions {
 ///
 /// Returns Status::Ok when nothing was reported as an error.
 [[nodiscard]] Status lower(const Program& program, const LoadResult& loaded,
-                           const LowerOptions& options, ir::Scenario& out, DiagnosticSink& sink);
+                           const LowerOptions& options, LowerResult& out, DiagnosticSink& sink);
 
 } // namespace scena::dsl

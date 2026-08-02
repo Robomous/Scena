@@ -242,3 +242,20 @@ expected. It also keeps the dependency list unchanged.
   evaluation searches the use list after the current namespace (§7.7.4.2).
   Before p8-s1 it searched only the current namespace, which silently made every
   enum-valued `keep` look like one that needs a solver.
+- **A movement action denotes an IR action, and the `do` directive a
+  storyboard.** Seven §8.8 actions have an unambiguous counterpart and lower;
+  the generic `move`/`drive`/`walk` carry no target of their own and lower to
+  nothing, because they exist to be shaped by §8.9 modifiers (p8-s3). Anything
+  with no counterpart is reported by name — never silently dropped. `serial`
+  chains a phase on its predecessor reaching completeState, `parallel` leaves
+  the triggers absent; the rest of composition is p8-s2.
+- **A struct-valued argument names a declaration.** §7.2.2.6.7 declares list and
+  range constructors and no struct constructor, so `assign_position(position:
+  start)` reaches its numbers through the same `keep`s that make an actor
+  concrete.
+- **The map file travels beside the IR.** §8.5.4's `map_file` is the DSL's
+  `RoadNetwork/LogicFile`, and like it, a road-network path is a host input
+  rather than kernel state — the engine reaches roads only through
+  `IRoadQuery`. `map.set_map_file("m.xodr")` needs one resolution rule the
+  checker did not have: a bare **actor type name** is a receiver in its own
+  right, because the map is a singleton no scenario declares a field for.

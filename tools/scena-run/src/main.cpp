@@ -41,6 +41,9 @@
 #include <vector>
 
 #include "scena/diagnostic.h"
+#include "scena/dsl/load.h"
+#include "scena/dsl/lower.h"
+#include "scena/dsl/types.h"
 #include "scena/engine.h"
 #include "scena/gateway/simulator_gateway.h"
 #include "scena/ir/entity.h"
@@ -71,6 +74,11 @@ struct Options {
     /// entity id -> replay file, from --replay <entity>=<csv>.
     std::map<std::string, std::filesystem::path> replay;
     std::string select; ///< --select <alt>, the one_of alternative (p8-s2)
+    /// --entry <scenario>, the DSL entry point (§7.7.2). Empty means the only
+    /// scenario the file declares; a file with several is reported, not guessed.
+    std::string entry;
+    /// -I/--search-path, where a DSL module reference is looked up (§7.7.5.1.2).
+    std::vector<std::filesystem::path> search_paths;
     /// --map <file.xodr>, overriding the scenario's own RoadNetwork/LogicFile.
     std::filesystem::path map;
     bool quiet = false;
@@ -81,7 +89,7 @@ void print_usage() {
 
 usage: scena-run <scenario> [options]
 
-  <scenario>                 an OpenSCENARIO XML file (.xosc)
+  <scenario>                 an OpenSCENARIO XML file (.xosc) or DSL file (.osc)
 
 options:
   --dt <seconds>             fixed step size (default 0.01)
@@ -91,6 +99,8 @@ options:
   --map <file.xodr>          road network, overriding the scenario's LogicFile
   --replay <entity>=<file>   drive a host-controlled entity from a trace file
   --select <alternative>     choose a one_of alternative by name (DSL, p8-s2)
+  --entry <scenario>         the DSL scenario to run (.osc only)
+  -I, --search-path <dir>    where DSL imports are looked up (repeatable)
   --quiet                    do not print diagnostics to stderr
   -h, --help                 this text
 
@@ -356,6 +366,20 @@ std::optional<Options> parse_options(int argc, char** argv, int& exit_code) {
                 return std::nullopt;
             }
             options.map = std::filesystem::path(std::string(text));
+        } else if (arg == "--entry") {
+            const std::string_view text = value_of(i, arg);
+            if (text.empty()) {
+                exit_code = kUsage;
+                return std::nullopt;
+            }
+            options.entry = std::string(text);
+        } else if (arg == "-I" || arg == "--search-path") {
+            const std::string_view text = value_of(i, arg);
+            if (text.empty()) {
+                exit_code = kUsage;
+                return std::nullopt;
+            }
+            options.search_paths.emplace_back(std::string(text));
         } else if (arg == "--select") {
             const std::string_view text = value_of(i, arg);
             if (text.empty()) {
@@ -423,13 +447,43 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Two frontends, one runtime: the extension picks which one compiles the
+    // file, and everything past this point sees only the Scenario IR. The
+    // road-network reference travels beside it in both cases, because a file
+    // path is a host input rather than kernel state (ADR-0003).
     scena::DiagnosticSink load_sink;
-    scena::xml::Document document;
-    const scena::Status loaded = scena::xml::load_file(options.scenario, document, load_sink);
-    print_diagnostics(load_sink.diagnostics(), options.quiet);
-    if (loaded != scena::Status::Ok) {
-        std::cerr << "scena-run: could not load " << options.scenario.string() << '\n';
-        return kLoadFailed;
+    scena::ir::Scenario scenario;
+    std::string road_network;
+    if (options.scenario.extension() == ".osc") {
+        scena::dsl::LoadOptions load_options;
+        load_options.search_paths = options.search_paths;
+        scena::dsl::LoadResult files;
+        scena::dsl::Program program;
+        scena::Status loaded =
+            scena::dsl::check_file(options.scenario, load_options, files, program, load_sink);
+        if (loaded == scena::Status::Ok) {
+            scena::dsl::LowerOptions lower_options;
+            lower_options.entry_point = options.entry;
+            scena::dsl::LowerResult lowered;
+            loaded = scena::dsl::lower(program, files, lower_options, lowered, load_sink);
+            scenario = std::move(lowered.scenario);
+            road_network = std::move(lowered.map_file);
+        }
+        print_diagnostics(load_sink.diagnostics(), options.quiet);
+        if (loaded != scena::Status::Ok) {
+            std::cerr << "scena-run: could not load " << options.scenario.string() << '\n';
+            return kLoadFailed;
+        }
+    } else {
+        scena::xml::Document document;
+        const scena::Status loaded = scena::xml::load_file(options.scenario, document, load_sink);
+        print_diagnostics(load_sink.diagnostics(), options.quiet);
+        if (loaded != scena::Status::Ok) {
+            std::cerr << "scena-run: could not load " << options.scenario.string() << '\n';
+            return kLoadFailed;
+        }
+        scenario = std::move(document.scenario);
+        road_network = document.road_network.logic_file;
     }
 
     // --replay declares that the host will drive an entity, which is the host's
@@ -440,7 +494,7 @@ int main(int argc, char** argv) {
     for (const auto& [entity, path] : options.replay) {
         (void)path;
         bool found = false;
-        for (scena::ir::Entity& declared : document.scenario.entities) {
+        for (scena::ir::Entity& declared : scenario.entities) {
             if (declared.id == entity) {
                 declared.control_mode = scena::ir::ControlMode::HostControlled;
                 found = true;
@@ -460,8 +514,8 @@ int main(int argc, char** argv) {
     // points a scenario at a different network without editing it. Without
     // either, the engine runs road-free and the flat-world model applies.
     std::filesystem::path map = options.map;
-    if (map.empty() && !document.road_network.logic_file.empty()) {
-        map = std::filesystem::path(document.road_network.logic_file);
+    if (map.empty() && !road_network.empty()) {
+        map = std::filesystem::path(road_network);
         if (map.is_relative()) {
             map = options.scenario.parent_path() / map;
         }
@@ -490,7 +544,7 @@ int main(int argc, char** argv) {
     }
 
     scena::Engine engine(&gateway);
-    const scena::Status initialized = engine.init(std::move(document.scenario));
+    const scena::Status initialized = engine.init(std::move(scenario));
     print_diagnostics(engine.diagnostics(), options.quiet);
     if (initialized != scena::Status::Ok) {
         std::cerr << "scena-run: could not initialize the scenario\n";

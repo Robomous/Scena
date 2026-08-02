@@ -34,7 +34,9 @@
 #include "scena/dsl/load.h"
 #include "scena/dsl/lower.h"
 #include "scena/dsl/types.h"
+#include "scena/ir/action.h"
 #include "scena/ir/entity.h"
+#include "scena/ir/position.h"
 #include "scena/ir/scenario.h"
 #include "scena/status.h"
 
@@ -55,7 +57,7 @@ struct Lowered {
     Program program;
     DiagnosticSink check_sink;
     DiagnosticSink sink;
-    scena::ir::Scenario scenario;
+    scena::dsl::LowerResult lowered;
     Status check_status = Status::Ok;
     Status status = Status::Ok;
 };
@@ -70,7 +72,7 @@ void run(std::string_view source, Lowered& out, const std::string& entry_point =
     }
     LowerOptions options;
     options.entry_point = entry_point;
-    out.status = scena::dsl::lower(out.program, out.loaded, options, out.scenario, out.sink);
+    out.status = scena::dsl::lower(out.program, out.loaded, options, out.lowered, out.sink);
 }
 
 /// The header every scenario below shares: the standard library, and a
@@ -101,8 +103,8 @@ TEST(DslLoweringTest, TheOnlyScenarioIsTheEntryPointWithoutBeingNamed) {
     run(std::string(kPrelude).append("scenario overtake:\n    ego: vehicle\n"), result);
     ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    EXPECT_EQ(result.scenario.name, "overtake");
-    EXPECT_EQ(result.scenario.entities.size(), 1U);
+    EXPECT_EQ(result.lowered.scenario.name, "overtake");
+    EXPECT_EQ(result.lowered.scenario.entities.size(), 1U);
 }
 
 TEST(DslLoweringTest, MoreThanOneScenarioMustBeChosenBetween) {
@@ -129,14 +131,14 @@ TEST(DslLoweringTest, AnEntryPointIsNamedQualifiedOrAsWritten) {
     Lowered qualified;
     run(source, qualified, "demo::top.second");
     ASSERT_EQ(qualified.status, Status::Ok) << first_message(qualified.sink);
-    EXPECT_EQ(qualified.scenario.entities.size(), 2U);
+    EXPECT_EQ(qualified.lowered.scenario.entities.size(), 2U);
 
     // A file with one namespace makes the prefix pure ceremony, so the name as
     // written is accepted too.
     Lowered written;
     run(source, written, "top.second");
     ASSERT_EQ(written.status, Status::Ok) << first_message(written.sink);
-    EXPECT_EQ(written.scenario.entities.size(), 2U);
+    EXPECT_EQ(written.lowered.scenario.entities.size(), 2U);
 }
 
 TEST(DslLoweringTest, AnEntryPointThatIsNotThereIsReported) {
@@ -174,15 +176,15 @@ TEST(DslLoweringTest, EveryPhysicalObjectFieldBecomesAnEntity) {
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
     // Three participants, in declaration order; `lap_count` is not one.
-    ASSERT_EQ(result.scenario.entities.size(), 3U);
-    EXPECT_EQ(result.scenario.entities[0].id, "ego");
-    EXPECT_EQ(result.scenario.entities[1].id, "walker");
-    EXPECT_EQ(result.scenario.entities[2].id, "cone");
-    EXPECT_EQ(scena::ir::object_type_of(result.scenario.entities[0]),
+    ASSERT_EQ(result.lowered.scenario.entities.size(), 3U);
+    EXPECT_EQ(result.lowered.scenario.entities[0].id, "ego");
+    EXPECT_EQ(result.lowered.scenario.entities[1].id, "walker");
+    EXPECT_EQ(result.lowered.scenario.entities[2].id, "cone");
+    EXPECT_EQ(scena::ir::object_type_of(result.lowered.scenario.entities[0]),
               scena::ir::ObjectType::Vehicle);
-    EXPECT_EQ(scena::ir::object_type_of(result.scenario.entities[1]),
+    EXPECT_EQ(scena::ir::object_type_of(result.lowered.scenario.entities[1]),
               scena::ir::ObjectType::Pedestrian);
-    EXPECT_EQ(scena::ir::object_type_of(result.scenario.entities[2]),
+    EXPECT_EQ(scena::ir::object_type_of(result.lowered.scenario.entities[2]),
               scena::ir::ObjectType::MiscObject);
 }
 
@@ -193,9 +195,9 @@ TEST(DslLoweringTest, AParticipantWithNoTaxonomyCounterpartStaysUnclassified) {
     Lowered result;
     run(std::string(kPrelude).append("scenario safari:\n    deer: animal\n"), result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    ASSERT_EQ(result.scenario.entities.size(), 1U);
-    EXPECT_FALSE(result.scenario.entities.front().object.has_value());
-    EXPECT_EQ(result.scenario.entities.front().control_mode,
+    ASSERT_EQ(result.lowered.scenario.entities.size(), 1U);
+    EXPECT_FALSE(result.lowered.scenario.entities.front().object.has_value());
+    EXPECT_EQ(result.lowered.scenario.entities.front().control_mode,
               scena::ir::ControlMode::EngineControlled);
 }
 
@@ -205,8 +207,8 @@ TEST(DslLoweringTest, ADerivedActorIsStillTheParticipantItInheritsFrom) {
                                      "scenario drive:\n    ego: car\n"),
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    ASSERT_EQ(result.scenario.entities.size(), 1U);
-    EXPECT_EQ(scena::ir::object_type_of(result.scenario.entities.front()),
+    ASSERT_EQ(result.lowered.scenario.entities.size(), 1U);
+    EXPECT_EQ(scena::ir::object_type_of(result.lowered.scenario.entities.front()),
               scena::ir::ObjectType::Vehicle);
 }
 
@@ -221,7 +223,7 @@ TEST(DslLoweringTest, AnEqualityKeepFixesTheGeometry) {
                                      "    keep(ego.bounding_box.height == 1.5m)\n"),
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    const scena::ir::Entity* ego = entity(result.scenario, "ego");
+    const scena::ir::Entity* ego = entity(result.lowered.scenario, "ego");
     ASSERT_NE(ego, nullptr);
     const std::optional<scena::ir::BoundingBox> box = scena::ir::bounding_box_of(*ego);
     ASSERT_TRUE(box.has_value());
@@ -239,7 +241,7 @@ TEST(DslLoweringTest, AKeepIsReadFromEitherSide) {
                                      "    keep(4.5m == ego.bounding_box.length)\n"),
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    const scena::ir::Entity* ego = entity(result.scenario, "ego");
+    const scena::ir::Entity* ego = entity(result.lowered.scenario, "ego");
     ASSERT_NE(ego, nullptr);
     EXPECT_DOUBLE_EQ(scena::ir::bounding_box_of(*ego)->length, 4.5);
 }
@@ -255,7 +257,8 @@ TEST(DslLoweringTest, APhysicalValueArrivesInItsBaseUnit) {
                                      "    keep(ego.bounding_box.length == 450cm)\n"),
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    EXPECT_DOUBLE_EQ(scena::ir::bounding_box_of(*entity(result.scenario, "ego"))->length, 4.5);
+    EXPECT_DOUBLE_EQ(scena::ir::bounding_box_of(*entity(result.lowered.scenario, "ego"))->length,
+                     4.5);
 }
 
 TEST(DslLoweringTest, AKeepFixesTheVehicleCategory) {
@@ -266,7 +269,7 @@ TEST(DslLoweringTest, AKeepFixesTheVehicleCategory) {
         result);
     ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    const scena::ir::Entity* bus = entity(result.scenario, "b");
+    const scena::ir::Entity* bus = entity(result.lowered.scenario, "b");
     ASSERT_NE(bus, nullptr);
     ASSERT_TRUE(bus->object.has_value());
     EXPECT_EQ(std::get<scena::ir::Vehicle>(*bus->object).category, scena::ir::VehicleCategory::Bus);
@@ -282,7 +285,7 @@ TEST(DslLoweringTest, ConditionalInheritanceFixesTheCategoryToo) {
             "scenario haul:\n    t: lorry\n"),
         result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    const scena::ir::Entity* lorry = entity(result.scenario, "t");
+    const scena::ir::Entity* lorry = entity(result.lowered.scenario, "t");
     ASSERT_NE(lorry, nullptr);
     ASSERT_TRUE(lorry->object.has_value());
     EXPECT_EQ(std::get<scena::ir::Vehicle>(*lorry->object).category,
@@ -295,9 +298,10 @@ TEST(DslLoweringTest, AnUnfixedCategoryKeepsTheIrDefault) {
     Lowered result;
     run(std::string(kPrelude).append("scenario drive:\n    ego: vehicle\n"), result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
-    ASSERT_TRUE(entity(result.scenario, "ego")->object.has_value());
-    EXPECT_EQ(std::get<scena::ir::Vehicle>(*entity(result.scenario, "ego")->object).category,
-              scena::ir::VehicleCategory::Car);
+    ASSERT_TRUE(entity(result.lowered.scenario, "ego")->object.has_value());
+    EXPECT_EQ(
+        std::get<scena::ir::Vehicle>(*entity(result.lowered.scenario, "ego")->object).category,
+        scena::ir::VehicleCategory::Car);
 }
 
 TEST(DslLoweringTest, PerformanceLimitsHaveNoDslSourceAndStayUnconstrained) {
@@ -308,7 +312,7 @@ TEST(DslLoweringTest, PerformanceLimitsHaveNoDslSourceAndStayUnconstrained) {
     run(std::string(kPrelude).append("scenario drive:\n    ego: vehicle\n"), result);
     ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
     const scena::ir::Performance* performance =
-        scena::ir::performance_of(*entity(result.scenario, "ego"));
+        scena::ir::performance_of(*entity(result.lowered.scenario, "ego"));
     ASSERT_NE(performance, nullptr);
     EXPECT_DOUBLE_EQ(performance->max_speed, 0.0);
 }
@@ -321,7 +325,382 @@ TEST(DslLoweringTest, AScenarioWithNoParticipantsSaysSo) {
     EXPECT_EQ(result.status, Status::Ok);
     ASSERT_EQ(result.sink.diagnostics().size(), 1U);
     EXPECT_EQ(result.sink.diagnostics().front().severity, Severity::Warning);
-    EXPECT_TRUE(result.scenario.entities.empty());
+    EXPECT_TRUE(result.lowered.scenario.entities.empty());
+}
+
+/// The events of the lowered storyboard, flattened in document order. One
+/// ManeuverGroup per phase is the shape lowering builds, so this reads back as
+/// "the phases, in order".
+struct Phase {
+    std::string name;
+    std::string actor;
+    bool has_start_trigger = false;
+    const scena::ir::Event* event = nullptr;
+};
+
+std::vector<Phase> phases(const scena::ir::Scenario& scenario) {
+    std::vector<Phase> out;
+    for (const scena::ir::Story& story : scenario.storyboard.stories) {
+        for (const scena::ir::Act& act : story.acts) {
+            for (const scena::ir::ManeuverGroup& group : act.groups) {
+                for (const scena::ir::Maneuver& maneuver : group.maneuvers) {
+                    for (const scena::ir::Event& event : maneuver.events) {
+                        out.push_back(Phase{group.name,
+                                            group.actors.empty() ? std::string() : group.actors[0],
+                                            event.start_trigger.has_value(), &event});
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// The single action of a phase, as `T`, or nullptr.
+template <typename T> const T* only_action(const Phase& phase) {
+    if (phase.event == nullptr || phase.event->actions.size() != 1) {
+        return nullptr;
+    }
+    return dynamic_cast<const T*>(phase.event->actions.front().get());
+}
+
+bool sink_says(const DiagnosticSink& sink, std::string_view fragment) {
+    for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
+        if (diagnostic.message.find(fragment) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// --- Â§8.8 movement actions -------------------------------------------------
+
+TEST(DslLoweringTest, AnAssignSpeedIsAStepSpeedChange) {
+    // Â§8.8.2.6: the actor's speed *is* the value from that point on, which is
+    // what a Step transition means (Â§7.4.1.2).
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do launch: ego.assign_speed(speed: 10mps)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    EXPECT_EQ(lowered[0].name, "launch");
+    EXPECT_EQ(lowered[0].actor, "ego");
+    const scena::ir::SpeedAction* action = only_action<scena::ir::SpeedAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->entity_id(), "ego");
+    EXPECT_EQ(action->target_speed(), 10.0);
+    EXPECT_EQ(action->dynamics().shape, scena::ir::DynamicsShape::Step);
+}
+
+TEST(DslLoweringTest, AChangeSpeedTakesItsShapeFromTheRateProfile) {
+    // Â§8.8.2.18's `smooth` is the profile whose gradient vanishes at both ends,
+    // and `rate_peak` is the magnitude â together, a rate-dimensioned Cubic.
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do ramp: ego.change_speed(target: 25mps, rate_profile: dynamic_profile!smooth, "
+            "rate_peak: 2.0)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::SpeedAction* action = only_action<scena::ir::SpeedAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->target_speed(), 25.0);
+    EXPECT_EQ(action->dynamics().shape, scena::ir::DynamicsShape::Cubic);
+    EXPECT_EQ(action->dynamics().dimension, scena::ir::DynamicsDimension::Rate);
+    EXPECT_EQ(action->dynamics().value, 2.0);
+}
+
+TEST(DslLoweringTest, AChangeSpeedWithoutAPeakRateIsInstantaneous) {
+    // Neither `dynamic_profile` nor Â§8.7 supplies a duration, so with no peak
+    // rate there is no number to ramp over. Step is the honest reading.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do ramp: ego.change_speed(target: 25mps)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::SpeedAction* action = only_action<scena::ir::SpeedAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->dynamics().shape, scena::ir::DynamicsShape::Step);
+}
+
+TEST(DslLoweringTest, RemainStationaryIsSpeedZero) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do hold: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::SpeedAction* action = only_action<scena::ir::SpeedAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->target_speed(), 0.0);
+}
+
+TEST(DslLoweringTest, AnAssignPositionReadsItsCoordinatesFromTheConstraints) {
+    // The DSL has no struct constructor (Â§7.2.2.6.7 declares list and range
+    // constructors and nothing else), so a struct-valued argument names a
+    // declaration and the `keep`s on it are where the numbers are.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    start: position_3d\n"
+                                     "    keep(start.x == 12m)\n"
+                                     "    keep(start.y == 300cm)\n"
+                                     "    do place: ego.assign_position(position: start)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::TeleportAction* action = only_action<scena::ir::TeleportAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    const scena::ir::WorldPosition* world =
+        std::get_if<scena::ir::WorldPosition>(&action->position());
+    ASSERT_NE(world, nullptr);
+    EXPECT_EQ(world->x, 12.0);
+    // Folded to metres once, during checking; lowering never converts again.
+    EXPECT_EQ(world->y, 3.0);
+    EXPECT_EQ(world->z, 0.0);
+}
+
+TEST(DslLoweringTest, APositionNothingConstrainsIsReportedNotAssumed) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    start: position_3d\n"
+                                     "    do place: ego.assign_position(position: start)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "world origin"));
+}
+
+TEST(DslLoweringTest, AChangeLaneNeedsAnExplicitSide) {
+    // Â§8.8.3.14's `inside`/`outside`/`same` need the road geometry to say which
+    // way that is, and an unstated side would have to be chosen â a choice the
+    // determinism contract does not let lowering make.
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do swerve: ego.change_lane(side: lane_change_side!same)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    EXPECT_EQ(result.status, Status::ValidationError);
+    EXPECT_TRUE(sink_says(result.sink, "explicit 'side'"));
+}
+
+TEST(DslLoweringTest, AChangeLaneLowersToARelativeLaneTarget) {
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do swerve: ego.change_lane(side: lane_change_side!left, num_of_lanes: 2, "
+            "rate_peak: 3.0)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::LaneChangeAction* action =
+        only_action<scena::ir::LaneChangeAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    ASSERT_TRUE(action->is_relative());
+    // Positive counts go left (Â§7.4.1.4), and the reference defaults to the
+    // actor itself (Â§8.8.3.3's `Default=it.actor`).
+    EXPECT_EQ(action->relative_target()->value, 2);
+    EXPECT_EQ(action->relative_target()->entity_ref, "ego");
+}
+
+TEST(DslLoweringTest, AGapActionKeepsTheDistanceToItsReference) {
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    lead: vehicle\n"
+            "    do gap: ego.change_space_gap(target: 20m, direction: gap_direction!behind, "
+            "reference: lead)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 1U);
+    const scena::ir::LongitudinalDistanceAction* action =
+        only_action<scena::ir::LongitudinalDistanceAction>(lowered[0]);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(action->entity_ref(), "lead");
+    ASSERT_TRUE(action->distance().has_value());
+    EXPECT_EQ(*action->distance(), 20.0);
+    EXPECT_FALSE(action->time_gap().has_value());
+    EXPECT_EQ(action->displacement(),
+              scena::ir::LongitudinalDisplacement::TrailingReferencedEntity);
+}
+
+TEST(DslLoweringTest, AGapActionNeedsItsReferenceToBeAParticipant) {
+    Lowered result;
+    run(std::string(kPrelude).append(
+            "scenario go:\n"
+            "    ego: vehicle\n"
+            "    do gap: ego.change_time_gap(target: 2s, reference: ego.bounding_box)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    EXPECT_EQ(result.status, Status::ValidationError);
+    EXPECT_TRUE(sink_says(result.sink, "participant of this scenario"));
+}
+
+TEST(DslLoweringTest, TheGenericDriveContributesNoActionOfItsOwn) {
+    // Â§8.8.3.1's `drive` carries no target: it exists to be shaped by Â§8.9
+    // modifiers (p8-s3), and on its own says "keep doing what you are doing".
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do cruise: ego.drive()\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(result.lowered.scenario.storyboard.stories.empty());
+}
+
+TEST(DslLoweringTest, AMovementActionWithNoCounterpartIsReportedNotDropped) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do hold: ego.keep_speed()\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "no runtime counterpart"));
+}
+
+// --- the `do` directive -----------------------------------------------------
+
+TEST(DslLoweringTest, SerialPhasesChainOnTheirPredecessor) {
+    // Â§7.6.2.1.2: a member starts when its predecessor ends. In the runtime that
+    // is a start trigger on the previous element reaching completeState.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do serial:\n"
+                                     "        launch: ego.assign_speed(speed: 10mps)\n"
+                                     "        stop: ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    EXPECT_EQ(lowered[0].name, "launch");
+    EXPECT_FALSE(lowered[0].has_start_trigger);
+    EXPECT_EQ(lowered[1].name, "stop");
+    EXPECT_TRUE(lowered[1].has_start_trigger);
+}
+
+TEST(DslLoweringTest, ParallelPhasesStartWithTheirAct) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    other: vehicle\n"
+                                     "    do parallel:\n"
+                                     "        a: ego.assign_speed(speed: 10mps)\n"
+                                     "        b: other.assign_speed(speed: 12mps)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    EXPECT_FALSE(lowered[0].has_start_trigger);
+    EXPECT_FALSE(lowered[1].has_start_trigger);
+    EXPECT_EQ(lowered[0].actor, "ego");
+    EXPECT_EQ(lowered[1].actor, "other");
+}
+
+TEST(DslLoweringTest, AnUnlabelledPhaseGetsItsPositionAsAName) {
+    // The runtime addresses storyboard elements by name path, so a phase needs
+    // a name whether or not the author wrote a label.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do serial:\n"
+                                     "        ego.assign_speed(speed: 10mps)\n"
+                                     "        ego.remain_stationary()\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    const std::vector<Phase> lowered = phases(result.lowered.scenario);
+    ASSERT_EQ(lowered.size(), 2U);
+    EXPECT_EQ(lowered[0].name, "phase_1");
+    EXPECT_EQ(lowered[1].name, "phase_2");
+}
+
+TEST(DslLoweringTest, OneOfIsReportedAsBelongingToTheNextSprint) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do one_of:\n"
+                                     "        a: ego.assign_speed(speed: 10mps)\n"
+                                     "        b: ego.assign_speed(speed: 20mps)\n"),
+        result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "one_of"));
+    EXPECT_TRUE(result.lowered.scenario.storyboard.stories.empty());
+}
+
+TEST(DslLoweringTest, ModifiersAndInvocationDurationsAreReportedAsDeferred) {
+    // Both are real constructs of the invocation, and both belong to a later
+    // sprint. Reporting beats silently running a scenario that says more than
+    // the engine was told.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    ego: vehicle\n"
+                                     "    do phase: ego.drive(duration: 5s) with:\n"
+                                     "        speed(speed: 30kph)\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(sink_says(result.sink, "p8-s2 (#45)"));
+    EXPECT_TRUE(sink_says(result.sink, "p8-s3 (#46)"));
+}
+
+// --- Â§8.5.4 the map file ------------------------------------------------------
+
+TEST(DslLoweringTest, TheMapFileComesFromSetMapFile) {
+    // Code 61's spelling, where `map` names the actor type: the road network is
+    // a singleton no scenario declares a field for.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    map.set_map_file(\"flat.xodr\")\n"
+                                     "    ego: vehicle\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_EQ(result.lowered.map_file, "flat.xodr");
+}
+
+TEST(DslLoweringTest, TheMapFileCanAlsoComeFromAKeep) {
+    // Code 62's spelling. The two say the same thing, so they lower the same.
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n"
+                                     "    my_map: map\n"
+                                     "    ego: vehicle\n"
+                                     "    keep(my_map.map_file == \"junction.xodr\")\n"),
+        result);
+    ASSERT_EQ(result.check_status, Status::Ok) << first_message(result.check_sink);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_EQ(result.lowered.map_file, "junction.xodr");
+}
+
+TEST(DslLoweringTest, AScenarioThatNamesNoMapLeavesTheReferenceEmpty) {
+    Lowered result;
+    run(std::string(kPrelude).append("scenario go:\n    ego: vehicle\n"), result);
+    ASSERT_EQ(result.status, Status::Ok) << first_message(result.sink);
+    EXPECT_TRUE(result.lowered.map_file.empty());
 }
 
 // --- determinism ------------------------------------------------------------
@@ -340,10 +719,10 @@ TEST(DslLoweringTest, LoweringTheSameSourceTwiceGivesTheSameIr) {
     run(source, second);
     ASSERT_EQ(first.status, Status::Ok) << first_message(first.sink);
     ASSERT_EQ(second.status, Status::Ok);
-    ASSERT_EQ(first.scenario.entities.size(), second.scenario.entities.size());
-    for (std::size_t index = 0; index < first.scenario.entities.size(); ++index) {
-        const scena::ir::Entity& left = first.scenario.entities[index];
-        const scena::ir::Entity& right = second.scenario.entities[index];
+    ASSERT_EQ(first.lowered.scenario.entities.size(), second.lowered.scenario.entities.size());
+    for (std::size_t index = 0; index < first.lowered.scenario.entities.size(); ++index) {
+        const scena::ir::Entity& left = first.lowered.scenario.entities[index];
+        const scena::ir::Entity& right = second.lowered.scenario.entities[index];
         EXPECT_EQ(left.id, right.id);
         EXPECT_EQ(scena::ir::object_type_of(left), scena::ir::object_type_of(right));
         const std::optional<scena::ir::BoundingBox> left_box = scena::ir::bounding_box_of(left);
