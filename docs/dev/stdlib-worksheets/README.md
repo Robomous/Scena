@@ -28,6 +28,7 @@ translated.
 | [`08-12-02-map.md`](08-12-02-map.md) | §8.12.2 actor `map` | 43e |
 | [`08-15-traffic-lights.md`](08-15-traffic-lights.md) | §8.15 traffic lights | 43h |
 | [`08-08-movement-actions.md`](08-08-movement-actions.md) | §8.8.2–§8.8.4 movement actions | 43f |
+| [`08-09-movement-modifiers.md`](08-09-movement-modifiers.md) | §8.9 movement modifiers | 43g |
 
 ## Reading a chapter without reading all of it
 
@@ -41,6 +42,9 @@ subsections first makes the difference between "too big for one sitting" and
 sed 's/\\//g' domain-model.md | awk 'NR>=2930 && NR<=5120' \
   | awk '/^##### .* Examples/{skip=1} /^#### /{skip=0} !skip'
 ```
+
+This does not always help: §8.9 puts its examples inline in each section rather
+than in `Examples` subsections, so that chapter has to be read whole.
 
 The examples are still worth a look afterwards — §8.15.10's showed which actor
 the traffic-light actions hang off, and §8.12.2's showed that `create_route` is

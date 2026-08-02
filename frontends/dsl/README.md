@@ -171,7 +171,17 @@ expected. It also keeps the dependency list unchanged.
   names a scenario or an action. Note that such a modifier cannot yet be
   *applied* — issue #100: the parser keeps the actor prefix in the declared
   name, so `check_modifier_application` looks up a name no scope holds.
-  Unassociated modifiers are unaffected.
+  Unassociated modifiers are unaffected, and a modifier application inside a
+  `with:` block is not checked at all — same issue.
+- **Association is what makes §8.9 declarable.** §7.3.12.3's own example is
+  `modifier vehicle.keep_lane()`, annotated as being §8.9.16's, so the movement
+  modifiers are actor-associated. That is not decoration: an unassociated
+  `modifier lane` would collide with §8.12.10's `struct lane`, and an
+  unassociated `modifier speed` would shadow `stdtypes::speed` so thoroughly
+  that `range of speed` stops naming a physical type. Three modifiers must
+  still be unassociated — `change_speed`, `keep_speed`, `change_lane` — because
+  §8.8 declares *actions* of those names on those actors, and a qualified
+  behavior name identifies exactly one declaration.
 - **Every declaration name is a lookup space of its own.** The standard reuses
   words freely: a field `driving_rule` of type `driving_rule` (§8.12.2), a
   struct `air` and an action `environment.air` (§8.10.4 / §8.11.2), an enum

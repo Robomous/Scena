@@ -1370,22 +1370,35 @@ TEST(DslStdlibTest, ADeprecatedParameterIsStillDeclared) {
 }
 
 TEST(DslStdlibTest, AnActionAndAModifierMayShareASimpleName) {
-    // `change_speed`, `keep_speed` and `change_lane` are actions here (§8.8)
-    // and modifiers in §8.9. An action's name is a qualified behavior name
-    // (§7.2.2.2.5), so `movable_object.change_speed` never collides with a
-    // plain `change_speed` — which is what lets §8.9 land beside this.
+    // `change_speed`, `keep_speed` and `change_lane` are actions in §8.8 and
+    // modifiers in §8.9. An action's name is a qualified behavior name
+    // (§7.2.2.2.5), so `movable_object.change_speed` the action and a plain
+    // `change_speed` the modifier are two declarations and coexist.
+    //
+    // What they cannot do is share the SAME qualified name, which is why these
+    // three modifiers are unassociated — see
+    // ThreeModifiersAreUnassociatedBecauseTheStandardCollides.
     Library library;
     check_full_library(library);
-    for (const char* action : {"std::movable_object.change_speed", "std::movable_object.keep_speed",
-                               "std::vehicle.change_lane"}) {
-        const TypeInfo* type = library.program.find(action);
-        ASSERT_NE(type, nullptr) << action;
-        EXPECT_EQ(type->kind, TypeKind::Action) << action;
+    struct Case {
+        const char* action;
+        const char* modifier;
+    };
+    for (const Case& expected : {Case{"std::movable_object.change_speed", "std::change_speed"},
+                                 Case{"std::movable_object.keep_speed", "std::keep_speed"},
+                                 Case{"std::vehicle.change_lane", "std::change_lane"}}) {
+        const TypeInfo* action = library.program.find(expected.action);
+        const TypeInfo* modifier = library.program.find(expected.modifier);
+        ASSERT_NE(action, nullptr) << expected.action;
+        ASSERT_NE(modifier, nullptr) << expected.modifier;
+        EXPECT_EQ(action->kind, TypeKind::Action) << expected.action;
+        EXPECT_EQ(modifier->kind, TypeKind::Modifier) << expected.modifier;
     }
-    for (const char* unqualified : {"std::change_speed", "std::keep_speed", "std::change_lane"}) {
-        EXPECT_EQ(library.program.find(unqualified), nullptr)
-            << unqualified << " is §8.9's, and §8.9 has not landed yet";
-    }
+    // The same holds where the modifier IS associated: §8.9's speed modifier
+    // is `movable_object.speed`, and no action of that name exists to clash.
+    const TypeInfo* speed_modifier = library.program.find("std::movable_object.speed");
+    ASSERT_NE(speed_modifier, nullptr);
+    EXPECT_EQ(speed_modifier->kind, TypeKind::Modifier);
 }
 
 TEST(DslStdlibTest, ADirectionLiteralNeedsItsEnumName) {
@@ -1421,6 +1434,243 @@ TEST(DslStdlibTest, ADirectionLiteralNeedsItsEnumName) {
               Status::Ok)
         << (qualified.diagnostics().empty() ? std::string()
                                             : qualified.diagnostics().front().message);
+}
+
+// --- §8.9 movement modifiers ------------------------------------------------
+
+TEST(DslStdlibTest, TheShapeHierarchyIsRootedInAnyShape) {
+    // §8.9.1.2 is one of the few places §8 prints DSL rather than tables, so
+    // this is a transcription. A shape says how a state variable moves as a
+    // function of time within one modifier invocation.
+    Library library;
+    check_full_library(library);
+    const auto any_shape = library.program.types_by_name.find("std::any_shape");
+    ASSERT_NE(any_shape, library.program.types_by_name.end());
+    EXPECT_NE(library.program.find_method(any_shape->second, "duration"), nullptr);
+    struct Case {
+        const char* name;
+        const char* base;
+        const char* computes;
+    };
+    for (const Case& expected :
+         {Case{"std::any_acceleration_shape", "std::any_shape", "stdtypes::acceleration"},
+          Case{"std::any_speed_shape", "std::any_shape", "stdtypes::speed"},
+          Case{"std::any_position_shape", "std::any_shape", "stdtypes::length"},
+          Case{"std::any_lateral_shape", "std::any_shape", "stdtypes::length"},
+          Case{"std::common_acceleration_shape", "std::any_acceleration_shape", nullptr},
+          Case{"std::common_speed_shape", "std::any_speed_shape", nullptr},
+          Case{"std::common_position_shape", "std::any_position_shape", nullptr},
+          Case{"std::common_lateral_shape", "std::any_lateral_shape", nullptr}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        const auto base = library.program.types_by_name.find(expected.base);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        ASSERT_NE(base, library.program.types_by_name.end()) << expected.base;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, base->second)) << expected.name;
+        // Every shape inherits `duration()`; a concrete one adds `compute()`.
+        EXPECT_NE(library.program.find_method(id->second, "duration"), nullptr) << expected.name;
+        const scena::dsl::MethodInfo* compute = library.program.find_method(id->second, "compute");
+        ASSERT_NE(compute, nullptr) << expected.name;
+        if (expected.computes != nullptr) {
+            ASSERT_NE(compute->return_type, scena::dsl::kInvalidType) << expected.name;
+            EXPECT_EQ(library.program.types[compute->return_type].name, expected.computes)
+                << expected.name;
+        }
+    }
+    // The common shapes add the target and its first-derivative controls.
+    const auto common_speed = library.program.types_by_name.find("std::common_speed_shape");
+    ASSERT_NE(common_speed, library.program.types_by_name.end());
+    for (const char* field : {"rate_profile", "rate_peak", "target"}) {
+        EXPECT_NE(library.program.find_field(common_speed->second, field), nullptr) << field;
+    }
+}
+
+TEST(DslStdlibTest, TheMovementModifierEnumsCarryTheirValues) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::size_t values;
+        const char* sample;
+    };
+    for (const Case& expected :
+         {Case{"std::at", 3, "all"}, Case{"std::movement_mode", 2, "monotonous"},
+          Case{"std::track", 2, "projected"}, Case{"std::lat_measure_by", 10, "closest"},
+          Case{"std::yaw_measure_by", 6, "relative_to_north"},
+          Case{"std::orientation_measured_by", 3, "relative_to_reference"},
+          Case{"std::movement_options", 3, "must_be_physical"}}) {
+        const TypeInfo* type = library.program.find(expected.name);
+        ASSERT_NE(type, nullptr) << expected.name;
+        EXPECT_EQ(type->kind, TypeKind::Enum) << expected.name;
+        EXPECT_EQ(type->enum_members.size(), expected.values) << expected.name;
+        bool found = false;
+        for (const auto& member : type->enum_members) {
+            found = found || member.name == expected.sample;
+        }
+        EXPECT_TRUE(found) << expected.name << "!" << expected.sample;
+    }
+}
+
+TEST(DslStdlibTest, EveryMovementModifierCarriesTheCommonParameters) {
+    // §8.9.1.1: "The following parameters are common to all domain model
+    // movement modifiers." Five of the usage signatures omit the
+    // `<standard-movement-parameters>` placeholder that the other twelve
+    // include; the general statement is the normative one, and accepting a
+    // parameter the standard permits beats rejecting it.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* parameter;
+        const char* type;
+    };
+    for (const char* name :
+         {"std::movable_object.position", "std::movable_object.keep_position",
+          "std::movable_object.speed", "std::change_speed", "std::keep_speed",
+          "std::movable_object.acceleration", "std::movable_object.lateral",
+          "std::movable_object.yaw", "std::movable_object.orientation", "std::movable_object.along",
+          "std::movable_object.along_trajectory", "std::movable_object.distance",
+          "std::vehicle.lane", "std::change_lane", "std::vehicle.keep_lane",
+          "std::movable_object.physical_movement", "std::movable_object.avoid_collisions"}) {
+        const auto id = library.program.types_by_name.find(name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Modifier) << name;
+        for (const Case& common :
+             {Case{"at", "std::at"}, Case{"movement_mode", "std::movement_mode"},
+              Case{"track", "std::track"}, Case{"shape", "std::any_shape"}}) {
+            const scena::dsl::FieldInfo* field =
+                library.program.find_field(id->second, common.parameter);
+            ASSERT_NE(field, nullptr) << name << "." << common.parameter;
+            ASSERT_NE(field->type, scena::dsl::kInvalidType) << name << "." << common.parameter;
+            EXPECT_EQ(library.program.types[field->type].name, common.type)
+                << name << "." << common.parameter;
+        }
+    }
+}
+
+TEST(DslStdlibTest, TheMovementModifiersAreAssociatedWithTheirActor) {
+    // §7.3.12.3's example of an actor-associated modifier is
+    // `modifier vehicle.keep_lane()`, annotated "keep_lane() is defined in the
+    // domain model (see §8.9.16)" — §7.3 says outright how §8.9 is declared.
+    // Each goes on the most general actor that can run the actions it tunes.
+    Library library;
+    check_full_library(library);
+    const auto movable = library.program.types_by_name.find("std::movable_object");
+    const auto vehicle = library.program.types_by_name.find("std::vehicle");
+    ASSERT_NE(movable, library.program.types_by_name.end());
+    ASSERT_NE(vehicle, library.program.types_by_name.end());
+    struct Case {
+        const char* name;
+        const char* actor;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::movable_object.position", "movable_object", "at_point"},
+          Case{"std::movable_object.keep_position", "movable_object", nullptr},
+          Case{"std::movable_object.speed", "movable_object", "faster_than"},
+          Case{"std::movable_object.acceleration", "movable_object", "acceleration_range"},
+          Case{"std::movable_object.lateral", "movable_object", "measure_by"},
+          Case{"std::movable_object.yaw", "movable_object", "angle_range"},
+          Case{"std::movable_object.orientation", "movable_object", "roll"},
+          Case{"std::movable_object.along", "movable_object", "start_offset"},
+          Case{"std::movable_object.along_trajectory", "movable_object", "trajectory"},
+          Case{"std::movable_object.distance", "movable_object", "distance"},
+          Case{"std::movable_object.physical_movement", "movable_object", "option"},
+          Case{"std::movable_object.avoid_collisions", "movable_object", "avoid"},
+          // §7.3.12.3 puts keep_lane on the vehicle by name; `lane` follows it.
+          Case{"std::vehicle.lane", "vehicle", "from"},
+          Case{"std::vehicle.keep_lane", "vehicle", nullptr}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        const TypeInfo& modifier = library.program.types[id->second];
+        EXPECT_EQ(modifier.kind, TypeKind::Modifier) << expected.name;
+        const auto actor =
+            std::string(expected.actor) == "vehicle" ? vehicle->second : movable->second;
+        EXPECT_EQ(modifier.actor_type, actor) << expected.name;
+        if (expected.field != nullptr) {
+            EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+                << expected.name << "." << expected.field;
+        }
+    }
+}
+
+TEST(DslStdlibTest, ThreeModifiersAreUnassociatedBecauseTheStandardCollides) {
+    // §8.8 declares ACTIONS `movable_object.change_speed`,
+    // `movable_object.keep_speed` and `vehicle.change_lane`; §8.9 declares
+    // MODIFIERS of the same names for the same actors. A qualified behavior
+    // name identifies exactly one declaration (§7.2.2.2.5), so the language
+    // cannot hold both. §7.3.12.3's unassociated form is the only spelling
+    // that exists and does not collide. The defect is the standard's.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* modifier;
+        const char* action;
+    };
+    for (const Case& expected : {Case{"std::change_speed", "std::movable_object.change_speed"},
+                                 Case{"std::keep_speed", "std::movable_object.keep_speed"},
+                                 Case{"std::change_lane", "std::vehicle.change_lane"}}) {
+        const TypeInfo* modifier = library.program.find(expected.modifier);
+        ASSERT_NE(modifier, nullptr) << expected.modifier;
+        EXPECT_EQ(modifier->kind, TypeKind::Modifier) << expected.modifier;
+        EXPECT_EQ(modifier->actor_type, scena::dsl::kInvalidType)
+            << expected.modifier << " must stay unassociated";
+        const TypeInfo* action = library.program.find(expected.action);
+        ASSERT_NE(action, nullptr) << expected.action;
+        EXPECT_EQ(action->kind, TypeKind::Action) << expected.action;
+    }
+}
+
+TEST(DslStdlibTest, TheScalarAndRangeParametersAreSeparateFields) {
+    // §8.9.1.4 pairs a scalar parameter with a range-typed counterpart:
+    // `speed` fixes one value for the whole action, `speed_range` lets it vary
+    // within the interval. "At most one of them is used within an invocation"
+    // constrains applications, not the declaration, so both are declared.
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* modifier;
+        const char* scalar;
+        const char* range;
+    };
+    for (const Case& expected :
+         {Case{"std::movable_object.speed", "speed", "speed_range"},
+          Case{"std::change_speed", "speed", "speed_range"},
+          Case{"std::movable_object.acceleration", "acceleration", "acceleration_range"},
+          Case{"std::movable_object.lateral", "distance", "distance_range"},
+          Case{"std::movable_object.yaw", "angle", "angle_range"},
+          Case{"std::movable_object.position", "distance", "distance_range"},
+          Case{"std::movable_object.position", "time", "time_range"}}) {
+        const auto id = library.program.types_by_name.find(expected.modifier);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.modifier;
+        const scena::dsl::FieldInfo* scalar =
+            library.program.find_field(id->second, expected.scalar);
+        const scena::dsl::FieldInfo* ranged =
+            library.program.find_field(id->second, expected.range);
+        ASSERT_NE(scalar, nullptr) << expected.modifier << "." << expected.scalar;
+        ASSERT_NE(ranged, nullptr) << expected.modifier << "." << expected.range;
+        ASSERT_NE(scalar->type, scena::dsl::kInvalidType);
+        ASSERT_NE(ranged->type, scena::dsl::kInvalidType);
+        EXPECT_NE(scalar->type, ranged->type) << expected.modifier;
+        EXPECT_EQ(library.program.types[ranged->type].kind, TypeKind::Range)
+            << expected.modifier << "." << expected.range;
+    }
+}
+
+TEST(DslStdlibTest, AssociationIsWhatMakesTheChapterDeclarable) {
+    // Corroboration for the association reading, and a guard against someone
+    // "simplifying" these to unassociated modifiers later: an unassociated
+    // `lane` would collide head-on with §8.12.10's `struct lane`, and an
+    // unassociated `speed` would shadow `stdtypes::speed` badly enough that
+    // `range of speed` stops naming a physical type.
+    Library library;
+    check_full_library(library);
+    const TypeInfo* lane = library.program.find("std::lane");
+    ASSERT_NE(lane, nullptr);
+    EXPECT_EQ(lane->kind, TypeKind::Struct) << "std::lane must remain §8.12.10's road struct";
+    EXPECT_EQ(library.program.find("std::speed"), nullptr)
+        << "the speed modifier is std::movable_object.speed, not std::speed";
+    const TypeInfo* physical_speed = library.program.find("stdtypes::speed");
+    ASSERT_NE(physical_speed, nullptr);
+    EXPECT_EQ(physical_speed->kind, TypeKind::Physical);
 }
 
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
