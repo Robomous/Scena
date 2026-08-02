@@ -15,3 +15,4 @@ endfunction()
 
 scn_add_dsl_test(dsl_lexer_test)
 scn_add_dsl_test(dsl_parser_test)
+scn_add_dsl_test(dsl_types_test)
