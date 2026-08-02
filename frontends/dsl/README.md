@@ -174,11 +174,17 @@ expected. It also keeps the dependency list unchanged.
 - **An actor's modifier uses the prefixed form.** §8.7.4.1.1 writes
   `stationary_object.location()`, which is `modifier stationary_object.location`
   — not `modifier location of stationary_object`, because §7.3.12.2's `of`
-  names a scenario or an action. Note that such a modifier cannot yet be
-  *applied* — issue #100: the parser keeps the actor prefix in the declared
-  name, so `check_modifier_application` looks up a name no scope holds.
-  Unassociated modifiers are unaffected, and a modifier application inside a
-  `with:` block is not checked at all — same issue.
+  names a scenario or an action.
+- **An actor-associated modifier is reached through its receiver, not through
+  the namespace.** §7.3.12.2 puts its name "in the actor scope", so
+  `modifier vehicle.keep_lane` interns under the actor's qualified name and
+  ordinary lookup will never find `keep_lane` on its own. Application
+  (§7.3.12.4.1) resolves the actor expression's type and walks its inheritance
+  chain, probing the name table once per step — an exact lookup, not a scan.
+  With the actor omitted the receiver is what the site already implies: the
+  enclosing declaration in a member position, the invoked behavior's actor
+  inside a `with:` block. This was issue #100; before it, such a modifier could
+  not be applied at all, and a `with:` block accepted any name whatsoever.
 - **Association is what makes §8.9 declarable.** §7.3.12.3's own example is
   `modifier vehicle.keep_lane()`, annotated as being §8.9.16's, so the movement
   modifiers are actor-associated. That is not decoration: an unassociated

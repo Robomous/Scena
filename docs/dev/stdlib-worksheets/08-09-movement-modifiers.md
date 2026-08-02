@@ -109,13 +109,12 @@ Association per §7.3.12.3 — see note 1. `+4` marks the four common parameters
    not decoration, it is what makes the chapter declarable.
 4. **§8.9.14's `lane` counts lanes as `uint`, §8.9.15's `change_lane` as
    `int`.** Both carried as printed.
-5. **Applying any of these is issue #100**, in both of §7.3.12.4.1's positions:
-   as a scenario member, an actor-associated modifier is not found by simple
-   name; inside a `with:` block, modifier applications are not validated at all
-   (a nonsense name is accepted silently). The declarations here are
-   well-formed and are pinned; nothing pins application, because neither
-   current behaviour is one to keep. p8-s3 (#46) needs #100 fixed first, and
-   §8.9 is the surface that fix should be tested against.
+5. **Applying any of these was issue #100 when this was written — since
+   fixed**, in both of §7.3.12.4.1's positions: as a scenario member, an
+   actor-associated modifier was not found by simple name; inside a `with:`
+   block, applications were not validated at all. §8.9 was the surface the fix
+   was tested against, as this note asked, and both positions are now pinned in
+   `dsl_stdlib_test.cpp`. p8-s3 (#46) is unblocked.
 6. **§8.9.1.4's scalar/range pairs are two separate fields.** `speed` and
    `speed_range`, `distance` and `distance_range`, `angle` and `angle_range`:
    "at most one of them is used within an invocation", which is a constraint on

@@ -229,8 +229,10 @@ private:
     void add_field(TypeId id, const PendingStructured& pending, const Field& field);
     void add_method(TypeId id, const PendingStructured& pending, const MethodDecl& method);
     void add_event(TypeId id, const PendingStructured& pending, const EventDecl& event);
-    void check_modifier_application(TypeId id, const PendingStructured& pending,
-                                    const ModifierApplication& application);
+    void check_modifier_application(const ModifierApplication& application,
+                                    const ExpressionContext& context, TypeId implicit_receiver);
+    [[nodiscard]] TypeId lookup_modifier_on(TypeId receiver, const std::string& name) const;
+    [[nodiscard]] TypeId find_modifier_named(const std::string& name) const;
     void check_literal_default(const FieldInfo& info, const Expr& value);
     [[nodiscard]] bool resolve_declarator(const TypeRef& declarator, const Scope& scope,
                                           TypeId& type, TypeId& element);
@@ -1064,25 +1066,105 @@ void Resolver::add_event(TypeId id, const PendingStructured& pending, const Even
     type.events.emplace(event.name, std::move(info));
 }
 
-void Resolver::check_modifier_application(TypeId container, const PendingStructured& pending,
-                                          const ModifierApplication& application) {
-    const TypeId id = lookup_declared(application.name, pending.scope);
+/// Finds a modifier associated with `receiver` or one of its supertypes.
+///
+/// §7.3.12.2 puts an actor-associated modifier's name "in the actor scope", and
+/// the declaration `modifier vehicle.keep_lane` interns it under the qualified
+/// name `<the actor's qualified name>.keep_lane`. So the lookup is an exact map
+/// probe per step of the inheritance chain — no scan, and deterministic.
+TypeId Resolver::lookup_modifier_on(TypeId receiver, const std::string& name) const {
+    for (TypeId current = receiver; current != kInvalidType;) {
+        const auto found = out_.types_by_name.find(out_.types[current].name + "." + name);
+        if (found != out_.types_by_name.end() &&
+            out_.types[found->second].kind == TypeKind::Modifier) {
+            return found->second;
+        }
+        current = out_.types[current].base;
+    }
+    return kInvalidType;
+}
+
+/// The first actor-associated modifier whose bare name is `name`.
+///
+/// Only reached after lookup has already failed, to turn "unknown modifier"
+/// into "belongs to another actor" — so an O(n) walk of the name table is the
+/// right cost, and iterating a std::map keeps it deterministic.
+TypeId Resolver::find_modifier_named(const std::string& name) const {
+    for (const auto& [qualified, id] : out_.types_by_name) {
+        (void)qualified;
+        const TypeInfo& type = out_.types[id];
+        if (type.kind != TypeKind::Modifier || type.actor_type == kInvalidType) {
+            continue;
+        }
+        const std::size_t dot = type.simple_name.rfind('.');
+        if (dot != std::string::npos && type.simple_name.substr(dot + 1) == name) {
+            return id;
+        }
+    }
+    return kInvalidType;
+}
+
+void Resolver::check_modifier_application(const ModifierApplication& application,
+                                          const ExpressionContext& context,
+                                          TypeId implicit_receiver) {
+    // §7.3.12.4.1: `[<actor-expression>.]<modifier-name>(...)`. A written actor
+    // expression names the receiver; omitting it means the receiver is the one
+    // the application site already implies — the enclosing declaration or the
+    // actor of the invocation the `with:` block belongs to.
+    TypeId receiver = implicit_receiver;
+    if (application.actor != nullptr) {
+        // May grow Program::types (a list or range constructor interns a type),
+        // so nothing may hold a TypeInfo& across it.
+        receiver = check_expression(*application.actor, context);
+        if (receiver == kInvalidType) {
+            return; // the actor expression already reported why
+        }
+    }
+
+    const Scope scope{context.name_space, context.uses, context.file};
+
+    // An unassociated or scenario-associated modifier is named plainly
+    // (§7.3.12.4.2's first example); an actor-associated one lives in the actor
+    // scope and is only reachable through the receiver. A written actor
+    // expression means the second kind, so ordinary lookup is skipped.
+    TypeId plain = kInvalidType;
+    if (application.actor == nullptr) {
+        plain = lookup_declared(application.name, scope);
+    }
+    TypeId id = (plain != kInvalidType && out_.types[plain].kind == TypeKind::Modifier)
+                    ? plain
+                    : kInvalidType;
+    if (id == kInvalidType && receiver != kInvalidType) {
+        id = lookup_modifier_on(receiver, application.name);
+    }
+
     if (id == kInvalidType) {
+        // Nothing applies. Say what is actually wrong rather than "unknown",
+        // because at library scale the interesting case is a name that exists
+        // and is the wrong thing.
+        if (plain != kInvalidType) {
+            error(application.range, "'" + application.name + "' is " +
+                                         std::string(spelling_of(out_.types[plain].kind)) +
+                                         ", not a modifier (§7.3.12.4)");
+            return;
+        }
+        const TypeId elsewhere = find_modifier_named(application.name);
+        if (elsewhere != kInvalidType && receiver != kInvalidType) {
+            error(application.range,
+                  "modifier '" + application.name + "' belongs to '" + out_.types[elsewhere].actor +
+                      "' and cannot be applied to '" + out_.types[receiver].name + "' (§7.3.12.4)");
+            return;
+        }
         error(application.range, "unknown modifier '" + application.name + "' (§7.3.12.4)");
         return;
     }
+
     const TypeInfo& modifier = out_.types[id];
-    if (modifier.kind != TypeKind::Modifier) {
-        error(application.range, "'" + application.name + "' is " +
-                                     std::string(spelling_of(modifier.kind)) +
-                                     ", not a modifier (§7.3.12.4)");
-        return;
-    }
     if (modifier.modifies_type != kInvalidType) {
         // §7.3.12.2: a scenario-associated modifier "can be applied only to an
         // invocation of the specified scenario or as a member of that
         // scenario".
-        if (!out_.is_derived_from(container, modifier.modifies_type)) {
+        if (!out_.is_derived_from(context.self, modifier.modifies_type)) {
             error(application.range, "modifier '" + modifier.simple_name + "' belongs to '" +
                                          modifier.modifies +
                                          "' and cannot be applied here (§7.3.12.2)");
@@ -1133,7 +1215,8 @@ void Resolver::add_members(const PendingStructured& pending) {
             add_event(pending.id, pending, member.event);
             break;
         case Member::Kind::ModifierApplication:
-            check_modifier_application(pending.id, pending, member.modifier);
+            // Checked in pass 4 instead: resolving the receiver means typing
+            // the actor expression, which needs an ExpressionContext.
             break;
         case Member::Kind::Behavior: {
             ++behaviors;
@@ -1450,8 +1533,11 @@ void Resolver::check_do_member(const DoMember& member, const ExpressionContext& 
             (void)check_expression(*argument.value, context);
         }
     }
+    // The invoked behavior's actor is also the receiver a `with:`-block modifier
+    // application falls back to when it omits one (§7.3.12.4.1).
+    TypeId invoked_on = out_.types[context.self].actor_type;
     if (member.actor != nullptr) {
-        (void)check_expression(*member.actor, context);
+        invoked_on = check_expression(*member.actor, context);
     }
     if (member.kind == DoMemberKind::Wait) {
         check_event_spec(member.event, context);
@@ -1465,6 +1551,10 @@ void Resolver::check_do_member(const DoMember& member, const ExpressionContext& 
                 (void)check_expression(*argument.value, context);
             }
         }
+        // Until this landed, a `with:` block accepted any name at all — and it
+        // is where the domain model expects nearly every movement modifier to
+        // be applied (#100).
+        check_modifier_application(application, context, invoked_on);
     }
     for (const EventSpec& until : member.with.until) {
         check_event_spec(until, context);
@@ -1577,6 +1667,14 @@ void Resolver::check_expressions() {
                         (void)check_expression(*argument.value, context);
                     }
                 }
+                // §7.3.12.4.1's member position. With the actor omitted the
+                // receiver is the declaration itself — an actor applying its
+                // own modifier (§7.3.12.4.2's third example) — or, for a
+                // behavior, the actor it is declared on.
+                check_modifier_application(member.modifier, context,
+                                           out_.types[pending.id].actor_type == kInvalidType
+                                               ? pending.id
+                                               : out_.types[pending.id].actor_type);
                 break;
             case Member::Kind::Behavior:
                 if (member.behavior != nullptr) {

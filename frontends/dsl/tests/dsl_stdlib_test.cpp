@@ -1105,9 +1105,8 @@ TEST(DslStdlibTest, TheMapMethodsAreDeclaredWithTheirSignatures) {
 
 TEST(DslStdlibTest, TheMapModifiersAreAssociatedWithTheMap) {
     // §8.12.2.2's twelve search-space modifiers, in the §7.2.2.2.9 prefixed
-    // form. Applying one is issue #100 (the actor prefix stays in the declared
-    // name, so the application site cannot find it); the declarations
-    // themselves are well-formed, which is what this pins.
+    // form. This pins the declarations; applying one is
+    // TheLibraryModifiersCanActuallyBeApplied.
     Library library;
     check_full_library(library);
     const auto map = library.program.types_by_name.find("std::map");
@@ -1671,6 +1670,73 @@ TEST(DslStdlibTest, AssociationIsWhatMakesTheChapterDeclarable) {
     const TypeInfo* physical_speed = library.program.find("stdtypes::speed");
     ASSERT_NE(physical_speed, nullptr);
     EXPECT_EQ(physical_speed->kind, TypeKind::Physical);
+}
+
+TEST(DslStdlibTest, TheLibraryModifiersCanActuallyBeApplied) {
+    // The declarations were pinned from the start; applying one was #100.
+    // Both of §7.3.12.4.1's positions, on modifiers from three chapters:
+    // §8.9's movement modifiers, §8.12.2.2's map search space, and §8.7's
+    // `stationary_object.location`.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario overtake:\n"
+                                       "    my_map: map\n"
+                                       "    ego: vehicle\n"
+                                       "    sign: stationary_object\n"
+                                       "    target: lane\n"
+                                       "    my_map.lane_side(target)\n"
+                                       "    sign.location()\n"
+                                       "    do serial:\n"
+                                       "        ego.drive() with:\n"
+                                       "            keep_lane()\n"
+                                       "            position()\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+    EXPECT_FALSE(sink.has_errors());
+}
+
+TEST(DslStdlibTest, AModifierOfAnUnrelatedActorIsRejected) {
+    // `keep_lane` is declared on `vehicle` (§8.9.16), so a person cannot take
+    // it — the check that makes the association mean something.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_NE(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario walk_home:\n"
+                                       "    pedestrian: person\n"
+                                       "    pedestrian.keep_lane()\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok);
+    ASSERT_FALSE(sink.diagnostics().empty());
+    EXPECT_NE(sink.diagnostics().front().message.find("§7.3.12.4"), std::string::npos)
+        << sink.diagnostics().front().message;
+}
+
+TEST(DslStdlibTest, AnUnassociatedMovementModifierNeedsNoReceiver) {
+    // §8.8/§8.9 collide on three names, so `change_speed`, `keep_speed` and
+    // `change_lane` are declared unassociated. They therefore apply plainly,
+    // with no actor expression — a different application path from their
+    // fourteen associated siblings, and worth exercising as such.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario speed_up:\n"
+                                       "    ego: vehicle\n"
+                                       "    change_speed()\n"
+                                       "    do serial:\n"
+                                       "        ego.drive() with:\n"
+                                       "            keep_speed()\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+    EXPECT_FALSE(sink.has_errors());
 }
 
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
