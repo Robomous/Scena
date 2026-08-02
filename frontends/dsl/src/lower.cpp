@@ -609,12 +609,337 @@ struct Behaviors {
         return true;
     }
 
-    /// Reports the parts of an invocation that p8-s2 and p8-s3 will lower.
-    void report_deferred(const DoMember& member) {
-        for (const ModifierApplication& modifier : member.with.modifiers) {
-            warn(modifier.range,
-                 "movement modifier '" + modifier.name + "' is lowered in p8-s3 (#46), §8.9");
+    // --- §8.9 movement modifiers -------------------------------------------
+
+    /// §8.9.19's phase anchor: where in the phase the modifier's value holds.
+    ///
+    /// The standard leaves `at` optional. An unstated anchor means the value
+    /// holds for the invocation rather than at one edge of it, which is `all` —
+    /// and both `all` and `start` are realised the same way, by setting the
+    /// value when the phase begins. Only `end` needs the value *reached* over
+    /// the phase, which is what makes a duration load-bearing.
+    enum class Anchor { Start, End, All };
+
+    [[nodiscard]] Anchor anchor_of(const ArgumentMap& arguments) {
+        const std::string written = argument_enum(program, arguments, "at");
+        if (written == "end") {
+            return Anchor::End;
         }
+        if (written == "start") {
+            return Anchor::Start;
+        }
+        return Anchor::All;
+    }
+
+    /// How a value anchored at `at` is reached over a phase of `span` seconds.
+    ///
+    /// `start`/`all` is a Step: the value is simply true from the phase's first
+    /// evaluation. `end` is a transition over the phase, which needs a phase
+    /// whose length is a constant — without one there is no interval to spread
+    /// the change over, and inventing a duration would put a number in the
+    /// trace the scenario never stated.
+    [[nodiscard]] ir::TransitionDynamics anchored_dynamics(Anchor at,
+                                                           const std::optional<double>& span,
+                                                           const SourceRange& range,
+                                                           const std::string& modifier) {
+        ir::TransitionDynamics dynamics;
+        if (at != Anchor::End) {
+            return dynamics; // Step, the default
+        }
+        if (!span.has_value() || *span <= 0.0) {
+            warn(range, "'" + modifier +
+                            "' is anchored at the end of a phase whose length no duration fixes, "
+                            "so the value is set at once instead (§8.9.1.1.1)");
+            return dynamics;
+        }
+        dynamics.shape = ir::DynamicsShape::Linear;
+        dynamics.dimension = ir::DynamicsDimension::Time;
+        dynamics.value = *span;
+        return dynamics;
+    }
+
+    /// The §8.9 modifiers applied to one invocation, as IR actions.
+    ///
+    /// A modifier is an equality constraint on the invoked behavior's
+    /// parameters (§7.3.12.4), and the generic actions exist to carry them — so
+    /// this is where `drive() with: speed(...)` becomes something the runtime
+    /// can execute. Nothing new appears in the runtime: every modifier lands on
+    /// an action P2/P5 already implements, or is reported.
+    void modifier_actions(const DoMember& member, const std::string& actor, TypeId actor_type,
+                          const std::optional<double>& span,
+                          std::vector<std::shared_ptr<ir::Action>>& out) {
+        for (const ModifierApplication& application : member.with.modifiers) {
+            const TypeId modifier = lookup_modifier(actor_type, application.name);
+            if (modifier == kInvalidType) {
+                continue; // the resolver already said why
+            }
+            const ArgumentMap arguments =
+                bind_arguments(program, modifier, application.arguments, context);
+            lower_modifier(application, program.types[modifier].simple_name, arguments, actor, span,
+                           out);
+        }
+    }
+
+    /// The modifier a name resolves to: through the receiver's chain for an
+    /// actor-associated one (§7.3.12.2), or plainly for the three §8.9 names
+    /// the standard had to leave unassociated.
+    [[nodiscard]] TypeId lookup_modifier(TypeId receiver, const std::string& name) const {
+        for (TypeId current = receiver; current != kInvalidType;
+             current = program.types[current].base) {
+            const auto found = program.types_by_name.find(program.types[current].name + "." + name);
+            if (found != program.types_by_name.end() &&
+                program.types[found->second].kind == TypeKind::Modifier) {
+                return found->second;
+            }
+        }
+        const auto plain = program.types_by_name.find("std::" + name);
+        if (plain != program.types_by_name.end() &&
+            program.types[plain->second].kind == TypeKind::Modifier) {
+            return plain->second;
+        }
+        return kInvalidType;
+    }
+
+    void lower_modifier(const ModifierApplication& application, const std::string& name,
+                        const ArgumentMap& arguments, const std::string& actor,
+                        const std::optional<double>& span,
+                        std::vector<std::shared_ptr<ir::Action>>& out) {
+        const Anchor at = anchor_of(arguments);
+        const SourceRange& range = application.range;
+
+        if (name == "movable_object.speed") {
+            lower_speed_modifier(arguments, actor, at, span, range, out);
+            return;
+        }
+        if (name == "change_speed") {
+            // §8.9.5 changes the speed *by* an amount, which is a relative
+            // target against the actor's own speed (§RelativeTargetSpeed).
+            const std::optional<double> delta = argument_number(arguments, "speed");
+            if (!delta.has_value()) {
+                warn(range, "'change_speed' needs a concrete 'speed' to change by (§8.9.5)");
+                return;
+            }
+            ir::RelativeTargetSpeed target;
+            target.entity_ref = actor;
+            target.value = *delta;
+            out.push_back(std::make_shared<ir::SpeedAction>(
+                actor, target, anchored_dynamics(at, span, range, name)));
+            return;
+        }
+        if (name == "keep_speed" || name == "movable_object.keep_position") {
+            // Both say "do not change what you are doing". The runtime already
+            // holds an entity's speed and relative position between actions, so
+            // the faithful lowering is no action at all — an action that set
+            // the current value would be a no-op with a trace of its own.
+            return;
+        }
+        if (name == "vehicle.keep_lane") {
+            // §8.9.16 holds the lane, which is the lane offset the runtime
+            // keeps when a continuous LaneOffsetAction targets zero.
+            out.push_back(std::make_shared<ir::LaneOffsetAction>(
+                actor, ir::AbsoluteTargetLaneOffset{0.0}, /*continuous=*/true,
+                ir::DynamicsShape::Step));
+            return;
+        }
+        if (name == "movable_object.position") {
+            lower_position_modifier(arguments, actor, at, range, out);
+            return;
+        }
+        if (name == "movable_object.lateral") {
+            lower_lateral_modifier(arguments, actor, span, at, range, out);
+            return;
+        }
+        if (name == "vehicle.lane") {
+            lower_lane_modifier(arguments, actor, span, at, range, out);
+            return;
+        }
+        if (name == "change_lane") {
+            const std::string side = argument_enum(program, arguments, "side");
+            const std::optional<double> count = argument_number(arguments, "lane");
+            if (side != "left" && side != "right") {
+                error(range, "'change_lane' needs an explicit 'side' of left or right (§8.9.15); "
+                             "an unstated side would have to be chosen");
+                return;
+            }
+            ir::RelativeTargetLane target;
+            target.entity_ref = actor;
+            const int lanes = count.has_value() ? static_cast<int>(*count) : 1;
+            target.value = side == "left" ? lanes : -lanes;
+            out.push_back(std::make_shared<ir::LaneChangeAction>(
+                actor, target, anchored_dynamics(at, span, range, name)));
+            return;
+        }
+        if (name == "movable_object.acceleration") {
+            // §8.9.7 constrains the acceleration of the movement the phase is
+            // already performing. There is no acceleration-target action in the
+            // IR (the coverage matrix defers §8.8's), and on its own the
+            // modifier states a rate with nothing to apply it to.
+            warn(range, "'acceleration' shapes a speed change rather than standing alone, and the "
+                        "runtime has no acceleration-target action in v0.0.1 (§8.9.7)");
+            return;
+        }
+        if (name == "movable_object.along" || name == "movable_object.along_trajectory") {
+            // Both need a concrete route or trajectory *value*. The DSL has no
+            // struct constructor (§7.2.2.6.7), so one can only come from
+            // §8.12.2's `map.create_route(...)` — a method the standard itself
+            // says may be an external implementation (§7.3.7.4), which is
+            // post-v0.0.1.
+            warn(range, "'" + application.name +
+                            "' needs a concrete route or trajectory, which only §8.12.2's map "
+                            "methods produce and those are external (§7.3.7.4)");
+            return;
+        }
+        if (name == "movable_object.distance") {
+            // §8.9.13 bounds the distance travelled during the phase. That is a
+            // phase *boundary*, not an action, and the composition machinery
+            // sequences phases by time (ADR-0031).
+            warn(range, "'distance' bounds a phase by distance travelled rather than by time, "
+                        "which p8-s2's sequencing does not express (§8.9.13)");
+            return;
+        }
+        warn(range, "movement modifier '" + application.name +
+                        "' has no runtime counterpart in v0.0.1 (§8.9); see the DSL coverage "
+                        "matrix");
+    }
+
+    void lower_speed_modifier(const ArgumentMap& arguments, const std::string& actor, Anchor at,
+                              const std::optional<double>& span, const SourceRange& range,
+                              std::vector<std::shared_ptr<ir::Action>>& out) {
+        const ir::TransitionDynamics dynamics = anchored_dynamics(at, span, range, "speed");
+        // §8.9.4's relative forms name another actor; `factor` scales its speed
+        // and a bare `speed` offsets it (§RelativeTargetSpeed's two value types).
+        for (const char* relation : {"faster_than", "slower_than", "same_as"}) {
+            const std::string reference = argument_reference(arguments, relation);
+            if (reference.empty()) {
+                continue;
+            }
+            if (entities.count(reference) == 0) {
+                error(range, "'speed' needs '" + std::string(relation) +
+                                 "' to name a §8.7 participant of this scenario (§8.9.4)");
+                return;
+            }
+            ir::RelativeTargetSpeed target;
+            target.entity_ref = reference;
+            if (const std::optional<double> factor = argument_number(arguments, "factor");
+                factor.has_value()) {
+                target.value_type = ir::SpeedTargetValueType::Factor;
+                target.value = *factor;
+            } else {
+                const std::optional<double> offset = argument_number(arguments, "speed");
+                target.value = offset.value_or(0.0);
+                if (std::string(relation) == "slower_than") {
+                    target.value = -target.value;
+                }
+            }
+            out.push_back(std::make_shared<ir::SpeedAction>(actor, target, dynamics));
+            return;
+        }
+        const std::optional<double> speed = argument_number(arguments, "speed");
+        if (!speed.has_value()) {
+            warn(range, "'speed' fixes no single value here, so nothing is lowered; a range "
+                        "constrains accepted traces rather than fixing a speed (§8.9.4)");
+            return;
+        }
+        out.push_back(std::make_shared<ir::SpeedAction>(actor, *speed, dynamics));
+    }
+
+    void lower_position_modifier(const ArgumentMap& arguments, const std::string& actor, Anchor at,
+                                 const SourceRange& range,
+                                 std::vector<std::shared_ptr<ir::Action>>& out) {
+        // §8.9.2 places the actor relative to another one. `ahead_of` puts the
+        // actor ahead of the reference, `behind` behind it.
+        std::string reference = argument_reference(arguments, "ahead_of");
+        bool ahead = true;
+        if (reference.empty()) {
+            reference = argument_reference(arguments, "behind");
+            ahead = false;
+        }
+        if (reference.empty() || entities.count(reference) == 0) {
+            warn(range, "'position' is lowered in its 'ahead_of'/'behind' form; the point forms "
+                        "need a concrete position_3d declaration (§8.9.2)");
+            return;
+        }
+        const std::optional<double> distance = argument_number(arguments, "distance");
+        if (!distance.has_value()) {
+            warn(range, "'position' needs a concrete 'distance' (§8.9.2); a time gap or a range "
+                        "is not lowered");
+            return;
+        }
+        if (at == Anchor::Start) {
+            // A placement: the actor *is* there when the phase begins.
+            ir::RelativeObjectPosition placement;
+            placement.entity_ref = reference;
+            placement.dx = ahead ? *distance : -*distance;
+            out.push_back(std::make_shared<ir::TeleportAction>(actor, ir::Position{placement}));
+            return;
+        }
+        // A gap to reach and, for `all`, to hold.
+        out.push_back(std::make_shared<ir::LongitudinalDistanceAction>(
+            actor, reference, *distance, std::nullopt, /*freespace=*/true,
+            /*continuous=*/at == Anchor::All, ir::CoordinateSystem::Entity,
+            ahead ? ir::LongitudinalDisplacement::LeadingReferencedEntity
+                  : ir::LongitudinalDisplacement::TrailingReferencedEntity));
+    }
+
+    void lower_lateral_modifier(const ArgumentMap& arguments, const std::string& actor,
+                                const std::optional<double>& span, Anchor at,
+                                const SourceRange& range,
+                                std::vector<std::shared_ptr<ir::Action>>& out) {
+        const std::optional<double> distance = argument_number(arguments, "distance");
+        if (!distance.has_value()) {
+            warn(range, "'lateral' needs a concrete 'distance' (§8.9.8)");
+            return;
+        }
+        // §8.9.8's `side` is which side of the reference the actor is on;
+        // positive lateral offsets are to the left (§7.4.1.4).
+        const std::string side = argument_enum(program, arguments, "side");
+        const double offset = side == "right" ? -*distance : *distance;
+        const std::string reference = argument_reference(arguments, "side_of");
+        if (!reference.empty() && entities.count(reference) != 0) {
+            out.push_back(std::make_shared<ir::LateralDistanceAction>(
+                actor, reference, *distance, /*freespace=*/true,
+                /*continuous=*/at == Anchor::All));
+            return;
+        }
+        (void)span;
+        out.push_back(std::make_shared<ir::LaneOffsetAction>(
+            actor, ir::AbsoluteTargetLaneOffset{offset}, /*continuous=*/at == Anchor::All,
+            at == Anchor::End ? ir::DynamicsShape::Linear : ir::DynamicsShape::Step));
+    }
+
+    void lower_lane_modifier(const ArgumentMap& arguments, const std::string& actor,
+                             const std::optional<double>& span, Anchor at, const SourceRange& range,
+                             std::vector<std::shared_ptr<ir::Action>>& out) {
+        const std::string reference = argument_reference(arguments, "side_of");
+        const std::string side = argument_enum(program, arguments, "side");
+        if (!reference.empty() && entities.count(reference) != 0) {
+            if (side != "left" && side != "right") {
+                error(range, "'lane' with 'side_of' needs an explicit 'side' of left or right "
+                             "(§8.9.14)");
+                return;
+            }
+            ir::RelativeTargetLane target;
+            target.entity_ref = reference;
+            target.value = side == "left" ? 1 : -1;
+            out.push_back(std::make_shared<ir::LaneChangeAction>(
+                actor, target, anchored_dynamics(at, span, range, "lane")));
+            return;
+        }
+        const std::optional<double> lane = argument_number(arguments, "lane");
+        if (!lane.has_value()) {
+            warn(range, "'lane' needs a concrete lane number or a 'side_of' participant (§8.9.14)");
+            return;
+        }
+        // §8.9.14 counts lanes by road-network identity, which only a road
+        // backend can resolve — an absolute lane id, exactly as XML spells it.
+        ir::AbsoluteTargetLane target;
+        target.value = std::to_string(static_cast<long long>(*lane));
+        out.push_back(std::make_shared<ir::LaneChangeAction>(
+            actor, target, anchored_dynamics(at, span, range, "lane")));
+    }
+
+    /// Reports the parts of an invocation a later sprint will lower.
+    void report_deferred(const DoMember& member) {
         for (const EventSpec& until : member.with.until) {
             (void)until;
             // §7.6.2.5.4 ends the invocation *exactly* at an event, and the
@@ -926,6 +1251,10 @@ struct Behaviors {
                      "does not bound an absolute time (§7.6.2.4.1)");
             }
         }
+        // The modifiers come after the action's own contribution, because they
+        // *tune* it — and they need the phase's length, which the duration just
+        // established (§8.9.1.1.1's `at: end`).
+        modifier_actions(member, actor, actor_type, duration, actions);
         if (actions.empty()) {
             // Nothing to run — a generic action, or one already reported. The
             // phase still takes its duration, because the actor is still doing

@@ -260,6 +260,18 @@ expected. It also keeps the dependency list unchanged.
   by label from `LowerOptions::alternative`, defaulting to the first: the engine
   has no seed machinery, and a hidden input is what determinism forbids.
   `wait elapsed(d)` lowers to nothing but the offset.
+- **Every §8.9 modifier lands on an action the runtime already has** (ADR-0032).
+  `drive()` plus modifiers is the idiomatic scenario, and the modifiers are what
+  give it content: speed targets (absolute and relative), placements and gaps,
+  lane targets and offsets. Nothing modifier-shaped exists in the runtime.
+- **The `at` anchor decides how, and needs the phase's length.** Absent, `all`
+  and `start` set the value when the phase begins; `end` reaches it over the
+  phase, which is what makes p8-s2's durations load-bearing. Without a duration
+  it is reported, never invented. `position` is the one where the anchor changes
+  the *kind* of action: a placement at the start, a gap to hold over the phase.
+- **`keep_speed()` and `keep_position()` lower to nothing, on purpose.** The
+  runtime already holds both between actions, so an action setting the current
+  value would be a no-op that still occupies the action domain (§7.5).
 - **`..` has to beat a float that starts with a dot.** §7.2.2.6.7 spells the
   range constructor `[a '..' b]` while §7.2.1.5.2 makes a float's leading digits
   optional, so `[2..4]` is a race the operator must win. It did not until p8-s2;
