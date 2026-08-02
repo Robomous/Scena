@@ -577,6 +577,185 @@ TEST(DslStdlibTest, TheDomainModelNeedsAnImportOrAQualifiedName) {
     EXPECT_TRUE(sink.has_errors());
 }
 
+// --- §8.12 the road abstraction ---------------------------------------------
+
+TEST(DslStdlibTest, TheRouteHierarchyMatchesTheDomainModel) {
+    // §8.12.5/§8.12.7: `route` is the parent of `route_element`, which is the
+    // parent of everything a movable object can be located on.
+    Library library;
+    check_full_library(library);
+    const auto route = library.program.types_by_name.find("std::route");
+    const auto element = library.program.types_by_name.find("std::route_element");
+    ASSERT_NE(route, library.program.types_by_name.end());
+    ASSERT_NE(element, library.program.types_by_name.end());
+    EXPECT_TRUE(library.program.is_derived_from(element->second, route->second));
+    for (const char* derived :
+         {"std::road", "std::lane_section", "std::lane", "std::crossing", "std::route_point",
+          "std::xyz_point", "std::odr_point", "std::geodetic_point", "std::path"}) {
+        const auto id = library.program.types_by_name.find(derived);
+        ASSERT_NE(id, library.program.types_by_name.end()) << derived;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, element->second)) << derived;
+    }
+    // §8.12.20/§8.12.21: the compounds inherit `route` directly, not
+    // `route_element` — they are sequences of elements, not elements.
+    for (const char* compound : {"std::compound_route", "std::compound_lane"}) {
+        const auto id = library.program.types_by_name.find(compound);
+        ASSERT_NE(id, library.program.types_by_name.end()) << compound;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, route->second)) << compound;
+        EXPECT_FALSE(library.program.is_derived_from(id->second, element->second)) << compound;
+    }
+}
+
+TEST(DslStdlibTest, TheRoadStructsAreDeclaredWithTheirFields) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::vector<const char*> fields;
+    };
+    for (const Case& expected :
+         {Case{"std::junction", {"roads"}},
+          Case{"std::route", {"length", "directionality", "min_lanes", "max_lanes", "anchors"}},
+          Case{"std::road", {"s_positive", "s_negative"}},
+          Case{"std::lane_section", {"road", "lanes", "s_axis"}},
+          Case{"std::lane", {"lane_section", "lane_type", "lane_use", "width"}},
+          Case{
+              "std::crossing",
+              {"start_lane", "end_lane", "start_s_coord", "end_s_coord", "width", "crossing_type"}},
+          Case{"std::crossing_type", {"marking", "use", "elevation"}},
+          Case{"std::route_point", {"route", "s", "t"}}, Case{"std::xyz_point", {"position"}},
+          Case{"std::odr_point", {"road_id", "lane_id", "s", "t"}},
+          Case{"std::geodetic_point", {"latitude", "longitude", "altitude"}},
+          Case{"std::path", {"points", "interpolation"}},
+          Case{"std::trajectory", {"points", "time_stamps", "interpolation"}},
+          Case{"std::relative_path_odr", {"points", "interpolation"}},
+          Case{"std::relative_trajectory_st", {"points", "time_stamps", "interpolation"}}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        for (const char* field : expected.fields) {
+            EXPECT_NE(library.program.find_field(id->second, field), nullptr)
+                << expected.name << "." << field;
+        }
+    }
+    // §8.12.5's route methods return a point on the route.
+    const auto route = library.program.types_by_name.find("std::route");
+    ASSERT_NE(route, library.program.types_by_name.end());
+    for (const char* method : {"start_point", "end_point"}) {
+        const scena::dsl::MethodInfo* found = library.program.find_method(route->second, method);
+        ASSERT_NE(found, nullptr) << method;
+        ASSERT_NE(found->return_type, scena::dsl::kInvalidType) << method;
+        EXPECT_EQ(library.program.types[found->return_type].name, "std::route_point") << method;
+    }
+}
+
+TEST(DslStdlibTest, TheRoadEnumsCarryTheirValues) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::size_t values;
+        const char* sample;
+    };
+    for (const Case& expected :
+         {Case{"std::driving_rule", 2, "right_hand_traffic"},
+          Case{"std::directionality", 6, "bi_direction"}, Case{"std::lane_type", 5, "vru_vehicles"},
+          Case{"std::lane_use", 22, "connecting_ramp"}, Case{"std::side_left_right", 2, "left"},
+          Case{"std::lon_lat", 2, "longitudinal"}, Case{"std::crossing_marking", 4, "zebra"},
+          Case{"std::crossing_use", 5, "rail_road"},
+          Case{"std::crossing_elevation", 4, "refuge_island"},
+          Case{"std::junction_direction", 5, "u_turn"},
+          Case{"std::route_overlap_kind", 6, "inside"},
+          Case{"std::lateral_overlap_kind", 3, "sometimes"},
+          Case{"std::connect_route_points", 5, "waypoint"},
+          Case{"std::path_interpolation", 2, "straight_line"},
+          Case{"std::relative_transform", 4, "lane_relative"}}) {
+        const TypeInfo* type = library.program.find(expected.name);
+        ASSERT_NE(type, nullptr) << expected.name;
+        EXPECT_EQ(type->kind, TypeKind::Enum) << expected.name;
+        EXPECT_EQ(type->enum_members.size(), expected.values) << expected.name;
+        bool found = false;
+        for (const auto& member : type->enum_members) {
+            found = found || member.name == expected.sample;
+        }
+        EXPECT_TRUE(found) << expected.name << "!" << expected.sample;
+    }
+}
+
+TEST(DslStdlibTest, TheDeferredRoadMethodsAreDeclaredOnPhysicalObject) {
+    // §8.7.3.1 and §8.7.5.1.1 print these as `extend` blocks; they waited for
+    // §8.12 to declare their argument types, and §7.3.9's extension mechanism
+    // is what lets them arrive in a later file of the same library.
+    Library library;
+    check_full_library(library);
+    const auto object = library.program.types_by_name.find("std::physical_object");
+    ASSERT_NE(object, library.program.types_by_name.end());
+    for (const char* method :
+         {"object_distance", "road_distance", "distance_to_xyz_point", "distance_to_route_point",
+          "distance_to_odr_point", "get_s_coord", "get_t_coord", "get_route_point"}) {
+        EXPECT_NE(library.program.find_method(object->second, method), nullptr) << method;
+    }
+    const auto participant = library.program.types_by_name.find("std::traffic_participant");
+    ASSERT_NE(participant, library.program.types_by_name.end());
+    EXPECT_NE(library.program.find_method(participant->second, "distance_along_route"), nullptr);
+    // Inherited, so a vehicle measures against the road network too.
+    const auto vehicle = library.program.types_by_name.find("std::vehicle");
+    ASSERT_NE(vehicle, library.program.types_by_name.end());
+    EXPECT_NE(library.program.find_method(vehicle->second, "get_route_point"), nullptr);
+}
+
+TEST(DslStdlibTest, ARoadMethodCarriesItsDefaultedArguments) {
+    // §8.7.3.1.6: `def get_s_coord(route_type: on_route_type = on_road)`.
+    Library library;
+    check_full_library(library);
+    const auto object = library.program.types_by_name.find("std::physical_object");
+    ASSERT_NE(object, library.program.types_by_name.end());
+    const scena::dsl::MethodInfo* method =
+        library.program.find_method(object->second, "road_distance");
+    ASSERT_NE(method, nullptr);
+    EXPECT_EQ(method->parameters.size(), 4U);
+    ASSERT_NE(method->return_type, scena::dsl::kInvalidType);
+    EXPECT_EQ(library.program.types[method->return_type].name, "stdtypes::length");
+}
+
+TEST(DslStdlibTest, AScenarioCanUseTheRoadAbstraction) {
+    // `driving` is a member of both `intended_infrastructure` (§8.7.19) and
+    // `lane_type` (§8.12.12), so §7.3.3 requires the enum name. A library this
+    // size makes that the normal case, not the exception.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    ASSERT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario overtake:\n"
+                                       "    ego: vehicle\n"
+                                       "    target: lane\n"
+                                       "    keep(target.lane_type == lane_type!driving)\n"
+                                       "    keep(target.width == 3.5m)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::Ok)
+        << (sink.diagnostics().empty() ? std::string() : sink.diagnostics().front().message);
+    EXPECT_FALSE(sink.has_errors());
+}
+
+TEST(DslStdlibTest, AnEnumLiteralSharedAcrossTheLibraryNeedsItsEnumName) {
+    // The other half of the rule above, as a diagnostic §7.3.3 asks for.
+    DiagnosticSink sink;
+    LoadResult loaded;
+    Program program;
+    EXPECT_EQ(scena::dsl::check_source("import osc.standard.all\n"
+                                       "namespace demo use std, stdtypes\n"
+                                       "scenario overtake:\n"
+                                       "    target: lane\n"
+                                       "    keep(target.lane_type == driving)\n",
+                                       "<test>", LoadOptions{}, loaded, program, sink),
+              Status::ValidationError);
+    bool explained = false;
+    for (const scena::Diagnostic& diagnostic : sink.diagnostics()) {
+        explained = explained || diagnostic.message.find("more than one enum") != std::string::npos;
+    }
+    EXPECT_TRUE(explained);
+}
+
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
     // Load time is inside the determinism contract: the same sources must give
     // the same program and the same diagnostics, in the same order.

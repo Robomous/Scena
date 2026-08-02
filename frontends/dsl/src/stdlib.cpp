@@ -397,13 +397,217 @@ actor animal inherits traffic_participant
 export *
 )OSC";
 
+// §8.12 — the road abstraction classes, which §8.12.1 calls the classes that
+// "describe the road network in an abstract way". Transcribed from the
+// parameter tables of §8.12.3–§8.12.41.
+//
+// The §8.12.2 `map` actor is not here yet; it lands with the next slice of #43.
+//
+// This chunk also carries the §8.7 methods that were deferred until their
+// argument types existed: the standard prints every one of them as an `extend`
+// block, so they arrive exactly as written.
+constexpr std::string_view kDomainRoads = R"OSC(
+# --- §8.12.3 enum driving_rule -----------------------------------------------
+enum driving_rule: [left_hand_traffic, right_hand_traffic]
+
+# --- §8.12.6 enum directionality ---------------------------------------------
+enum directionality: [uni_direction, bi_direction, split, free, none, other]
+
+# --- §8.12.12 enum lane_type -------------------------------------------------
+enum lane_type: [driving, non_driving, vru_vehicles, pedestrian, other]
+
+# --- §8.12.13 enum lane_use --------------------------------------------------
+enum lane_use: [
+    normal, exit, entry, on_ramp, off_ramp, connecting_ramp, hov, bus,
+    mixed_traffic_vru, parking, stop, restricted, border, shoulder, curb,
+    median, bicycle, motorcycle, sidewalk, protected_sidewalk, none, other
+]
+
+# --- §8.12.14 enum side_left_right -------------------------------------------
+enum side_left_right: [left, right]
+
+# --- §8.12.15 enum lon_lat ---------------------------------------------------
+enum lon_lat: [longitudinal, lateral]
+
+# --- §8.12.17 enum crossing_marking ------------------------------------------
+enum crossing_marking: [unmarked, marked, zebra, other]
+
+# --- §8.12.18 enum crossing_use ----------------------------------------------
+enum crossing_use: [pedestrian, animal, bicycle, rail_road, other]
+
+# --- §8.12.19 enum crossing_elevation ----------------------------------------
+enum crossing_elevation: [road_level, curb_level, refuge_island, other]
+
+# --- §8.12.22 enum junction_direction ----------------------------------------
+enum junction_direction: [straight, right, u_turn, left, other]
+
+# --- §8.12.23 enum route_overlap_kind ----------------------------------------
+enum route_overlap_kind: [equal, start, end, inside, any, other]
+
+# --- §8.12.24 enum lateral_overlap_kind --------------------------------------
+enum lateral_overlap_kind: [never, sometimes, always]
+
+# --- §8.12.29 enum connect_route_points --------------------------------------
+enum connect_route_points: [road, lane_section, lane, crossing, waypoint]
+
+# --- §8.12.35 enum path_interpolation ----------------------------------------
+enum path_interpolation: [straight_line, smooth]
+
+# --- §8.12.36 enum relative_transform ----------------------------------------
+enum relative_transform: [
+    world_relative, object_relative, road_relative, lane_relative
+]
+
+# --- §8.12.5 struct route ----------------------------------------------------
+struct route:
+    length: length
+    directionality: directionality
+    min_lanes: uint
+    max_lanes: uint
+    anchors: list of string
+    def start_point() -> route_point is undefined
+    def end_point() -> route_point is undefined
+
+# --- §8.12.7 struct route_element --------------------------------------------
+struct route_element inherits route
+
+# --- §8.12.4 struct junction -------------------------------------------------
+struct junction:
+    roads: list of road
+
+# --- §8.12.8 struct road -----------------------------------------------------
+struct road inherits route_element:
+    s_positive: list of lane_section
+    s_negative: list of lane_section
+
+# --- §8.12.9 struct lane_section ---------------------------------------------
+struct lane_section inherits route_element:
+    road: road
+    lanes: list of lane
+    s_axis: lane
+
+# --- §8.12.10 struct lane ----------------------------------------------------
+struct lane inherits route_element:
+    lane_section: lane_section
+    lane_type: lane_type
+    lane_use: lane_use
+    width: length
+
+# --- §8.12.16 struct crossing_type -------------------------------------------
+struct crossing_type:
+    marking: crossing_marking
+    use: crossing_use
+    elevation: crossing_elevation
+
+# --- §8.12.11 struct crossing ------------------------------------------------
+struct crossing inherits route_element:
+    start_lane: lane
+    end_lane: lane
+    start_s_coord: length
+    end_s_coord: length
+    width: length
+    crossing_type: crossing_type
+
+# --- §8.12.20 struct compound_route ------------------------------------------
+struct compound_route inherits route:
+    route_elements: list of route_element
+
+# --- §8.12.21 struct compound_lane -------------------------------------------
+struct compound_lane inherits route:
+    lanes: list of lane
+
+# --- §8.12.25 struct route_point ---------------------------------------------
+struct route_point inherits route_element:
+    route: route
+    s: length
+    t: length
+
+# --- §8.12.26 struct xyz_point -----------------------------------------------
+struct xyz_point inherits route_element:
+    position: position_3d
+
+# --- §8.12.27 struct odr_point -----------------------------------------------
+struct odr_point inherits route_element:
+    road_id: string
+    lane_id: string
+    s: length
+    t: length
+
+# --- §8.12.28 struct geodetic_point ------------------------------------------
+struct geodetic_point inherits route_element:
+    latitude: angle
+    longitude: angle
+    altitude: length
+
+# --- §8.12.30 struct path ----------------------------------------------------
+struct path inherits route_element:
+    points: list of pose_3d
+    interpolation: path_interpolation
+
+# --- §8.12.31 struct relative_path -------------------------------------------
+struct relative_path:
+    interpolation: path_interpolation
+
+# --- §8.12.32 struct relative_path_pose_3d -----------------------------------
+struct relative_path_pose_3d inherits relative_path:
+    points: list of pose_3d
+
+# --- §8.12.33 struct relative_path_st ----------------------------------------
+struct relative_path_st inherits relative_path:
+    points: list of route_point
+
+# --- §8.12.34 struct relative_path_odr ---------------------------------------
+struct relative_path_odr inherits relative_path:
+    points: list of odr_point
+
+# --- §8.12.37 struct trajectory ----------------------------------------------
+struct trajectory:
+    points: list of pose_3d
+    time_stamps: list of time
+    interpolation: path_interpolation
+
+# --- §8.12.38 struct relative_trajectory -------------------------------------
+struct relative_trajectory:
+    time_stamps: list of time
+    interpolation: path_interpolation
+
+# --- §8.12.39 struct relative_trajectory_pose_3d -----------------------------
+struct relative_trajectory_pose_3d inherits relative_trajectory:
+    points: list of pose_3d
+
+# --- §8.12.40 struct relative_trajectory_st ----------------------------------
+struct relative_trajectory_st inherits relative_trajectory:
+    points: list of route_point
+
+# --- §8.12.41 struct relative_trajectory_odr ---------------------------------
+struct relative_trajectory_odr inherits relative_trajectory:
+    points: list of odr_point
+
+# --- §8.7.3.1 physical_object methods over the road network ------------------
+# Held back from the §8.7 slice until their argument types existed. The
+# standard prints each of these as an `extend` block, which is how they arrive.
+extend physical_object:
+    def object_distance(reference: physical_object, direction: distance_direction, mode: distance_mode = reference_points) -> length is undefined
+    def road_distance(reference: physical_object, direction: road_distance_direction, mode: distance_mode = reference_points, route_type: on_route_type = on_road) -> length is undefined
+    def distance_to_xyz_point(point: xyz_point, direction: distance_direction, mode: distance_mode = reference_points) -> length is undefined
+    def distance_to_route_point(point: route_point, direction: road_distance_direction, mode: distance_mode = reference_points, route_type: on_route_type = on_road) -> length is undefined
+    def distance_to_odr_point(point: odr_point, direction: road_distance_direction, mode: distance_mode = reference_points, route_type: on_route_type = on_road) -> length is undefined
+    def get_s_coord(route_type: on_route_type = on_road) -> length is undefined
+    def get_t_coord(route_type: on_route_type = on_road) -> length is undefined
+    def get_route_point(route_type: on_route_type = on_road) -> route_point is undefined
+
+# --- §8.7.5.1.1 distance_along_route -----------------------------------------
+extend traffic_participant:
+    def distance_along_route(route: route, from: route_distance_enum = from_start) -> length is undefined
+)OSC";
+
 const std::string& types_module() {
     static const std::string source = std::string(kTypesScalars) + std::string(kTypesCompound);
     return source;
 }
 
 const std::string& domain_module() {
-    static const std::string source = std::string(kDomainEntities);
+    static const std::string source = std::string(kDomainEntities) + std::string(kDomainRoads);
     return source;
 }
 
