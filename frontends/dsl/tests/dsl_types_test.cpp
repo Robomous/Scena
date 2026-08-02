@@ -618,6 +618,103 @@ TEST(DslTypesTest, AModifierArgumentMustNameAParameter) {
     EXPECT_NE(program.find("::s"), nullptr);
 }
 
+// --- modifier application (§7.3.12.4) --------------------------------------
+//
+// Until #100 was fixed an actor-associated modifier could not be applied at
+// all: the declaration `modifier thing.tweak` interns the name in the actor
+// scope (§7.3.12.2), and the application site looked it up in the namespace's
+// type table, where it never was.
+
+TEST(DslTypesTest, AnActorAssociatedModifierAppliesToItsActor) {
+    const Program program = resolve_ok("actor thing\n"
+                                       "modifier thing.tweak:\n    v: int\n"
+                                       "scenario thing.demo:\n"
+                                       "    t: thing\n"
+                                       "    t.tweak(1)\n");
+    EXPECT_NE(program.find("::thing.tweak"), nullptr);
+}
+
+TEST(DslTypesTest, AnActorAssociatedModifierReachesASubtype) {
+    // §7.3.12.4.1 resolves the actor expression's type; a subtype of the
+    // associated actor is still that actor.
+    const Program program = resolve_ok("actor base\n"
+                                       "actor derived inherits base\n"
+                                       "modifier base.tweak:\n    v: int\n"
+                                       "scenario base.demo:\n"
+                                       "    d: derived\n"
+                                       "    d.tweak(1)\n");
+    EXPECT_NE(program.find("::base.tweak"), nullptr);
+}
+
+TEST(DslTypesTest, AnActorAppliesItsOwnModifierWithoutNamingItself) {
+    // §7.3.12.4.2's third example: applied within an actor declaration, so it
+    // applies to every instance of that actor. No actor expression to write.
+    const Program program = resolve_ok("actor base\n"
+                                       "modifier base.tweak:\n    v: int\n"
+                                       "actor derived inherits base:\n"
+                                       "    tweak(1)\n");
+    EXPECT_NE(program.find("::derived"), nullptr);
+}
+
+TEST(DslTypesTest, AModifierOfAnUnrelatedActorIsRejected) {
+    const std::vector<scena::Diagnostic> errors =
+        resolve_errors("actor thing\nactor other\n"
+                       "modifier thing.tweak:\n    v: int\n"
+                       "scenario thing.demo:\n"
+                       "    o: other\n"
+                       "    o.tweak(1)\n");
+    EXPECT_TRUE(mentions(errors, "belongs to 'thing'"));
+    EXPECT_TRUE(mentions(errors, "§7.3.12.4"));
+}
+
+TEST(DslTypesTest, AWithBlockValidatesTheModifiersItApplies) {
+    // The larger half of #100: a `with:` block used to accept any name at all,
+    // and it is where the domain model expects nearly every modifier to be
+    // applied.
+    const std::vector<scena::Diagnostic> errors =
+        resolve_errors("actor thing:\n    def go() is undefined\n"
+                       "scenario thing.demo:\n"
+                       "    t: thing\n"
+                       "    do serial:\n"
+                       "        t.go() with:\n"
+                       "            no_such_modifier(1)\n");
+    EXPECT_TRUE(mentions(errors, "unknown modifier 'no_such_modifier'"));
+}
+
+TEST(DslTypesTest, AWithBlockOmitsTheActorItIsAlreadyApplyingTo) {
+    // §7.3.12.4.1: "A modifier-associated actor can be omitted when it is the
+    // same as the scenario actor the modifier is applied in" — the invocation's
+    // actor is the receiver.
+    const Program program = resolve_ok("actor thing:\n    def go() is undefined\n"
+                                       "modifier thing.tweak:\n    v: int\n"
+                                       "scenario thing.demo:\n"
+                                       "    t: thing\n"
+                                       "    do serial:\n"
+                                       "        t.go() with:\n"
+                                       "            tweak(1)\n");
+    EXPECT_NE(program.find("::thing.tweak"), nullptr);
+}
+
+TEST(DslTypesTest, AWithBlockChecksArgumentNamesToo) {
+    const std::vector<scena::Diagnostic> errors =
+        resolve_errors("actor thing:\n    def go() is undefined\n"
+                       "modifier thing.tweak:\n    v: int\n"
+                       "scenario thing.demo:\n"
+                       "    t: thing\n"
+                       "    do serial:\n"
+                       "        t.go() with:\n"
+                       "            tweak(nope: 1)\n");
+    EXPECT_TRUE(mentions(errors, "has no parameter 'nope'"));
+}
+
+TEST(DslTypesTest, ANameThatIsNotAModifierSaysWhatItIs) {
+    // Better than "unknown": at library scale the interesting failure is a name
+    // that exists and is the wrong kind of thing.
+    const std::vector<scena::Diagnostic> errors =
+        resolve_errors("struct tweak\nscenario s:\n    tweak(1)\n");
+    EXPECT_TRUE(mentions(errors, "not a modifier"));
+}
+
 TEST(DslTypesTest, AScenarioAssociatedModifierIsRejectedElsewhere) {
     const std::vector<scena::Diagnostic> errors = resolve_errors("scenario drive\n"
                                                                  "modifier follow of drive\n"
