@@ -403,6 +403,9 @@ struct Behaviors {
     std::set<std::string> entities;
     /// The `one_of` alternative to run, by label; empty means the first.
     std::string alternative;
+    /// Phase names already used, so siblings stay unique: the runtime
+    /// addresses storyboard elements by name path.
+    std::set<std::string> taken;
     DiagnosticSink& sink;
 
     void warn(const SourceRange& at, std::string message) {
@@ -623,8 +626,7 @@ struct Behaviors {
 
     /// A name for the phase that is unique among its siblings, because the
     /// runtime addresses storyboard elements by name path.
-    std::string phase_name(const DoMember& member, std::size_t index,
-                           std::set<std::string>& taken) {
+    std::string phase_name(const DoMember& member, std::size_t index) {
         std::string name =
             member.label.empty() ? "phase_" + std::to_string(index + 1) : member.label;
         std::string candidate = name;
@@ -931,7 +933,7 @@ struct Behaviors {
             return end;
         }
 
-        const std::string name = phase_name(member, act.groups.size(), taken);
+        const std::string name = phase_name(member, act.groups.size());
         ir::Event event;
         event.name = name;
         event.actions = std::move(actions);
@@ -982,8 +984,6 @@ struct Behaviors {
             out.stop_trigger = trigger_for(end);
         }
     }
-
-    std::set<std::string> taken;
 };
 
 } // namespace
@@ -1197,7 +1197,7 @@ Status lower(const Program& program, const LoadResult& loaded, const LowerOption
     }
 
     Behaviors behaviors{program, library, root->path, context, bindings, {}, options.alternative,
-                        sink,    {}};
+                        {},      sink};
     for (const ir::Entity& entity : out.entities) {
         behaviors.entities.insert(entity.id);
     }
