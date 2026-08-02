@@ -9,6 +9,7 @@
 add_library(scena-frontend-dsl STATIC
     src/lexer.cpp
     src/parser.cpp
+    src/expression.cpp
     src/resolve.cpp
     src/types.cpp
 )
