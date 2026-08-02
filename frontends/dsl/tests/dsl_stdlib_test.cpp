@@ -756,6 +756,117 @@ TEST(DslStdlibTest, AnEnumLiteralSharedAcrossTheLibraryNeedsItsEnumName) {
     EXPECT_TRUE(explained);
 }
 
+// --- §8.8.1 the action hierarchy, §8.10/§8.11 the environment ---------------
+
+TEST(DslStdlibTest, TheActionHierarchyIsRootedInOscAction) {
+    // §8.8.1.1: `osc_action` is "the base class for all actions ... associated
+    // with the parent actor `osc_actor`", with two children.
+    Library library;
+    check_full_library(library);
+    const auto base = library.program.types_by_name.find("std::osc_actor.osc_action");
+    ASSERT_NE(base, library.program.types_by_name.end());
+    EXPECT_EQ(library.program.types[base->second].kind, TypeKind::Action);
+    for (const char* child : {"std::environment.action_for_environment",
+                              "std::movable_object.action_for_movable_object"}) {
+        const auto id = library.program.types_by_name.find(child);
+        ASSERT_NE(id, library.program.types_by_name.end()) << child;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, base->second)) << child;
+    }
+}
+
+TEST(DslStdlibTest, TheEnvironmentActorCarriesItsStructsAndItsMethod) {
+    Library library;
+    check_full_library(library);
+    const auto environment = library.program.types_by_name.find("std::environment");
+    ASSERT_NE(environment, library.program.types_by_name.end());
+    EXPECT_EQ(library.program.types[environment->second].kind, TypeKind::Actor);
+    for (const char* field : {"geodetic_position", "datetime", "sun", "moon", "weather"}) {
+        EXPECT_NE(library.program.find_field(environment->second, field), nullptr) << field;
+    }
+    // §8.10.2.1.1's seven-argument convenience method.
+    const scena::dsl::MethodInfo* method =
+        library.program.find_method(environment->second, "local_to_unix_time");
+    ASSERT_NE(method, nullptr);
+    EXPECT_EQ(method->parameters.size(), 7U);
+    ASSERT_NE(method->return_type, scena::dsl::kInvalidType);
+    EXPECT_EQ(library.program.types[method->return_type].name, "stdtypes::time");
+}
+
+TEST(DslStdlibTest, TheWeatherStructsAreDeclaredWithTheirFields) {
+    Library library;
+    check_full_library(library);
+    struct Case {
+        const char* name;
+        std::vector<const char*> fields;
+    };
+    for (const Case& expected :
+         {Case{"std::weather", {"air", "rain", "snow", "wind", "fog", "clouds"}},
+          Case{"std::air", {"temperature", "pressure", "relative_humidity"}},
+          Case{"std::precipitation", {"intensity"}}, Case{"std::wind", {"speed", "direction"}},
+          Case{"std::fog", {"visual_range"}}, Case{"std::clouds", {"cloudiness"}},
+          Case{"std::celestial_light_source", {"position"}}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        EXPECT_EQ(library.program.types[id->second].kind, TypeKind::Struct) << expected.name;
+        for (const char* field : expected.fields) {
+            EXPECT_NE(library.program.find_field(id->second, field), nullptr)
+                << expected.name << "." << field;
+        }
+    }
+    // §8.10.5: volumetric flux reduces to the dimension of speed, and the
+    // language cannot declare two physical types over one unit, so the
+    // standard types precipitation intensity as a speed.
+    const auto precipitation = library.program.types_by_name.find("std::precipitation");
+    ASSERT_NE(precipitation, library.program.types_by_name.end());
+    const scena::dsl::FieldInfo* intensity =
+        library.program.find_field(precipitation->second, "intensity");
+    ASSERT_NE(intensity, nullptr);
+    EXPECT_EQ(library.program.types[intensity->type].name, "stdtypes::speed");
+}
+
+TEST(DslStdlibTest, TheEnvironmentActionsAreDeclaredOnTheEnvironmentActor) {
+    Library library;
+    check_full_library(library);
+    const auto parent =
+        library.program.types_by_name.find("std::environment.action_for_environment");
+    const auto actor = library.program.types_by_name.find("std::environment");
+    ASSERT_NE(parent, library.program.types_by_name.end());
+    ASSERT_NE(actor, library.program.types_by_name.end());
+    struct Case {
+        const char* name;
+        const char* field;
+    };
+    for (const Case& expected :
+         {Case{"std::environment.air", "temperature"}, Case{"std::environment.rain", "intensity"},
+          Case{"std::environment.snow", "intensity"}, Case{"std::environment.wind", "direction"},
+          Case{"std::environment.fog", "visual_range"},
+          Case{"std::environment.clouds", "cloudiness"},
+          Case{"std::environment.assign_celestial_position", "light_source"}}) {
+        const auto id = library.program.types_by_name.find(expected.name);
+        ASSERT_NE(id, library.program.types_by_name.end()) << expected.name;
+        const TypeInfo& action = library.program.types[id->second];
+        EXPECT_EQ(action.kind, TypeKind::Action) << expected.name;
+        EXPECT_EQ(action.actor_type, actor->second) << expected.name;
+        EXPECT_TRUE(library.program.is_derived_from(id->second, parent->second)) << expected.name;
+        EXPECT_NE(library.program.find_field(id->second, expected.field), nullptr)
+            << expected.name << "." << expected.field;
+    }
+}
+
+TEST(DslStdlibTest, AnActionAndAStructMayShareASimpleName) {
+    // §8.10.4 declares a struct `air` and §8.11.2 an action `environment.air`.
+    // The action's name is a qualified behavior name (§7.2.2.2.5), so the two
+    // never collide — which is why the standard can reuse the word.
+    Library library;
+    check_full_library(library);
+    const TypeInfo* structure = library.program.find("std::air");
+    const TypeInfo* action = library.program.find("std::environment.air");
+    ASSERT_NE(structure, nullptr);
+    ASSERT_NE(action, nullptr);
+    EXPECT_EQ(structure->kind, TypeKind::Struct);
+    EXPECT_EQ(action->kind, TypeKind::Action);
+}
+
 TEST(DslStdlibTest, CheckingTheLibraryIsDeterministic) {
     // Load time is inside the determinism contract: the same sources must give
     // the same program and the same diagnostics, in the same order.

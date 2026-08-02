@@ -601,13 +601,111 @@ extend traffic_participant:
     def distance_along_route(route: route, from: route_distance_enum = from_start) -> length is undefined
 )OSC";
 
+// §8.8.1 the action hierarchy, and §8.10/§8.11 the environment actor with its
+// structs and its actions. Transcribed from the parameter tables of
+// §8.8.1.1, §8.10.2–§8.10.9 and §8.11.2–§8.11.8.
+constexpr std::string_view kDomainEnvironment = R"OSC(
+# --- §8.8.1.1 action osc_action ----------------------------------------------
+# "The parent action `osc_action` is the base class for all actions in the ASAM
+# OpenSCENARIO domain model and it is associated with the parent actor
+# `osc_actor`", with `action_for_environment` and `action_for_movable_object`
+# as its two children.
+action osc_actor.osc_action
+
+action environment.action_for_environment inherits osc_actor.osc_action
+
+action movable_object.action_for_movable_object inherits osc_actor.osc_action
+
+# --- §8.10.4 struct air ------------------------------------------------------
+struct air:
+    temperature: temperature
+    pressure: pressure
+    relative_humidity: float
+
+# --- §8.10.5 struct precipitation --------------------------------------------
+# §8.10.5: volumetric flux reduces to the same dimension as speed, and the
+# language cannot declare two physical types over one unit, so the standard
+# uses `speed` here too.
+struct precipitation:
+    intensity: speed
+
+# --- §8.10.6 struct wind -----------------------------------------------------
+struct wind:
+    speed: speed
+    direction: angle
+
+# --- §8.10.7 struct fog ------------------------------------------------------
+struct fog:
+    visual_range: length
+
+# --- §8.10.8 struct clouds ---------------------------------------------------
+struct clouds:
+    cloudiness: uint
+
+# --- §8.10.9 struct celestial_light_source -----------------------------------
+struct celestial_light_source:
+    position: celestial_position_2d
+
+# --- §8.10.3 struct weather --------------------------------------------------
+struct weather:
+    air: air
+    rain: precipitation
+    snow: precipitation
+    wind: wind
+    fog: fog
+    clouds: clouds
+
+# --- §8.10.2 actor environment -----------------------------------------------
+actor environment inherits osc_actor:
+    geodetic_position: geodetic_position_2d
+    datetime: time
+    sun: celestial_light_source
+    moon: celestial_light_source
+    weather: weather
+    def local_to_unix_time(year: uint, month: uint, day: uint, hour: uint, minute: uint, second: uint, time_zone: float) -> time is undefined
+
+# --- §8.11.2 action air ------------------------------------------------------
+action environment.air inherits environment.action_for_environment:
+    temperature: temperature
+    pressure: pressure
+    relative_humidity: float
+
+# --- §8.11.3 action rain -----------------------------------------------------
+action environment.rain inherits environment.action_for_environment:
+    intensity: speed
+
+# --- §8.11.4 action snow -----------------------------------------------------
+action environment.snow inherits environment.action_for_environment:
+    intensity: speed
+
+# --- §8.11.5 action wind -----------------------------------------------------
+action environment.wind inherits environment.action_for_environment:
+    speed: speed
+    direction: angle
+
+# --- §8.11.6 action fog ------------------------------------------------------
+action environment.fog inherits environment.action_for_environment:
+    visual_range: length
+
+# --- §8.11.7 action clouds ---------------------------------------------------
+action environment.clouds inherits environment.action_for_environment:
+    cloudiness: uint
+
+# --- §8.11.8 action assign_celestial_position --------------------------------
+action environment.assign_celestial_position inherits environment.action_for_environment:
+    light_source: celestial_light_source
+    azimuth: angle
+    elevation: angle
+)OSC";
+
 const std::string& types_module() {
     static const std::string source = std::string(kTypesScalars) + std::string(kTypesCompound);
     return source;
 }
 
 const std::string& domain_module() {
-    static const std::string source = std::string(kDomainEntities) + std::string(kDomainRoads);
+    static const std::string source =
+        std::string(kDomainEntities) + std::string(kDomainRoads) + std::string(kDomainEnvironment);
     return source;
 }
 
